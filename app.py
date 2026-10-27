@@ -704,6 +704,13 @@ if st.session_state.role == "แอดมิน":
         st.markdown("---")
         
         st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / ลบ)")
+        
+        # เพิ่มตารางแสดงรายชื่อบัญชีช่างทั้งหมดเพื่อให้แอดมินเห็นภาพชัดเจน
+        st.markdown("**📋 รายชื่อบัญชีช่างทั้งหมดในระบบ**")
+        all_techs_df = run_query("SELECT id as 'รหัส', username as 'ชื่อผู้ใช้งาน (Username)' FROM tech_users")
+        st.dataframe(all_techs_df, use_container_width=True, hide_index=True)
+        st.markdown("---")
+
         col_t1, col_t2 = st.columns(2)
         with col_t1:
             st.markdown("**➕ เพิ่มบัญชีช่างใหม่**")
