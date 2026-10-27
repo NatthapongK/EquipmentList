@@ -7,9 +7,9 @@ import base64
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ Pro", page_icon="🛠️", layout="wide")
 
-# รายการอุปกรณ์เริ่มต้นทั้งหมด (รวมรายการใหม่ 54 รายการ)
+# รายการอุปกรณ์เริ่มต้นทั้งหมด (ปรับหมวดหมู่ย่อยอุปกรณ์สิ้นเปลือง/ทั่วไปเป็น "อุปกรณ์ช่างทั่วไป")
 DEFAULT_INITIAL_ITEMS = [
-    # เครื่องมือช่างเดิม + ใหม่
+    # เครื่องมือช่าง
     ("ปลั๊กโรลElecton", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
     ("แปลงทาสี", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
     ("ค้อน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
@@ -52,29 +52,31 @@ DEFAULT_INITIAL_ITEMS = [
     ("ไขควงแบน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
     ("ฟิตเทป", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("เครื่องวัดอุณภูมิหม้อแปลง", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    # รายการใหม่ที่เพิ่มเข้ามาตามข้อ 5
-    ("สเปรย์หล่อลื่นโซแน็กซ์", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    ("สเปรย์หล่อลื่นWD40", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    ("สเปย์ลู่วิ่งSilicone Oil", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
-    ("กาวร้อน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    ("หัวคิว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
-    ("กระดาษทรายไม้เบอร์5", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
-    ("กระดาษทรายไม้เบอร์1", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
-    ("จารบี", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    ("เทปพันเกลียว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 6, "ปกติ", "-", None),
-    ("เต๋าต่อสายไฟ", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 20, "ปกติ", "-", None),
-    ("สกรูเกลียวปล่อย6x1นิ้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 100, "ปกติ", "-", None),
-    ("สกรูปลายสว่านTF", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 100, "ปกติ", "-", None),
-    ("สกรูเกลียวปล่อย8x1-1/4นิ้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 20, "ปกติ", "-", None),
-    ("สกรูเกลียวปล่อย12x1นิ้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 20, "ปกติ", "-", None),
-    ("แปรงทองเหลือง", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    ("หัวสว่านแปรงทองเหลือง", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    ("ใบตัดเหล็ก", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 7, "ปกติ", "-", None),
-    ("ใบเจียรเหล็ก", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
-    ("ใบขัดกระดาษทราย", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
-    ("ใบตัดอลู", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
-    ("ใบตัดปูน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    ("ใบเจียรปูน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+    
+    # รายการใหม่ (ปรับเป็น "อุปกรณ์ช่างทั่วไป")
+    ("สเปรย์หล่อลื่นโซแน็กซ์", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+    ("สเปรย์หล่อลื่นWD40", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+    ("สเปย์ลู่วิ่งSilicone Oil", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
+    ("กาวร้อน", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+    ("หัวคิว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
+    ("กระดาษทรายไม้เบอร์5", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 3, "ปกติ", "-", None),
+    ("กระดาษทรายไม้เบอร์1", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 3, "ปกติ", "-", None),
+    ("จารบี", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+    ("เทปพันเกลียว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 6, "ปกติ", "-", None),
+    ("เต๋าต่อสายไฟ", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 20, "ปกติ", "-", None),
+    ("สกรูเกลียวปล่อย6x1นิ้ว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 100, "ปกติ", "-", None),
+    ("สกรูปลายสว่านTF", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 100, "ปกติ", "-", None),
+    ("สกรูเกลียวปล่อย8x1-1/4นิ้ว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 20, "ปกติ", "-", None),
+    ("สกรูเกลียวปล่อย12x1นิ้ว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 20, "ปกติ", "-", None),
+    ("แปรงทองเหลือง", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+    ("หัวสว่านแปรงทองเหลือง", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+    ("ใบตัดเหล็ก", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 7, "ปกติ", "-", None),
+    ("ใบเจียรเหล็ก", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 3, "ปกติ", "-", None),
+    ("ใบขัดกระดาษทราย", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
+    ("ใบตัดอลู", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
+    ("ใบตัดปูน", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+    ("ใบเจียรปูน", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+    
     # หมวดสระว่ายน้ำ
     ("คลอรีนผง 90%", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
     ("สารส้ม", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 4, "ปกติ", "-", None),
@@ -108,7 +110,6 @@ def init_db():
         )
     ''')
     
-    # ตรวจสอบและเพิ่ม column alert_zero (เตือนเมื่อเหลือ 0) หากยังไม่มี
     c.execute("PRAGMA table_info(items)")
     item_cols = [col[1] for col in c.fetchall()]
     if 'alert_zero' not in item_cols:
@@ -268,7 +269,7 @@ if st.sidebar.button("🚪 ออกจากระบบ (Logout)", type="prima
 st.title("🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์")
 st.markdown("---")
 
-# --- ALERT SYSTEM (รองรับเงื่อนไข alert_zero ตามข้อ 4) ---
+# --- ALERT SYSTEM ---
 setting_df = run_query("SELECT value FROM settings WHERE key='low_stock_threshold'")
 low_stock_limit = int(setting_df.iloc[0]['value']) if not setting_df.empty else 1
 
@@ -277,11 +278,10 @@ items_df = run_query("SELECT * FROM items")
 
 abnormal_items = items_df[items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม'])]
 
-# กรองอุปกรณ์เหลือน้อย (แยกตามค่า alert_zero: ถ้าติ๊กเตือนเมื่อเหลือ 0 ให้เช็ค quantity <= 0 ถ้าไม่ติ๊กใช้ low_stock_limit)
 low_stock_list = []
 for _, row in items_df.iterrows():
     if row['subcategory'] == 'เครื่องมือช่าง':
-        continue # ข้ามหมวดเครื่องมือช่างตามข้อกำหนดเดิม
+        continue
     threshold = 0 if row.get('alert_zero', 0) == 1 else low_stock_limit
     if row['quantity'] <= threshold:
         low_stock_list.append(row)
@@ -437,7 +437,6 @@ if st.session_state.role == "แอดมิน":
                     quantity = st.number_input("จำนวน (ชิ้น)", min_value=1, value=1)
                     status = st.selectbox("สภาพเริ่มต้น", ["ปกติ", "ชำรุด", "สูญหาย"])
                     
-                    # ข้อ 4: ตัวเลือกตั้งค่าแจ้งเตือนเมื่อเหลือ 0
                     alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0 (ค่าเริ่มต้นเตือนที่ 1)")
                     
                     note = st.text_area("หมายเหตุ")
@@ -567,6 +566,7 @@ if st.session_state.role == "แอดมิน":
 
     with admin_menu[3]:
         st.subheader("⚙️ ตั้งค่าระบบและบัญชีช่าง")
+        
         st.markdown("#### ⚠️ ตั้งค่าเกณฑ์แจ้งเตือนอุปกรณ์ทั่วไปใกล้หมด")
         with st.form("low_stock_setting_form"):
             new_threshold = st.number_input("แจ้งเตือนเมื่อจำนวนน้อยกว่าหรือเท่ากับ (ชิ้น)", min_value=0, value=low_stock_limit)
@@ -576,6 +576,7 @@ if st.session_state.role == "แอดมิน":
                 st.rerun()
                 
         st.markdown("---")
+        
         st.markdown("#### 🔄 ตั้งค่าและเพิ่มโควต้าการตรวจเช็คประจำวัน (นับรวมทุกคน)")
         q_setting = run_query("SELECT value FROM settings WHERE key='global_daily_quota'")
         current_base_quota = int(q_setting.iloc[0]['value']) if not q_setting.empty else 3
@@ -595,18 +596,61 @@ if st.session_state.role == "แอดมิน":
                 run_query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (f"extra_quota_{date_str}", str(add_more_quota)), is_select=False)
                 st.success("บันทึกการตั้งค่าโควต้าเรียบร้อยแล้ว!")
                 st.rerun()
+                
+        st.markdown("---")
+        
+        # กู้คืนส่วนจัดการบัญชีช่าง (สร้าง / แก้ไข / ลบ) กลับมาแล้ว
+        st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / ลบ)")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.markdown("**➕ เพิ่มบัญชีช่างใหม่**")
+            with st.form("add_tech_form", clear_on_submit=True):
+                new_t_user = st.text_input("Username ช่าง")
+                new_t_pass = st.text_input("Password ช่าง", type="password")
+                if st.form_submit_button("สร้างบัญชีช่าง"):
+                    if new_t_user.strip() and new_t_pass.strip():
+                        try:
+                            run_query("INSERT INTO tech_users (username, password) VALUES (?, ?)", (new_t_user, new_t_pass), is_select=False)
+                            st.success(f"สร้างบัญชีช่าง '{new_t_user}' สำเร็จ!")
+                            st.rerun()
+                        except:
+                            st.error("Username นี้มีอยู่ในระบบแล้ว")
+                    else:
+                        st.error("กรุณากรอกข้อมูลให้ครบถ้วน")
+                        
+        with col_t2:
+            st.markdown("**✏️ แก้ไข / ลบบัญชีช่าง**")
+            tech_list_df = run_query("SELECT * FROM tech_users")
+            if not tech_list_df.empty:
+                selected_tech_id = st.selectbox("เลือกบัญชีช่าง", tech_list_df['id'].astype(str) + " - " + tech_list_df['username'])
+                if selected_tech_id:
+                    t_id_int = int(selected_tech_id.split(" - ")[0])
+                    t_row = tech_list_df[tech_list_df['id'] == t_id_int].iloc[0]
+                    with st.form(f"edit_tech_{t_id_int}"):
+                        edit_u = st.text_input("Username", value=t_row['username'])
+                        edit_p = st.text_input("Password ใหม่", value=t_row['password'])
+                        col_tu1, col_tu2 = st.columns(2)
+                        if col_tu1.form_submit_button("บันทึกการแก้ไข"):
+                            run_query("UPDATE tech_users SET username=?, password=? WHERE id=?", (edit_u, edit_p, t_id_int), is_select=False)
+                            st.success("อัปเดตบัญชีช่างสำเร็จ!")
+                            st.rerun()
+                        if col_tu2.form_submit_button("ลบบัญชีนี้"):
+                            if len(tech_list_df) <= 1:
+                                st.error("ต้องเหลือบัญชีช่างไว้อย่างน้อย 1 บัญชี")
+                            else:
+                                run_query("DELETE FROM tech_users WHERE id=?", (t_id_int,), is_select=False)
+                                st.success("ลบบัญชีช่างเรียบร้อยแล้ว!")
+                                st.rerun()
 
 elif st.session_state.role == "ช่างทั่วไป":
     # ------------------ จอสำหรับช่าง (Technician UI) ------------------
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างทั่วไป")
     
-    # เพิ่มแท็บหน้าเบิกของสำหรับหมวดย่อยอุปกรณ์ช่างตามข้อ 3
     tech_main_tab = st.tabs(["📋 ตรวจสอบสภาพอุปกรณ์", "📦 เบิกของ (เครื่องมือช่าง)", "🔄 ระบบยืม-คืน อุปกรณ์"])
     
     with tech_main_tab[2]:
         render_borrow_return_system()
         
-    # --- ข้อ 3: หน้าเบิกของสำหรับหมวดย่อยอุปกรณ์ช่าง ---
     with tech_main_tab[1]:
         st.markdown("### 📦 หน้าเบิกของ (หมวดย่อย: เครื่องมือช่าง)")
         st.write("เลือกเครื่องมือช่างที่ต้องการเบิกใช้งาน ระบบจะทำการตัดจำนวนคงเหลือในคลังทันที")
@@ -630,10 +674,7 @@ elif st.session_state.role == "ช่างทั่วไป":
                         now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
                         new_qty = req_max_q - req_qty
                         
-                        # ตัดสต็อก
                         run_query("UPDATE items SET quantity = ? WHERE id = ?", (new_qty, req_selected_id), is_select=False)
-                        
-                        # บันทึกประวัติการเบิกเป็น Transaction หรือ Log
                         run_query("INSERT INTO transactions (item_id, borrower_name, borrow_date, return_date, status, quantity) VALUES (?,?,?,?,?,?)",
                                   (req_selected_id, f"{st.session_state.username} (เบิกใช้)", now_time, now_time, "เบิกใช้งาน", req_qty), is_select=False)
                         
@@ -695,7 +736,6 @@ elif st.session_state.role == "ช่างทั่วไป":
                                 issue_type = "ปกติ"
                                 issue_detail = ""
                                 if is_flagged:
-                                    # ข้อ 1: เพิ่มประเภท 1. กำลังใช้งาน (พร้อมช่องกรอกรายละเอียด) 2. อุปกรณ์หมด
                                     issue_type = st.selectbox(
                                         "ประเภทปัญหา *", 
                                         ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"], 
@@ -713,7 +753,6 @@ elif st.session_state.role == "ช่างทั่วไป":
                         st.session_state.tech_photo_count = 4
                         
                     uploaded_photos_b64 = []
-                    # ข้อ 2: บังคับรูปครบ 4 รูป
                     for i in range(4):
                         up_file = st.file_uploader(f"รูปถ่ายรวมที่ {i+1} *", type=["jpg", "jpeg", "png"], key=f"tech_p_{i}")
                         if up_file is not None:
@@ -725,7 +764,6 @@ elif st.session_state.role == "ช่างทั่วไป":
                         has_error = False
                         error_msg = ""
                         
-                        # ตรวจสอบการเลือกประเภทปัญหา
                         for item_id, data in item_reports.items():
                             if data["flagged"]:
                                 if data["status"] == "-- เลือกประเภท --":
@@ -737,7 +775,6 @@ elif st.session_state.role == "ช่างทั่วไป":
                                     error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
                                     break
                         
-                        # ข้อ 2: เช็คว่าอัปโหลดครบ 4 รูปหรือไม่
                         if not has_error and len(uploaded_photos_b64) < 4:
                             has_error = True
                             error_msg = "❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบทั้ง 4 รูป จึงจะสามารถยืนยันผลตรวจได้"
