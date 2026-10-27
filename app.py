@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import base64
+import html as _html
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ Pro", page_icon="🛠️", layout="wide")
@@ -206,35 +207,87 @@ def init_db():
 
 init_db()
 
-# --- UI HELPERS (มือถือ) ---
-# CSS: บังคับให้ st.columns ในรายการตรวจเช็คไม่ตกบรรทัดบนมือถือ
-# (ปกติ Streamlit จะเรียงคอลัมน์ซ้อนกันแนวตั้งเมื่อหน้าจอแคบ ทำให้ช่องติ๊กไปอยู่ใต้ชื่อ)
+# --- THEME / UI HELPERS ---
+# โทนสี: น้ำเงินเขียวสระน้ำ (teal) + เทาเหล็ก (steel) + สีสถานะ เขียว/เหลืองอำพัน/แดง
 st.markdown("""
 <style>
-.st-key-tech_check_list div[data-testid="stHorizontalBlock"] {
-    flex-wrap: nowrap !important;
-    align-items: flex-start !important;
-    gap: 0.5rem !important;
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
+:root{
+  --ink:#14232B; --muted:#5B6B73; --line:#DCE4E7; --bg:#F3F6F7; --card:#FFFFFF;
+  --teal:#0E7C86; --teal-d:#0A5C64; --ok:#2E7D5B; --warn:#B7791F; --bad:#B93A32;
 }
+.stApp, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp p, .stApp label, .stApp li,
+.stApp input, .stApp textarea, .stApp button, .stApp [data-baseweb="tab"], .stApp [data-baseweb="select"]{
+  font-family:'IBM Plex Sans Thai','Noto Sans Thai',system-ui,sans-serif;
+}
+.stApp{background:var(--bg); color:var(--ink);}
+footer{visibility:hidden;}
+.block-container{padding-top:1.2rem; padding-bottom:3rem; max-width:1200px;}
+h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
+
+/* แถบหัวหน้าเว็บ */
+.app-hero{background:var(--ink); color:#fff; border-radius:14px; padding:1rem 1.25rem;
+  display:flex; justify-content:space-between; align-items:center; gap:.75rem 1rem; flex-wrap:wrap; margin-bottom:1rem;}
+.app-hero .t{font-size:1.3rem; font-weight:700; line-height:1.3;}
+.app-hero .s{font-size:.85rem; color:#A9BCC4; margin-top:.15rem;}
+.chip{display:inline-block; padding:.2rem .7rem; border-radius:999px; font-size:.8rem; font-weight:600;
+  background:rgba(14,124,134,.9); color:#fff;}
+
+/* การ์ดตัวเลขสรุป */
+.kpi-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:.75rem; margin-bottom:1rem;}
+.kpi{background:var(--card); border:1px solid var(--line); border-left:4px solid var(--c,var(--teal));
+  border-radius:10px; padding:.7rem .9rem;}
+.kpi .n{font-size:1.7rem; font-weight:700; line-height:1.15; color:var(--ink);}
+.kpi .l{font-size:.82rem; color:var(--muted);}
+
+/* แถบด้านข้าง */
+section[data-testid="stSidebar"]{background:#fff; border-right:1px solid var(--line);}
+.user-card{display:flex; align-items:center; gap:.7rem; padding:.7rem; border:1px solid var(--line);
+  border-radius:12px; background:var(--bg);}
+.avatar{width:2.4rem; height:2.4rem; border-radius:50%; background:var(--teal); color:#fff;
+  display:flex; align-items:center; justify-content:center; font-weight:700; flex:none;}
+.u-name{font-weight:600; line-height:1.2; word-break:break-all;}
+.u-role{font-size:.8rem; color:var(--muted);}
+
+/* แท็บ */
+.stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto;}
+.stTabs [data-baseweb="tab"]{height:auto; padding:.6rem .9rem; font-weight:500; color:var(--muted); white-space:nowrap;}
+.stTabs [aria-selected="true"]{color:var(--teal-d); font-weight:600;}
+.stTabs [data-baseweb="tab-highlight"]{background:var(--teal); height:3px;}
+
+/* การ์ด/ฟอร์ม/expander */
+[data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card);}
+[data-testid="stForm"]{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:1rem;}
+[data-testid="stDataFrame"]{border:1px solid var(--line); border-radius:10px; overflow:hidden;}
+[data-testid="stAlert"]{border-radius:10px;}
+
+/* ปุ่ม */
+.stApp button{border-radius:8px; font-weight:600;}
+.stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
+.stApp button[data-testid="stBaseButton-primaryFormSubmit"]{background:var(--teal); border-color:var(--teal); color:#fff;}
+.stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
+.stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
+
+/* รายการตรวจเช็ค: ช่องติ๊กต่อท้ายชื่ออุปกรณ์ในบรรทัดเดียวกัน (มือถือ) */
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"]{flex-wrap:nowrap !important; align-items:flex-start !important; gap:.5rem !important;}
 .st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
-.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-    min-width: 0 !important;
-    width: auto !important;
-}
-/* คอลัมน์ชื่ออุปกรณ์: ยืดเต็มพื้นที่ที่เหลือ */
-.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:first-child {
-    flex: 1 1 0 !important;
-}
-/* คอลัมน์ช่องติ๊ก: กว้างพอดีข้อความ ต่อท้ายชื่ออุปกรณ์ */
-.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:last-child {
-    flex: 0 0 auto !important;
-}
-.st-key-tech_check_list div[data-testid="stCheckbox"] {
-    margin-top: 0.6rem;
-    white-space: nowrap;
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{min-width:0 !important; width:auto !important;}
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:first-child{flex:1 1 0 !important;}
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:last-child{flex:0 0 auto !important;}
+.st-key-tech_check_list div[data-testid="stCheckbox"]{margin-top:.6rem; white-space:nowrap;}
+
+@media (max-width:640px){
+  .block-container{padding-left:.8rem; padding-right:.8rem;}
+  .kpi-grid{grid-template-columns:repeat(2,1fr);}
+  .app-hero .t{font-size:1.1rem;}
+  .stApp .stButton > button, .stApp [data-testid="stFormSubmitButton"] > button{width:100%;}
 }
 </style>
 """, unsafe_allow_html=True)
+
+def esc(text):
+    """escape ข้อความก่อนแสดงใน HTML"""
+    return _html.escape(str(text))
 
 def keyed_container(key, **kwargs):
     """สร้าง container พร้อม key (ใช้อ้างอิงใน CSS) - รองรับ Streamlit รุ่นเก่าที่ยังไม่มี key"""
@@ -293,15 +346,21 @@ if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "
 
 # --- LOGIN UI ---
 if not st.session_state.logged_in:
-    st.title("🔑 เข้าสู่ระบบจัดการอุปกรณ์")
-    col_login, _ = st.columns([1, 2])
+    _, col_login, _ = st.columns([1, 1.6, 1])
     with col_login:
-        username = st.text_input("ชื่อผู้ใช้งาน (Username)")
-        password = st.text_input("รหัสผ่าน (Password)", type="password")
+        st.markdown(
+            '<div class="app-hero"><div><div class="t">🛠️ ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ</div>'
+            '<div class="s">เข้าสู่ระบบเพื่อตรวจเช็ค ยืม-คืน และจัดการคลังอุปกรณ์</div></div></div>',
+            unsafe_allow_html=True)
+        # ใช้ form เพื่อให้กด Enter / ปุ่มบนมือถือส่งฟอร์มได้
+        with st.form("login_form"):
+            username = st.text_input("ชื่อผู้ใช้งาน (Username)")
+            password = st.text_input("รหัสผ่าน (Password)", type="password")
+            submitted = st.form_submit_button("เข้าสู่ระบบ", type="primary", use_container_width=True)
         
         tech_df = run_query("SELECT * FROM tech_users")
         
-        if st.button("เข้าสู่ระบบ", type="primary"):
+        if submitted:
             role_val = ""
             user_val = ""
             if username == "Natthapongk" and password == "0891148075":
@@ -327,9 +386,12 @@ if not st.session_state.logged_in:
     st.stop()
 
 # --- MAIN APP LOGGED IN ---
-st.sidebar.title(f"👤 {st.session_state.username}")
-st.sidebar.write(f"สิทธิ์การใช้งาน: **{st.session_state.role}**")
-st.sidebar.markdown("---")
+st.sidebar.markdown(
+    f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper())}</div>'
+    f'<div><div class="u-name">{esc(st.session_state.username)}</div>'
+    f'<div class="u-role">สิทธิ์: {esc(st.session_state.role)}</div></div></div>',
+    unsafe_allow_html=True)
+st.sidebar.markdown("")
 if st.sidebar.button("🚪 ออกจากระบบ (Logout)", type="primary"):
     st.session_state.logged_in = False
     st.session_state.role = None
@@ -337,14 +399,16 @@ if st.sidebar.button("🚪 ออกจากระบบ (Logout)", type="prima
     st.query_params.clear()
     st.rerun()
 
-st.title("🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์")
-st.markdown("---")
+st.markdown(
+    f'<div class="app-hero"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
+    f'<div class="s">อุปกรณ์ช่าง & สระว่ายน้ำ · {datetime.now().strftime("%d/%m/%Y")}</div></div>'
+    f'<span class="chip">{esc(st.session_state.role)}</span></div>',
+    unsafe_allow_html=True)
 
 # --- ALERT SYSTEM ---
 setting_df = run_query("SELECT value FROM settings WHERE key='low_stock_threshold'")
 low_stock_limit = int(setting_df.iloc[0]['value']) if not setting_df.empty else 1
 
-st.subheader("🚨 การแจ้งเตือนระบบ")
 items_df = run_query("SELECT * FROM items")
 
 abnormal_items = items_df[items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด'])]
@@ -358,19 +422,36 @@ for _, row in items_df.iterrows():
         low_stock_list.append(row)
 low_stock_items = pd.DataFrame(low_stock_list)
 
+borrowed_cnt = int(run_query("SELECT COUNT(*) AS c FROM transactions WHERE status = 'กำลังยืม'").iloc[0]['c'])
+abn_cnt, low_cnt = len(abnormal_items), len(low_stock_items)
+
+# การ์ดสรุปภาพรวม (สีขอบซ้ายสื่อสถานะ: เขียว = ปกติ / แดง,เหลือง = ต้องดู)
+st.markdown(
+    f'''<div class="kpi-grid">
+      <div class="kpi"><div class="n">{len(items_df)}</div><div class="l">รายการอุปกรณ์ทั้งหมด</div></div>
+      <div class="kpi" style="--c:{'var(--bad)' if abn_cnt else 'var(--ok)'}"><div class="n">{abn_cnt}</div><div class="l">ผิดปกติ / หมด / ถูกยืม</div></div>
+      <div class="kpi" style="--c:{'var(--warn)' if low_cnt else 'var(--ok)'}"><div class="n">{low_cnt}</div><div class="l">เหลือน้อยกว่าเกณฑ์</div></div>
+      <div class="kpi" style="--c:var(--teal)"><div class="n">{borrowed_cnt}</div><div class="l">กำลังถูกยืมอยู่</div></div>
+    </div>''', unsafe_allow_html=True)
+
 col_a1, col_a2 = st.columns(2)
 with col_a1:
-    if not abnormal_items.empty:
-        alert_text = [f"{row['name']} ({row['status']})" for _, row in abnormal_items.iterrows()]
-        st.error(f"❌ **มีอุปกรณ์ผิดปกติ/หมด/ถูกยืม ({len(abnormal_items)} รายการ):** " + ", ".join(alert_text))
+    if abn_cnt:
+        with st.expander(f"❌ อุปกรณ์ผิดปกติ/หมด/ถูกยืม ({abn_cnt} รายการ)"):
+            st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True,
+                         column_config={"name": "ชื่ออุปกรณ์", "category": "หมวดหมู่", "status": "สถานะ",
+                                        "quantity": st.column_config.NumberColumn("คงเหลือ", format="%d")})
     else:
         st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
 with col_a2:
-    if not low_stock_items.empty:
-        st.warning(f"⚠️ **มีอุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์กำหนด ({len(low_stock_items)} รายการ):** " + ", ".join(low_stock_items['name'].tolist()))
+    if low_cnt:
+        with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อย ({low_cnt} รายการ)"):
+            st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True,
+                         column_config={"name": "ชื่ออุปกรณ์", "category": "หมวดหมู่",
+                                        "quantity": st.column_config.NumberColumn("คงเหลือ", format="%d")})
     else:
-        st.success(f"✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
-st.markdown("---")
+        st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
+st.markdown("")
 
 # --- SHARED BORROW / RETURN COMPONENT ---
 def render_borrow_return_system():
@@ -505,12 +586,19 @@ if st.session_state.role == "แอดมิน":
                 filtered_df = filtered_df[filtered_df['status'] == status_filter]
                 
             st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ")
+            show_df = filtered_df[['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']].copy()
+            show_df['alert_zero'] = show_df['alert_zero'].astype(bool)
             st.dataframe(
-                filtered_df[['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']], 
-                use_container_width=True, 
-                hide_index=True,
-                height=400
-            )
+                show_df, use_container_width=True, hide_index=True, height=400,
+                column_config={
+                    "id": st.column_config.NumberColumn("รหัส", width="small"),
+                    "name": st.column_config.TextColumn("ชื่ออุปกรณ์", width="large"),
+                    "category": "หมวดหมู่หลัก", "subcategory": "หมวดย่อย",
+                    "quantity": st.column_config.NumberColumn("จำนวน", format="%d", width="small"),
+                    "status": "สถานะ",
+                    "alert_zero": st.column_config.CheckboxColumn("เตือนที่ 0", width="small"),
+                    "note": "หมายเหตุ",
+                })
 
         with tab_add_edit:
             sub_a, sub_e = st.tabs(["➕ เพิ่มอุปกรณ์ใหม่", "✏️ แก้ไข/ลบ รายการ"])
@@ -629,7 +717,16 @@ if st.session_state.role == "แอดมิน":
             else:
                 filtered_df = inspections_df
             
-            st.dataframe(filtered_df[['id', 'tech_name', 'category', 'inspection_date', 'session_num', 'details']], use_container_width=True, hide_index=True)
+            st.dataframe(
+                filtered_df[['id', 'tech_name', 'category', 'inspection_date', 'session_num', 'details']],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "id": st.column_config.NumberColumn("รหัส", width="small"),
+                    "tech_name": "ผู้ตรวจ", "category": "หมวดหมู่",
+                    "inspection_date": st.column_config.DatetimeColumn("วันที่ตรวจ", format="DD/MM/YYYY HH:mm"),
+                    "session_num": st.column_config.NumberColumn("รอบ", width="small"),
+                    "details": st.column_config.TextColumn("รายละเอียด", width="large"),
+                })
             
             st.markdown("---")
             st.markdown("#### 📸 ดูรายละเอียดและรูปถ่ายหน้างานของการตรวจเช็ค")
@@ -921,7 +1018,7 @@ elif st.session_state.role == "ช่างทั่วไป":
                             b64_str = base64.b64encode(up_file.read()).decode("utf-8")
                             uploaded_photos_b64.append(b64_str)
                             
-                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.progress(len(uploaded_photos_b64) / 4, text=f"📸 แนบรูปแล้ว {len(uploaded_photos_b64)}/4 รูป")
                     if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
                         has_error = False
                         error_msg = ""
@@ -1014,7 +1111,7 @@ elif st.session_state.role == "ช่างทั่วไป":
                         b64_str = base64.b64encode(up_file.read()).decode("utf-8")
                         uploaded_pool_photos_b64.append(b64_str)
                         
-                st.markdown("<br>", unsafe_allow_html=True)
+                st.progress(len(uploaded_pool_photos_b64) / 4, text=f"📸 แนบรูปแล้ว {len(uploaded_pool_photos_b64)}/4 รูป")
                 if st.button("💾 บันทึกจำนวนอุปกรณ์สระว่ายน้ำ", type="primary", use_container_width=True):
                     if len(uploaded_pool_photos_b64) < 4:
                         st.error("❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานสระว่ายน้ำให้ครบทั้ง 4 รูป")
