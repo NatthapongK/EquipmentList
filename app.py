@@ -207,7 +207,7 @@ def init_db():
 
 init_db()
 
-# --- THEME / UI HELPERS (Light Theme + Hide Header/Footer/Deploy icons) ---
+# --- THEME / UI HELPERS (Light Theme + Hide Header/Footer/Deploy icons & Status Indicator) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
@@ -225,6 +225,8 @@ header[data-testid="stHeader"] {display: none !important;}
 footer {visibility: hidden !important; display: none !important;}
 #MainMenu {visibility: hidden !important; display: none !important;}
 .stDeployButton {display: none !important;}
+/* ซ่อนไอคอนสถานะ (เขียว/แดง) ด้านล่างขวาของ Streamlit */
+[data-testid="stStatusWidget"] {display: none !important;}
 
 .block-container{padding-top:1.5rem; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
@@ -392,19 +394,23 @@ if not st.session_state.logged_in:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
-# --- MAIN APP LOGGED IN ---
+# --- MAIN APP LOGGED IN (Sidebar with expandable user profile & logout) ---
 st.sidebar.markdown(
     f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper())}</div>'
     f'<div><div class="u-name">{esc(st.session_state.username)}</div>'
     f'<div class="u-role">สิทธิ์: {esc(st.session_state.role)}</div></div></div>',
     unsafe_allow_html=True)
 st.sidebar.markdown("")
-if st.sidebar.button("🚪 ออกจากระบบ (Logout)", type="primary"):
-    st.session_state.logged_in = False
-    st.session_state.role = None
-    st.session_state.username = ""
-    st.query_params.clear()
-    st.rerun()
+
+with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & ออกจากระบบ", expanded=True):
+    st.write(f"ผู้ใช้งาน: **{st.session_state.username}**")
+    st.write(f"สิทธิ์: **{st.session_state.role}**")
+    if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.role = None
+        st.session_state.username = ""
+        st.query_params.clear()
+        st.rerun()
 
 st.markdown(
     f'<div class="app-hero"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
@@ -957,7 +963,6 @@ elif st.session_state.role == "ช่างทั่วไป":
         
         if tech_category_choice == "🔧 หมวดอุปกรณ์ช่าง":
             st.markdown("### 🔧 หมวดอุปกรณ์ช่าง (คลิกชื่อเพื่อดูรูปภาพ & เช็คสถานะ)")
-            st.write("คำชี้แจง: คลิกที่ชื่ออุปกรณ์เพื่อดูรูปภาพ และทำเครื่องหมายแจ้งปัญหาตามประเภทที่กำหนด")
             
             global_inspections = run_query("SELECT COUNT(*) as cnt FROM inspections WHERE category = 'อุปกรณ์ช่าง' AND inspection_date LIKE ?", 
                                           (f"{today_str}%",))
@@ -970,8 +975,6 @@ elif st.session_state.role == "ช่างทั่วไป":
             extra_quota = int(extra_df.iloc[0]['value']) if not extra_df.empty else 0
             
             total_allowed = base_quota + extra_quota
-            
-            st.info(f"📌 โควตารวมการตรวจหมวดอุปกรณ์ช่างของวันนี้: ใช้ไปแล้ว **{global_count} / {total_allowed} ครั้ง** (นับรวมทุกคนในระบบ)")
             
             if global_count >= total_allowed:
                 st.error("⚠️ ครบโควตารอบการตรวจสำหรับวันนี้แล้ว (กรุณาติดต่อแอดมินเพื่อเพิ่มรอบตรวจพิเศษ)")
