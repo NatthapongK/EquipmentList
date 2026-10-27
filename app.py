@@ -206,6 +206,43 @@ def init_db():
 
 init_db()
 
+# --- UI HELPERS (มือถือ) ---
+# CSS: บังคับให้ st.columns ในรายการตรวจเช็คไม่ตกบรรทัดบนมือถือ
+# (ปกติ Streamlit จะเรียงคอลัมน์ซ้อนกันแนวตั้งเมื่อหน้าจอแคบ ทำให้ช่องติ๊กไปอยู่ใต้ชื่อ)
+st.markdown("""
+<style>
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+    align-items: flex-start !important;
+    gap: 0.5rem !important;
+}
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+    min-width: 0 !important;
+    width: auto !important;
+}
+/* คอลัมน์ชื่ออุปกรณ์: ยืดเต็มพื้นที่ที่เหลือ */
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:first-child {
+    flex: 1 1 0 !important;
+}
+/* คอลัมน์ช่องติ๊ก: กว้างพอดีข้อความ ต่อท้ายชื่ออุปกรณ์ */
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:last-child {
+    flex: 0 0 auto !important;
+}
+.st-key-tech_check_list div[data-testid="stCheckbox"] {
+    margin-top: 0.6rem;
+    white-space: nowrap;
+}
+</style>
+""", unsafe_allow_html=True)
+
+def keyed_container(key, **kwargs):
+    """สร้าง container พร้อม key (ใช้อ้างอิงใน CSS) - รองรับ Streamlit รุ่นเก่าที่ยังไม่มี key"""
+    try:
+        return st.container(key=key, **kwargs)
+    except TypeError:
+        return st.container(**kwargs)
+
 # --- HELPER FUNCTIONS ---
 def run_query(query, params=(), is_select=True):
     conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
@@ -840,31 +877,37 @@ elif st.session_state.role == "ช่างทั่วไป":
                     if tech_search.strip():
                         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
                     
-                    with st.container(height=500):
+                    with keyed_container("tech_check_list", height=500):
                         item_reports = {}
                         for _, row in tools_df.iterrows():
-                            # ใช้ CSS ช่วยจัดเลย์เอาต์ให้ปุ่ม checkbox ไปอยู่ข้างๆ ชื่อในบรรทัดเดียวกัน รองรับหน้าจอมือถือ
-                            st.markdown(f"""
-                                <div style="font-weight: bold; margin-bottom: 2px;">🛠️ {row['name']} (คงเหลือ: {row['quantity']})</div>
-                            """, unsafe_allow_html=True)
+                            # แถวบน: ชื่ออุปกรณ์ (ซ้าย) + ช่องติ๊กแจ้งปัญหา (ต่อท้ายชื่อ ชิดขวา) อยู่บรรทัดเดียวกันทั้งมือถือและคอม
+                            col_item, col_flag = st.columns([5, 1.4])
                             
-                            col_flag, col_detail = st.columns([1, 2])
+                            with col_item:
+                                with st.expander(f"🛠️ {row['name']} (คงเหลือ: {row['quantity']})"):
+                                    pil_img = get_pil_image_from_base64(row['image'])
+                                    if pil_img:
+                                        st.image(pil_img, width=220, caption=f"รูปภาพ: {row['name']}")
+                                    else:
+                                        st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
+                            
                             with col_flag:
                                 is_flagged = st.checkbox("แจ้งปัญหา", key=f"flag_{row['id']}")
-                            with col_detail:
-                                issue_type = "ปกติ"
-                                issue_detail = ""
-                                if is_flagged:
-                                    issue_type = st.selectbox(
-                                        "ประเภทปัญหา *", 
-                                        ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"], 
-                                        key=f"issue_type_{row['id']}"
-                                    )
-                                    if issue_type == "กำลังใช้งาน":
-                                        issue_detail = st.text_input("ระบุรายละเอียดการใช้งาน *", key=f"issue_detail_{row['id']}")
-                                        
+                            
+                            # แถวล่าง: แสดงเฉพาะเมื่อติ๊กแจ้งปัญหา (เต็มความกว้าง อ่านง่ายบนมือถือ)
+                            issue_type = "ปกติ"
+                            issue_detail = ""
+                            if is_flagged:
+                                issue_type = st.selectbox(
+                                    "ประเภทปัญหา *", 
+                                    ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"], 
+                                    key=f"issue_type_{row['id']}"
+                                )
+                                if issue_type == "กำลังใช้งาน":
+                                    issue_detail = st.text_input("ระบุรายละเอียดการใช้งาน *", key=f"issue_detail_{row['id']}")
+                                    
                             item_reports[row['id']] = {"flagged": is_flagged, "status": issue_type, "detail": issue_detail}
-                            st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
+                            st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
                             
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📸 รูปถ่ายรวมหน้างาน / ภาพประกอบการตรวจเช็ค (บังคับครบทั้ง 4 รูป)")
