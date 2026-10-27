@@ -12,12 +12,13 @@ def init_db():
     conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
     c = conn.cursor()
     
-    # 1. ตารางอุปกรณ์ (เพิ่มฟิลด์ image เก็บรูปภาพแบบ Base64)
+    # 1. ตารางอุปกรณ์ (เพิ่ม subcategory สำหรับเก็บประเภทย่อย เช่น เครื่องมือช่าง)
     c.execute('''
         CREATE TABLE IF NOT EXISTS items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             category TEXT NOT NULL,
+            subcategory TEXT DEFAULT '-',
             quantity INTEGER NOT NULL,
             status TEXT NOT NULL,
             note TEXT,
@@ -25,6 +26,13 @@ def init_db():
         )
     ''')
     
+    # ตรวจสอบและเพิ่ม column subcategory หากยังไม่มีในฐานข้อมูลเดิม
+    c.execute("PRAGMA table_info(items)")
+    columns = [col[1] for col in c.fetchall()]
+    if 'subcategory' not in columns:
+        c.execute("ALTER TABLE items ADD COLUMN subcategory TEXT DEFAULT '-'")
+        conn.commit()
+
     # 2. ตารางยืม-คืน
     c.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
@@ -38,7 +46,7 @@ def init_db():
         )
     ''')
     
-    # 3. ตารางบัญชีช่าง (สำหรับสร้าง-แก้ไขรหัสช่าง)
+    # 3. ตารางบัญชีช่าง
     c.execute('''
         CREATE TABLE IF NOT EXISTS tech_users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +55,7 @@ def init_db():
         )
     ''')
     
-    # 4. ตารางประวัติการตรวจเช็คของช่าง (รองรับตรวจ 3 ครั้ง/วัน)
+    # 4. ตารางประวัติการตรวจเช็คของช่าง
     c.execute('''
         CREATE TABLE IF NOT EXISTS inspections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,16 +66,26 @@ def init_db():
             details TEXT
         )
     ''')
+
+    # 5. ตารางตั้งค่าระบบ (เช่น ค่าจำนวนแจ้งเตือนสินค้าใกล้หมด)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('low_stock_threshold', '1')")
+    conn.commit()
     
     # ใส่ข้อมูลเริ่มต้นหากระบบยังว่างอยู่
     c.execute("SELECT COUNT(*) FROM items")
     if c.fetchone() == 0:
-        c.executemany("INSERT INTO items (name, category, quantity, status, note, image) VALUES (?, ?, ?, ?, ?, ?)", [
-            ("สว่านกระแทกไร้สาย", "อุปกรณ์ช่าง", 2, "ปกติ", "Makita", None),
-            ("ประแจเลื่อน 12 นิ้ว", "อุปกรณ์ช่าง", 5, "ปกติ", "-", None),
-            ("ตาข่ายตักขยะสระว่ายน้ำ", "อุปกรณ์สระว่ายน้ำ", 1, "ชำรุด", "ด้ามหัก", None),
-            ("ชุดทดสอบคลอรีนและ pH", "อุปกรณ์สระว่ายน้ำ", 1, "ปกติ", "เหลือครึ่งขวด", None),
-            ("คลอรีนผง 90%", "อุปกรณ์สระว่ายน้ำ", 3, "ปกติ", "เหลือน้อยใกล้หมด", None)
+        c.executemany("INSERT INTO items (name, category, subcategory, quantity, status, note, image) VALUES (?, ?, ?, ?, ?, ?, ?)", [
+            ("สว่านกระแทกไร้สาย", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "Makita", None),
+            ("ประแจเลื่อน 12 นิ้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 5, "ปกติ", "-", None),
+            ("ตาข่ายตักขยะสระว่ายน้ำ", "อุปกรณ์สระว่ายน้ำ", "-", 1, "ชำรุด", "ด้ามหัก", None),
+            ("ชุดทดสอบคลอรีนและ pH", "อุปกรณ์สระว่ายน้ำ", "-", 1, "ปกติ", "เหลือครึ่งขวด", None),
+            ("คลอรีนผง 90%", "อุปกรณ์สระว่ายน้ำ", "-", 3, "ปกติ", "เหลือน้อยใกล้หมด", None)
         ])
         conn.commit()
         
@@ -111,7 +129,7 @@ if "logged_in" not in st.session_state:
     st.session_state.role = None
     st.session_state.username = ""
 
-# --- 1. LOGIN UI (แก้ไขรหัสแอดมิน และตัดข้อความทดสอบออก) ---
+# --- LOGIN UI ---
 if not st.session_state.logged_in:
     st.title("🔑 เข้าสู่ระบบจัดการอุปกรณ์")
     col_login, _ = st.columns([1, 2])
@@ -149,35 +167,40 @@ if st.sidebar.button("🔒 ออกจากระบบ"):
 st.title("🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์")
 st.markdown("---")
 
-# --- ALERT SYSTEM ---
+# --- ALERT SYSTEM (ดึงค่า Threshold จาก Database) ---
+setting_df = run_query("SELECT value FROM settings WHERE key='low_stock_threshold'")
+low_stock_limit = int(setting_df.iloc[0]['value']) if not setting_df.empty else 1
+
 st.subheader("🚨 การแจ้งเตือนระบบ")
 items_df = run_query("SELECT * FROM items")
-broken_items = items_df[items_df['status'] == 'ชำรุด']
-low_stock_items = items_df[items_df['quantity'] <= 1]
+abnormal_items = items_df[items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม'])]
+low_stock_items = items_df[items_df['quantity'] <= low_stock_limit]
 
 col_a1, col_a2 = st.columns(2)
 with col_a1:
-    if not broken_items.empty:
-        st.error(f"❌ **มีอุปกรณ์ชำรุด {len(broken_items)} รายการ:** " + ", ".join(broken_items['name'].tolist()))
+    if not abnormal_items.empty:
+        alert_text = []
+        for _, row in abnormal_items.iterrows():
+            alert_text.append(f"{row['name']} ({row['status']})")
+        st.error(f"❌ **มีอุปกรณ์ผิดปกติ/ถูกยืม {len(abnormal_items)} รายการ:** " + ", ".join(alert_text))
     else:
-        st.success("✅ ไม่มีอุปกรณ์ชำรุดในระบบ")
+        st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
 with col_a2:
     if not low_stock_items.empty:
-        st.warning(f"⚠️ **มีอุปกรณ์ใกล้หมด/จำนวนน้อย ({len(low_stock_items)} รายการ):** " + ", ".join(low_stock_items['name'].tolist()))
+        st.warning(f"⚠️ **มีอุปกรณ์เหลือน้อยกว่าหรือเท่ากับ {low_stock_limit} ชิ้น ({len(low_stock_items)} รายการ):** " + ", ".join(low_stock_items['name'].tolist()))
     else:
-        st.success("✅ อุปกรณ์ทุกชิ้นมีจำนวนเพียงพอ")
+        st.success(f"✅ อุปกรณ์ทุกชิ้นมีจำนวนมากกว่าเกณฑ์ขั้นต่ำ ({low_stock_limit} ชิ้น)")
 st.markdown("---")
 
 # --- DIVISION BY ROLE ---
 if st.session_state.role == "แอดมิน":
-    # ------------------ 3. จอแอดมิน (Admin Dashboard ปรับปรุงใหม่) ------------------
     admin_menu = st.tabs([
-        "📋 1. เพิ่ม-แก้อุปกรณ์ (รองรับรูปภาพ)", 
-        "📊 2. รายการตรวจเช็ค (รายวัน - เดือน - ปี)", 
-        "⚙️ 3. ตั้งค่ารหัสช่าง"
+        "📋 1. เพิ่ม-แก้อุปกรณ์", 
+        "📊 2. รายการตรวจเช็ค", 
+        "⚙️ 3. ตั้งค่าระบบ & รหัสช่าง"
     ])
     
-    # 1. เพิ่ม-แก้อุปกรณ์ (พร้อมอัปโหลดรูป)
+    # 1. เพิ่ม-แก้อุปกรณ์ (รองรับเลือกหมวดหมู่ย่อย "เครื่องมือช่าง")
     with admin_menu[0]:
         st.subheader("➕ เพิ่ม / แก้ไขอุปกรณ์ในระบบ")
         tab_add, tab_edit_del = st.tabs(["เพิ่มอุปกรณ์ใหม่", "จัดการรายการ (แก้ไข / ลบ)"])
@@ -185,9 +208,15 @@ if st.session_state.role == "แอดมิน":
         with tab_add:
             with st.form("add_item_form", clear_on_submit=True):
                 name = st.text_input("ชื่ออุปกรณ์ *")
-                category = st.selectbox("หมวดหมู่", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
+                category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
+                
+                # ข้อ 3: เลือกหัวข้อหลัก เครื่องมือช่าง หรือหมวดย่อย
+                subcategory = "-"
+                if category == "อุปกรณ์ช่าง":
+                    subcategory = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"])
+                    
                 quantity = st.number_input("จำนวน (ชิ้น)", min_value=1, value=1)
-                status = st.selectbox("สภาพเริ่มต้น", ["ปกติ", "ชำรุด"])
+                status = st.selectbox("สภาพเริ่มต้น", ["ปกติ", "ชำรุด", "สูญหาย", "ยืม"])
                 note = st.text_area("หมายเหตุ")
                 uploaded_file = st.file_uploader("อัปโหลดรูปภาพอุปกรณ์", type=["jpg", "jpeg", "png"])
                 
@@ -198,8 +227,8 @@ if st.session_state.role == "แอดมิน":
                             img_bytes = uploaded_file.read()
                             img_base64 = base64.b64encode(img_bytes).decode("utf-8")
                             
-                        run_query("INSERT INTO items (name, category, quantity, status, note, image) VALUES (?,?,?,?,?,?)",
-                                  (name, category, quantity, status, note, img_base64), is_select=False)
+                        run_query("INSERT INTO items (name, category, subcategory, quantity, status, note, image) VALUES (?,?,?,?,?,?,?)",
+                                  (name, category, subcategory, quantity, status, note, img_base64), is_select=False)
                         st.success("เพิ่มอุปกรณ์สำเร็จ!")
                         st.rerun()
                     else:
@@ -214,9 +243,19 @@ if st.session_state.role == "แอดมิน":
                     
                     with st.form(f"edit_form_{item_id_int}"):
                         e_name = st.text_input("ชื่ออุปกรณ์", value=current_item['name'])
-                        e_category = st.selectbox("หมวดหมู่", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if current_item['category']=="อุปกรณ์ช่าง" else 1)
+                        e_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if current_item['category']=="อุปกรณ์ช่าง" else 1)
+                        
+                        e_subcat = "-"
+                        if e_category == "อุปกรณ์ช่าง":
+                            sub_idx = 0 if current_item['subcategory'] == "เครื่องมือช่าง" else 1
+                            e_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
+                            
                         e_quantity = st.number_input("จำนวน", min_value=0, value=int(current_item['quantity']))
-                        e_status = st.selectbox("สถานะ", ["ปกติ", "ชำรุด"], index=0 if current_item['status']=="ปกติ" else 1)
+                        
+                        status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม"]
+                        curr_status_idx = status_list.index(current_item['status']) if current_item['status'] in status_list else 0
+                        e_status = st.selectbox("สถานะ", status_list, index=curr_status_idx)
+                        
                         e_note = st.text_area("หมายเหตุ", value=current_item['note'] if current_item['note'] else "")
                         
                         pil_img = get_pil_image_from_base64(current_item['image'])
@@ -235,8 +274,8 @@ if st.session_state.role == "แอดมิน":
                                 img_bytes = e_file.read()
                                 img_base64 = base64.b64encode(img_bytes).decode("utf-8")
                                 
-                            run_query("UPDATE items SET name=?, category=?, quantity=?, status=?, note=?, image=? WHERE id=?",
-                                      (e_name, e_category, e_quantity, e_status, e_note, img_base64, item_id_int), is_select=False)
+                            run_query("UPDATE items SET name=?, category=?, subcategory=?, quantity=?, status=?, note=?, image=? WHERE id=?",
+                                      (e_name, e_category, e_subcat, e_quantity, e_status, e_note, img_base64, item_id_int), is_select=False)
                             st.success("อัปเดตข้อมูลสำเร็จ!")
                             st.rerun()
                             
@@ -277,13 +316,41 @@ if st.session_state.role == "แอดมิน":
         else:
             st.info("ยังไม่มีประวัติการตรวจเช็คจากช่างในระบบ")
 
-    # 3. ตั้งค่ารหัส tech (ตามข้อ 2)
+    # 3. ตั้งค่าระบบ (กำหนดค่าแจ้งเตือนใกล้หมด + รีเซ็ตโควต้าช่าง + จัดการรหัสช่าง)
     with admin_menu[2]:
-        st.subheader("⚙️ สร้างและแก้ไขรหัสผ่านช่างทั่วไป")
-        col_t1, col_t2 = st.columns(2)
+        st.subheader("⚙️ ตั้งค่าระบบและบัญชีช่าง")
         
+        # 2. ตั้งค่าการแจ้งเตือนอุปกรณ์ใกล้หมด
+        st.markdown("#### ⚠️ ตั้งค่าเกณฑ์แจ้งเตือนอุปกรณ์ใกล้หมด")
+        with st.form("low_stock_setting_form"):
+            new_threshold = st.number_input("แจ้งเตือนเมื่อจำนวนน้อยกว่าหรือเท่ากับ (ชิ้น)", min_value=0, value=low_stock_limit)
+            if st.form_submit_button("บันทึกค่าเกณฑ์การแจ้งเตือน"):
+                run_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('low_stock_threshold', ?)", (str(new_threshold),), is_select=False)
+                st.success("บันทึกค่าการแจ้งเตือนสำเร็จ!")
+                st.rerun()
+                
+        st.markdown("---")
+        
+        # 4. ฟังก์ชัน Admin รีเซ็ตเพิ่มจำนวนการตรวจในแต่ละวันของช่าง
+        st.markdown("#### 🔄 รีเซ็ตโควต้าการตรวจเช็คประจำวันของช่าง")
+        tech_list_df = run_query("SELECT * FROM tech_users")
+        if not tech_list_df.empty:
+            with st.form("reset_quota_form"):
+                reset_tech_user = st.selectbox("เลือกช่างที่ต้องการรีเซ็ตโควต้า", tech_list_df['username'].tolist())
+                reset_date = st.date_input("เลือกวันที่ต้องการลบประวัติ/รีเซ็ตโควต้า", value=datetime.now().date())
+                if st.form_submit_button("รีเซ็ตโควต้าการตรวจวันนี้"):
+                    date_str = reset_date.strftime("%Y-%m-%d")
+                    run_query("DELETE FROM inspections WHERE tech_name = ? AND inspection_date LIKE ?", (reset_tech_user, f"{date_str}%"), is_select=False)
+                    st.success(f"รีเซ็ตโควต้าการตรวจของช่าง '{reset_tech_user}' สำหรับวันที่ {date_str} เรียบร้อยแล้ว สามารถเข้าตรวจใหม่ได้ทันที")
+                    st.rerun()
+                    
+        st.markdown("---")
+        
+        # จัดการรหัสผ่านช่าง
+        st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / ลบ)")
+        col_t1, col_t2 = st.columns(2)
         with col_t1:
-            st.markdown("#### ➕ เพิ่มบัญชีช่างใหม่")
+            st.markdown("**➕ เพิ่มบัญชีช่างใหม่**")
             with st.form("add_tech_form", clear_on_submit=True):
                 new_t_user = st.text_input("Username ช่าง")
                 new_t_pass = st.text_input("Password ช่าง", type="password")
@@ -299,8 +366,7 @@ if st.session_state.role == "แอดมิน":
                         st.error("กรุณากรอกข้อมูลให้ครบถ้วน")
                         
         with col_t2:
-            st.markdown("#### ✏️ แก้ไข / ลบบัญชีช่าง")
-            tech_list_df = run_query("SELECT * FROM tech_users")
+            st.markdown("**✏️ แก้ไข / ลบบัญชีช่าง**")
             if not tech_list_df.empty:
                 selected_tech_id = st.selectbox("เลือกบัญชีช่าง", tech_list_df['id'].astype(str) + " - " + tech_list_df['username'])
                 if selected_tech_id:
@@ -328,7 +394,7 @@ if st.session_state.role == "แอดมิน":
                                 st.rerun()
 
 elif st.session_state.role == "ช่างทั่วไป":
-    # ------------------ 4. จอสำหรับช่าง (Technician UI ปรับปรุงใหม่) ------------------
+    # ------------------ จอสำหรับช่าง (Technician UI) ------------------
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างทั่วไป")
     
     tech_category_choice = st.radio("เลือกหมวดหมู่การทำงาน", ["🔧 หมวดอุปกรณ์ช่าง", "🏊 หมวดอุปกรณ์สระว่ายน้ำ"], horizontal=True)
@@ -336,10 +402,10 @@ elif st.session_state.role == "ช่างทั่วไป":
     
     today_str = datetime.now().strftime("%Y-%m-%d")
     
-    # หมวดที่ 1: อุปกรณ์ช่าง (ติ๊กชำรุดรายครั้ง สูงสุด 3 ครั้ง/วัน)
+    # หมวดที่ 1: อุปกรณ์ช่าง (ข้อ 1: แยกเป็น ชำรุด / สูญหาย / ยืม และต้องเลือกหัวข้อให้ครบ ไม่งั้นจบขั้นตอนไม่ได้)
     if tech_category_choice == "🔧 หมวดอุปกรณ์ช่าง":
-        st.markdown("### 🔧 หมวดอุปกรณ์ช่าง (เช็คความชำรุด)")
-        st.write("คำชี้แจง: ทำเครื่องหมายติ๊กเลือกเฉพาะอุปกรณ์ที่ชำรุด (จำกัดตรวจสูงสุด 3 ครั้งต่อวัน)")
+        st.markdown("### 🔧 หมวดอุปกรณ์ช่าง (เช็คสถานะอุปกรณ์)")
+        st.write("คำชี้แจง: หากพบปัญหาให้อำนวยความสะดวกติ๊กเลือก และ **ต้องเลือกประเภทปัญหา (ชำรุด / สูญหาย / ยืม)** ให้ครบถ้วนจึงจะสามารถกดบันทึกได้ (จำกัดตรวจสูงสุด 3 ครั้ง/วัน)")
         
         today_inspections = run_query("SELECT COUNT(*) as cnt FROM inspections WHERE tech_name = ? AND category = 'อุปกรณ์ช่าง' AND inspection_date LIKE ?", 
                                       (st.session_state.username, f"{today_str}%"))
@@ -348,28 +414,51 @@ elif st.session_state.role == "ช่างทั่วไป":
         st.info(f"📌 วันนี้คุณทำการส่งตรวจหมวดอุปกรณ์ช่างไปแล้ว **{check_count}/3 ครั้ง**")
         
         if check_count >= 3:
-            st.error("⚠️ คุณได้ทำการตรวจเช็คหมวดอุปกรณ์ช่างครบโควต้า 3 ครั้งสำหรับวันนี้แล้ว")
+            st.error("⚠️ คุณได้ทำการตรวจเช็คหมวดอุปกรณ์ช่างครบโควต้า 3 ครั้งสำหรับวันนี้แล้ว (ต้องรอแอดมินรีเซ็ตโควต้าให้หากต้องการตรวจเพิ่ม)")
         else:
             tools_df = items_df[items_df['category'] == 'อุปกรณ์ช่าง']
             if not tools_df.empty:
                 with st.form("tech_tools_form"):
-                    tool_statuses = {}
+                    item_reports = {}
+                    
                     for _, row in tools_df.iterrows():
-                        is_broken_def = True if row['status'] == 'ชำรุด' else False
-                        is_broken = st.checkbox(f"รหัส #{row['id']} - **{row['name']}** (คงเหลือ: {row['quantity']})", value=is_broken_def, key=f"t_item_{row['id']}")
-                        tool_statuses[row['id']] = "ชำรุด" if is_broken else "ปกติ"
+                        st.markdown(f"**รหัส #{row['id']} - {row['name']}** *(หมวดย่อย: {row['subcategory']})* | คงเหลือ: {row['quantity']}")
+                        is_flagged = st.checkbox(f"แจ้งปัญหาอุปกรณ์ชิ้นนี้", key=f"flag_{row['id']}")
                         
-                    if st.form_submit_button(f"ยืนยันส่งผลตรวจ (ครั้งที่ {check_count + 1})"):
-                        now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        for item_id, st_val in tool_statuses.items():
-                            run_query("UPDATE items SET status = ? WHERE id = ?", (st_val, item_id), is_select=False)
+                        issue_type = "ปกติ"
+                        if is_flagged:
+                            issue_type = st.selectbox(
+                                f"เลือกประเภทปัญหาสำหรับ {row['name']} *", 
+                                ["-- กรุณาเลือกประเภทปัญหา --", "ชำรุด", "สูญหาย", "ยืม"], 
+                                key=f"issue_type_{row['id']}"
+                            )
+                        item_reports[row['id']] = {"flagged": is_flagged, "status": issue_type}
+                        st.markdown("---")
+                        
+                    submit_clicked = st.form_submit_button(f"ยืนยันส่งผลตรวจ (ครั้งที่ {check_count + 1})")
+                    
+                    if submit_clicked:
+                        # ตรวจสอบว่าถ้าติ๊กแล้วต้องเลือกหัวข้อให้ครบถ้วน
+                        has_error = False
+                        for item_id, data in item_reports.items():
+                            if data["flagged"] and data["status"] == "-- กรุณาเลือกประเภทปัญหา --":
+                                has_error = True
+                                break
+                                
+                        if has_error:
+                            st.error("❌ กรุณาเลือกประเภทปัญหา (ชำรุด / สูญหาย / ยืม) ให้ครบถ้วนสำหรับทุกรายการที่คุณทำเครื่องหมายไว้")
+                        else:
+                            now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            for item_id, data in item_reports.items():
+                                final_st = data["status"] if data["flagged"] else "ปกติ"
+                                run_query("UPDATE items SET status = ? WHERE id = ?", (final_st, item_id), is_select=False)
+                                
+                            summary_note = f"ตรวจครั้งที่ {check_count+1}: อัปเดตสถานะอุปกรณ์ช่าง"
+                            run_query("INSERT INTO inspections (tech_name, category, inspection_date, session_num, details) VALUES (?,?,?,?,?)",
+                                      (st.session_state.username, 'อุปกรณ์ช่าง', now_time, check_count+1, summary_note), is_select=False)
                             
-                        summary_note = f"ตรวจครั้งที่ {check_count+1}: อัปเดตสถานะอุปกรณ์ช่าง"
-                        run_query("INSERT INTO inspections (tech_name, category, inspection_date, session_num, details) VALUES (?,?,?,?,?)",
-                                  (st.session_state.username, 'อุปกรณ์ช่าง', now_time, check_count+1, summary_note), is_select=False)
-                        
-                        st.success("บันทึกผลการตรวจสอบอุปกรณ์ช่างเรียบร้อยแล้ว!")
-                        st.rerun()
+                            st.success("บันทึกผลการตรวจสอบอุปกรณ์ช่างเรียบร้อยแล้ว!")
+                            st.rerun()
             else:
                 st.info("ไม่มีอุปกรณ์ช่างในระบบ")
                 
@@ -384,7 +473,6 @@ elif st.session_state.role == "ช่างทั่วไป":
                 updated_quantities = {}
                 
                 for _, row in pool_df.iterrows():
-                    # ใช้ Expander ให้คลิกดูชื่อและรูปภาพได้สะดวกบนมือถือ
                     with st.expander(f"📦 {row['name']} (คงเหลือปัจจุบัน: {row['quantity']} ชิ้น)"):
                         pil_img = get_pil_image_from_base64(row['image'])
                         if pil_img:
