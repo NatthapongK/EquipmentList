@@ -41,7 +41,6 @@ def init_db():
         )
     ''')
     
-    # ตรวจสอบและเพิ่ม column ที่จำเป็น
     c.execute("PRAGMA table_info(transactions)")
     tx_cols = [col[1] for col in c.fetchall()]
     if 'borrower_image' not in tx_cols:
@@ -86,6 +85,7 @@ def init_db():
         )
     ''')
     c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('low_stock_threshold', '1')")
+    c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('global_daily_quota', '3')")
     conn.commit()
     
     # ใส่ข้อมูลเริ่มต้นหากระบบยังว่างอยู่
@@ -96,9 +96,9 @@ def init_db():
             ("ประแจเลื่อน 12 นิ้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 5, "ปกติ", "-", None),
             ("ตู้เชื่อมไฟฟ้า portable", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
             ("บันไดอลูมิเนียม 8 ฟุต", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 3, "ปกติ", "-", None),
-            ("ตาข่ายตักขยะสระว่ายน้ำ", "อุปกรณ์สระว่ายน้ำ", "-", 1, "ชำรุด", "ด้ามหัก", None),
-            ("ชุดทดสอบคลอรีนและ pH", "อุปกรณ์สระว่ายน้ำ", "-", 1, "ปกติ", "เหลือครึ่งขวด", None),
-            ("คลอรีนผง 90%", "อุปกรณ์สระว่ายน้ำ", "-", 3, "ปกติ", "เหลือน้อยใกล้หมด", None)
+            ("ตาข่ายตักขยะสระว่ายน้ำ", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 1, "ชำรุด", "ด้ามหัก", None),
+            ("ชุดทดสอบคลอรีนและ pH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 1, "ปกติ", "เหลือครึ่งขวด", None),
+            ("คลอรีนผง 90%", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "เหลือน้อยใกล้หมด", None)
         ])
         conn.commit()
         
@@ -138,11 +138,25 @@ def get_pil_image_from_base64(img_base64):
     except:
         return None
 
-# --- SESSION STATE FOR LOGIN ---
+# --- SESSION STATE & 24H PERSISTENCE LOGIN (ข้อ 4) ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
     st.session_state.username = ""
+
+# ตรวจสอบ query_params เพื่อคงสถานะ Login นาน 24 ชั่วโมง
+qp = st.query_params
+if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "true":
+    try:
+        login_time = float(qp.get("login_time", 0))
+        if datetime.now().timestamp() - login_time < 24 * 3600:
+            st.session_state.logged_in = True
+            st.session_state.role = qp.get("role", "")
+            st.session_state.username = qp.get("username", "")
+        else:
+            st.query_params.clear()
+    except:
+        st.query_params.clear()
 
 # --- LOGIN UI ---
 if not st.session_state.logged_in:
@@ -155,28 +169,40 @@ if not st.session_state.logged_in:
         tech_df = run_query("SELECT * FROM tech_users")
         
         if st.button("เข้าสู่ระบบ", type="primary"):
+            role_val = ""
+            user_val = ""
             if username == "Natthapongk" and password == "0891148075":
-                st.session_state.logged_in = True
-                st.session_state.role = "แอดมิน"
-                st.session_state.username = "Natthapongk"
-                st.rerun()
+                role_val = "แอดมิน"
+                user_val = "Natthapongk"
             else:
                 matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)]
                 if not matched_tech.empty:
-                    st.session_state.logged_in = True
-                    st.session_state.role = "ช่างทั่วไป"
-                    st.session_state.username = username
-                    st.rerun()
-                else:
-                    st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
+                    role_val = "ช่างทั่วไป"
+                    user_val = username
+            
+            if role_val:
+                st.session_state.logged_in = True
+                st.session_state.role = role_val
+                st.session_state.username = user_val
+                # บันทึกสถานะลง query_params เพื่อคงอยู่ 24 ชั่วโมง
+                st.query_params["logged_in"] = "true"
+                st.query_params["role"] = role_val
+                st.query_params["username"] = user_val
+                st.query_params["login_time"] = str(datetime.now().timestamp())
+                st.rerun()
+            else:
+                st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
-# --- MAIN APP LOGGED IN ---
+# --- MAIN APP LOGGED IN (พร้อมเมนู Logout ใน Sidebar - ข้อ 4) ---
 st.sidebar.title(f"👤 {st.session_state.username}")
 st.sidebar.write(f"สิทธิ์การใช้งาน: **{st.session_state.role}**")
-if st.sidebar.button("🔒 ออกจากระบบ"):
+st.sidebar.markdown("---")
+if st.sidebar.button("🚪 ออกจากระบบ (Logout)", type="primary"):
     st.session_state.logged_in = False
     st.session_state.role = None
+    st.session_state.username = ""
+    st.query_params.clear()
     st.rerun()
 
 st.title("🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์")
@@ -296,17 +322,16 @@ def render_borrow_return_system():
 
 # --- DIVISION BY ROLE ---
 if st.session_state.role == "แอดมิน":
+    # จัดเรียงเมนูใหม่ตามข้อ 2
     admin_menu = st.tabs([
-        "🔄 1. ยืม-คืน เครื่องมือ-อุปกรณ์", 
-        "📋 2. จัดการอุปกรณ์ทั้งหมด", 
-        "📊 3. รายงานการตรวจเช็ค", 
+        "📋 1. จัดการอุปกรณ์ทั้งหมด", 
+        "📊 2. รายงานการตรวจเช็ค", 
+        "🔄 3. ยืม-คืน เครื่องมือ-อุปกรณ์", 
         "⚙️ 4. ตั้งค่าระบบ & รหัสช่าง"
     ])
     
+    # --- 1. จัดการอุปกรณ์ทั้งหมด (รวมเพิ่ม/แก้ไข/ลบ และค้นหา >50 รายการ) ---
     with admin_menu[0]:
-        render_borrow_return_system()
-
-    with admin_menu[1]:
         st.subheader("📋 จัดการอุปกรณ์ทั้งหมดในระบบ")
         tab_list, tab_add_edit = st.tabs(["🔍 ดูรายการทั้งหมด", "➕ เพิ่ม/แก้ไขอุปกรณ์"])
         
@@ -337,10 +362,15 @@ if st.session_state.role == "แอดมิน":
             with sub_a:
                 with st.form("add_item_form_new", clear_on_submit=True):
                     name = st.text_input("ชื่ออุปกรณ์ *")
-                    category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
-                    subcategory = "-"
+                    
+                    # ข้อ 1: เลือกหมวดหมู่หลักก่อน ถ้าอุปกรณ์ช่างเลือกย่อยได้ ถ้าสระว่ายน้ำบังคับเป็นเคมีภัณฑ์
+                    category = st.selectbox("หมวดหมู่หลัก *", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
                     if category == "อุปกรณ์ช่าง":
-                        subcategory = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"])
+                        subcategory = st.selectbox("หมวดหมู่ย่อย *", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"])
+                    else:
+                        subcategory = "เคมีภัณฑ์"
+                        st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
+                        
                     quantity = st.number_input("จำนวน (ชิ้น)", min_value=1, value=1)
                     status = st.selectbox("สภาพเริ่มต้น", ["ปกติ", "ชำรุด", "สูญหาย"])
                     note = st.text_area("หมายเหตุ")
@@ -369,10 +399,14 @@ if st.session_state.role == "แอดมิน":
                         with st.form(f"edit_form_{item_id_int}"):
                             e_name = st.text_input("ชื่ออุปกรณ์", value=current_item['name'])
                             e_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if current_item['category']=="อุปกรณ์ช่าง" else 1)
-                            e_subcat = "-"
+                            
                             if e_category == "อุปกรณ์ช่าง":
                                 sub_idx = 0 if current_item['subcategory'] == "เครื่องมือช่าง" else 1
                                 e_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
+                            else:
+                                e_subcat = "เคมีภัณฑ์"
+                                st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
+                                
                             e_quantity = st.number_input("จำนวน", min_value=0, value=int(current_item['quantity']))
                             status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม"]
                             e_status = st.selectbox("สถานะ", status_list, index=status_list.index(current_item['status']) if current_item['status'] in status_list else 0)
@@ -398,9 +432,9 @@ if st.session_state.role == "แอดมิน":
                                 st.success("ลบเรียบร้อยแล้ว!")
                                 st.rerun()
 
-    # --- 3. รายงานการตรวจเช็ค (พร้อมระบบแสดงรูปถ่ายรวมหน้างาน) ---
-    with admin_menu[2]:
-        st.subheader("📊 รายงานการตรวจเช็คสภาพอุปกรณ์")
+    # --- 2. รายงานการตรวจเช็ค ---
+    with admin_menu[1]:
+        st.subheader("📊 รายการตรวจเช็คสภาพอุปกรณ์")
         report_type = st.radio("เลือกมุมมองรายงาน", ["รายวัน (Daily)", "รายเดือน (Monthly)", "รายปี (Yearly)", "ประวัติทั้งหมด"], horizontal=True)
         inspections_df = run_query("SELECT * FROM inspections ORDER BY id DESC")
         
@@ -443,8 +477,15 @@ if st.session_state.role == "แอดมิน":
         else:
             st.info("ยังไม่มีประวัติการตรวจเช็คจากช่างในระบบ")
 
+    # --- 3. ยืม-คืน เครื่องมือ-อุปกรณ์ ---
+    with admin_menu[2]:
+        render_borrow_return_system()
+
+    # --- 4. ตั้งค่าระบบ & รหัสช่าง ---
     with admin_menu[3]:
         st.subheader("⚙️ ตั้งค่าระบบและบัญชีช่าง")
+        
+        # ตั้งค่าเกณฑ์แจ้งเตือน
         st.markdown("#### ⚠️ ตั้งค่าเกณฑ์แจ้งเตือนอุปกรณ์ทั่วไปใกล้หมด")
         with st.form("low_stock_setting_form"):
             new_threshold = st.number_input("แจ้งเตือนเมื่อจำนวนน้อยกว่าหรือเท่ากับ (ชิ้น)", min_value=0, value=low_stock_limit)
@@ -454,19 +495,33 @@ if st.session_state.role == "แอดมิน":
                 st.rerun()
                 
         st.markdown("---")
-        st.markdown("#### 🔄 รีเซ็ตโควต้าการตรวจเช็คประจำวันของช่าง")
-        tech_list_df = run_query("SELECT * FROM tech_users")
-        if not tech_list_df.empty:
-            with st.form("reset_quota_form"):
-                reset_tech_user = st.selectbox("เลือกช่างที่ต้องการรีเซ็ตโควต้า", tech_list_df['username'].tolist())
-                reset_date = st.date_input("เลือกวันที่ต้องการรีเซ็ตโควต้า", value=datetime.now().date())
-                if st.form_submit_button("รีเซ็ตโควต้าการตรวจวันนี้"):
-                    date_str = reset_date.strftime("%Y-%m-%d")
-                    run_query("DELETE FROM inspections WHERE tech_name = ? AND inspection_date LIKE ?", (reset_tech_user, f"{date_str}%"), is_select=False)
-                    st.success(f"รีเซ็ตโควต้าการตรวจของช่าง '{reset_tech_user}' สำหรับวันที่ {date_str} เรียบร้อยแล้ว")
-                    st.rerun()
-                    
+        
+        # ตั้งค่าโควต้าการตรวจเช็คประจำวันแบบนับรวมทุกคน (ข้อ 3)
+        st.markdown("#### 🔄 ตั้งค่าและเพิ่มโควต้าการตรวจเช็คประจำวัน (นับรวมทุกคน)")
+        q_setting = run_query("SELECT value FROM settings WHERE key='global_daily_quota'")
+        current_base_quota = int(q_setting.iloc[0]['value']) if not q_setting.empty else 3
+        
+        with st.form("global_quota_form"):
+            new_base_quota = st.number_input("กำหนดโควต้ารอบตรวจมาตรฐานต่อวัน (รอบ)", min_value=1, value=current_base_quota)
+            
+            # เพิ่มโควต้าเฉพาะวัน
+            reset_date = st.date_input("เลือกวันที่ต้องการเพิ่มรอบตรวจพิเศษ", value=datetime.now().date())
+            date_str = reset_date.strftime("%Y-%m-%d")
+            
+            extra_df = run_query("SELECT value FROM settings WHERE key=?", (f"extra_quota_{date_str}",))
+            current_extra = int(extra_df.iloc[0]['value']) if not extra_df.empty else 0
+            
+            add_more_quota = st.number_input("ระบุจำนวนรอบที่ต้องการเพิ่มให้ตรวจอีกสำหรับวันนี้ (รอบพิเศษ)", min_value=0, value=current_extra)
+            
+            if st.form_submit_button("บันทึกการตั้งค่าโควต้า"):
+                run_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('global_daily_quota', ?)", (str(new_base_quota),), is_select=False)
+                run_query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (f"extra_quota_{date_str}", str(add_more_quota)), is_select=False)
+                st.success(f"บันทึกการตั้งค่าโควต้าและเพิ่มรอบตรวจพิเศษสำหรับวันที่ {date_str} เรียบร้อยแล้ว!")
+                st.rerun()
+                
         st.markdown("---")
+        
+        # จัดการบัญชีช่าง
         st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / ลบ)")
         col_t1, col_t2 = st.columns(2)
         with col_t1:
@@ -487,6 +542,7 @@ if st.session_state.role == "แอดมิน":
                         
         with col_t2:
             st.markdown("**✏️ แก้ไข / ลบบัญชีช่าง**")
+            tech_list_df = run_query("SELECT * FROM tech_users")
             if not tech_list_df.empty:
                 selected_tech_id = st.selectbox("เลือกบัญชีช่าง", tech_list_df['id'].astype(str) + " - " + tech_list_df['username'])
                 if selected_tech_id:
@@ -527,14 +583,23 @@ elif st.session_state.role == "ช่างทั่วไป":
             st.markdown("### 🔧 หมวดอุปกรณ์ช่าง (คลิกชื่อเพื่อดูรูปภาพ & เช็คสถานะ)")
             st.write("คำชี้แจง: คลิกที่ชื่ออุปกรณ์เพื่อดูรูปภาพ และทำเครื่องหมายแจ้งปัญหา (ชำรุด หรือ สูญหาย)")
             
-            today_inspections = run_query("SELECT COUNT(*) as cnt FROM inspections WHERE tech_name = ? AND category = 'อุปกรณ์ช่าง' AND inspection_date LIKE ?", 
-                                          (st.session_state.username, f"{today_str}%"))
-            check_count = int(today_inspections.iloc[0]['cnt']) if not today_inspections.empty else 0
+            # โควต้ารวมทั้งระบบต่อวัน (ข้อ 3)
+            global_inspections = run_query("SELECT COUNT(*) as cnt FROM inspections WHERE category = 'อุปกรณ์ช่าง' AND inspection_date LIKE ?", 
+                                          (f"{today_str}%",))
+            global_count = int(global_inspections.iloc[0]['cnt']) if not global_inspections.empty else 0
             
-            st.info(f"📌 วันนี้ส่งตรวจหมวดอุปกรณ์ช่างไปแล้ว **{check_count}/3 ครั้ง**")
+            q_setting = run_query("SELECT value FROM settings WHERE key='global_daily_quota'")
+            base_quota = int(q_setting.iloc[0]['value']) if not q_setting.empty else 3
             
-            if check_count >= 3:
-                st.error("⚠️ ครบโควต้า 3 ครั้งสำหรับวันนี้แล้ว (หากต้องการตรวจเพิ่ม ให้ติดต่อแอดมินเพื่อรีเซ็ต)")
+            extra_df = run_query("SELECT value FROM settings WHERE key=?", (f"extra_quota_{today_str}",))
+            extra_quota = int(extra_df.iloc[0]['value']) if not extra_df.empty else 0
+            
+            total_allowed = base_quota + extra_quota
+            
+            st.info(f"📌 โควตารวมการตรวจหมวดอุปกรณ์ช่างของวันนี้: ใช้ไปแล้ว **{global_count} / {total_allowed} ครั้ง** (นับรวมทุกคนในระบบ)")
+            
+            if global_count >= total_allowed:
+                st.error("⚠️ ครบโควตารอบการตรวจสำหรับวันนี้แล้ว (กรุณาติดต่อแอดมินเพื่อเพิ่มรอบตรวจพิเศษ)")
             else:
                 tools_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['quantity'] > 0)]
                 
@@ -584,7 +649,7 @@ elif st.session_state.role == "ช่างทั่วไป":
                         st.rerun()
                         
                     st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button(f"💾 ยืนยันส่งผลตรวจ (ครั้งที่ {check_count + 1})", type="primary", use_container_width=True):
+                    if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
                         has_error = False
                         for item_id, data in item_reports.items():
                             if data["flagged"] and data["status"] == "-- เลือกประเภท --":
@@ -600,9 +665,9 @@ elif st.session_state.role == "ช่างทั่วไป":
                                 run_query("UPDATE items SET status = ? WHERE id = ?", (final_st, item_id), is_select=False)
                                 
                             photos_str = "|||".join(uploaded_photos_b64) if uploaded_photos_b64 else None
-                            summary_note = f"ตรวจครั้งที่ {check_count+1}: อัปเดตสถานะอุปกรณ์ช่าง"
+                            summary_note = f"ตรวจรอบที่ {global_count+1}: อัปเดตสถานะอุปกรณ์ช่าง"
                             run_query("INSERT INTO inspections (tech_name, category, inspection_date, session_num, details, photos) VALUES (?,?,?,?,?,?)",
-                                      (st.session_state.username, 'อุปกรณ์ช่าง', now_time, check_count+1, summary_note, photos_str), is_select=False)
+                                      (st.session_state.username, 'อุปกรณ์ช่าง', now_time, global_count+1, summary_note, photos_str), is_select=False)
                             
                             st.success("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
                             st.rerun()
