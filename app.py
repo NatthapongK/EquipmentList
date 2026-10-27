@@ -6,7 +6,7 @@ import base64
 import html as _html
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ Pro", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ", page_icon="🛠️", layout="wide")
 
 # รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
@@ -47,7 +47,7 @@ DEFAULT_INITIAL_ITEMS = [
     ("เครื่องเจียร4นิ้ว(ลูกหมู)", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("สว่านกระแทก", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("ชุดเครื่องมือช่างพื้นฐาน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    ("บันได3ขั้น", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+    ("บันได3ขั้น", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("เครื่องตรวจเช็กเต้ารับไฟฟ้า (Socket Tester)", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("ไขควงแฉก", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 4, "ปกติ", "-", None),
     ("ไขควงแบน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
@@ -375,7 +375,7 @@ if not st.session_state.logged_in:
             role_val = ""
             user_val = ""
             if username == "Natthapongk" and password == "0891148075":
-                role_val = "แอดมิน"
+                role_val = "ผู้ออกแบบ/ดูแลระบบ"
                 user_val = "Natthapongk"
             else:
                 matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)]
@@ -416,7 +416,7 @@ with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & �
 
 st.markdown(
     f'<div class="app-hero"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
-    f'<div class="s">อุปกรณ์ช่าง & สระว่ายน้ำ · {datetime.now().strftime("%d/%m/%Y")}</div></div>'
+    f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {datetime.now().strftime("%d/%m/%Y")}</div></div>'
     f'<span class="chip">{esc(st.session_state.role)}</span></div>',
     unsafe_allow_html=True)
 
@@ -974,7 +974,7 @@ if st.session_state.role == "แอดมิน":
                                 st.success("ลบบัญชีช่างเรียบร้อยแล้ว!")
                                 st.rerun()
 
-elif st.session_state.role == "ช่างทั่วไป":
+elif st.session_state.role == "ช่างประจำอาคาร":
     # ------------------ จอสำหรับช่าง (Technician UI) ------------------
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างทั่วไป")
     
