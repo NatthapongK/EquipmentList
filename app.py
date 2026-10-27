@@ -207,7 +207,7 @@ def init_db():
 
 init_db()
 
-# --- THEME / UI HELPERS (Light Theme + Hide Header/Footer/Deploy icons & Status Indicator) ---
+# --- THEME / UI HELPERS (Light Theme + Hide All Streamlit Badges & Status Widgets) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
@@ -221,12 +221,15 @@ st.markdown("""
 }
 .stApp{background:var(--bg); color:var(--ink);}
 
+/* ซ่อนแถบ GitHub/Streamlit header และไอคอนสถานะ/โลโก้มุมขวาล่างทุกรูปแบบอย่างเด็ดขาด */
 header[data-testid="stHeader"] {display: none !important;}
 footer {visibility: hidden !important; display: none !important;}
 #MainMenu {visibility: hidden !important; display: none !important;}
 .stDeployButton {display: none !important;}
-/* ซ่อนไอคอนสถานะ (เขียว/แดง) ด้านล่างขวาของ Streamlit */
-[data-testid="stStatusWidget"] {display: none !important;}
+[data-testid="stStatusWidget"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
+div[class*="viewerBadge"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
+a[href*="streamlit.io"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
+.styles_viewerBadge__1yG5_ {display: none !important;}
 
 .block-container{padding-top:1.5rem; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
