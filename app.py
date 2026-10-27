@@ -26,7 +26,7 @@ def init_db():
         )
     ''')
     
-    # 2. ตารางยืม-คืน (เพิ่มฟิลด์ borrower_image สำหรับบันทึกรูปถ่ายผู้ยืม/หลักฐาน)
+    # 2. ตารางยืม-คืน
     c.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,7 +110,11 @@ def run_query(query, params=(), is_select=True):
         res = c.fetchall()
         cols = [d[0] for d in c.description]
         conn.close()
-        return pd.DataFrame(res, columns=cols)
+        df = pd.DataFrame(res, columns=cols)
+        # ป้องกัน Type Error ของ quantity
+        if 'quantity' in df.columns:
+            df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype(int)
+        return df
     conn.commit()
     conn.close()
 
@@ -169,17 +173,14 @@ if st.sidebar.button("🔒 ออกจากระบบ"):
 st.title("🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์")
 st.markdown("---")
 
-# --- ALERT SYSTEM (ข้อ 1: ตัดหมวดเครื่องมือช่าง ออกจากการแจ้งเตือนเหลือน้อย) ---
+# --- ALERT SYSTEM ---
 setting_df = run_query("SELECT value FROM settings WHERE key='low_stock_threshold'")
 low_stock_limit = int(setting_df.iloc[0]['value']) if not setting_df.empty else 1
 
 st.subheader("🚨 การแจ้งเตือนระบบ")
 items_df = run_query("SELECT * FROM items")
 
-# ดึงเฉพาะรายการที่ชำรุด สูญหาย หรือถูกยืม
 abnormal_items = items_df[items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม'])]
-
-# ข้อ 1: กรองหมวด 'เครื่องมือช่าง' ออกจากการแจ้งเตือนจำนวนเหลือน้อย
 non_tools_df = items_df[items_df['subcategory'] != 'เครื่องมือช่าง']
 low_stock_items = non_tools_df[non_tools_df['quantity'] <= low_stock_limit]
 
@@ -194,25 +195,23 @@ with col_a2:
     if not low_stock_items.empty:
         st.warning(f"⚠️ **มีอุปกรณ์ทั่วไปเหลือน้อยกว่า/เท่ากับ {low_stock_limit} ชิ้น ({len(low_stock_items)} รายการ):** " + ", ".join(low_stock_items['name'].tolist()))
     else:
-        st.success(f"✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ (ยกเว้นหมวดเครื่องมือช่าง)")
+        st.success(f"✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 st.markdown("---")
 
 # --- DIVISION BY ROLE ---
 if st.session_state.role == "แอดมิน":
     admin_menu = st.tabs([
         "🔄 1. ยืม-คืน เครื่องมือ-อุปกรณ์", 
-        "📋 2. จัดการอุปกรณ์ทั้งหมด (ค้นหา & แสดงผล)", 
+        "📋 2. จัดการอุปกรณ์ทั้งหมด", 
         "📊 3. รายงานการตรวจเช็ค", 
         "⚙️ 4. ตั้งค่าระบบ & รหัสช่าง"
     ])
     
-    # --- ข้อ 3: ระบบ ยืม-คืน เครื่องมือ-อุปกรณ์ (มีรูปถ่าย คนยืม วันที่ ตัดจำนวนจากระบบ) ---
     with admin_menu[0]:
         st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
         sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
         
         with sub_borrow:
-            # ดึงเฉพาะอุปกรณ์ที่จำนวนคงเหลือ > 0
             available_items = items_df[items_df['quantity'] > 0]
             if not available_items.empty:
                 with st.form("admin_borrow_form", clear_on_submit=True):
@@ -226,24 +225,19 @@ if st.session_state.role == "แอดมิน":
                             selected_id = item_dict[sel_item_label]
                             item_info = items_df[items_df['id'] == selected_id].iloc[0]
                             
-                            # แปลงรูปภาพ Base64
                             b_img_bytes = borrow_img_file.read()
                             b_img_b64 = base64.b64encode(b_img_bytes).decode("utf-8")
-                            
                             now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
                             
-                            # 1. บันทึก Transaction
                             run_query("INSERT INTO transactions (item_id, borrower_name, borrow_date, status, borrower_image) VALUES (?,?,?,?,?)",
                                       (selected_id, borrower_name, now_time, "กำลังยืม", b_img_b64), is_select=False)
                             
-                            # 2. ตัดจำนวนคงเหลือลง 1 ชิ้น
-                            new_qty = item_info['quantity'] - 1
-                            # ถ้าจำนวนกลายเป็น 0 ปรับ status เป็น 'ยืม' (ตัดออกจากระบบเช็คช่าง)
+                            new_qty = int(item_info['quantity']) - 1
                             new_status = 'ยืม' if new_qty == 0 else item_info['status']
                             
                             run_query("UPDATE items SET quantity = ?, status = ? WHERE id = ?", (new_qty, new_status, selected_id), is_select=False)
                             
-                            st.success(f"บันทึกการยืม {item_info['name']} โดยคุณ {borrower_name} เรียบร้อยแล้ว (ตัดสต็อกเหลือ {new_qty} ชิ้น)")
+                            st.success(f"บันทึกการยืม {item_info['name']} เรียบร้อยแล้ว")
                             st.rerun()
                         else:
                             st.error("กรุณากรอกชื่อผู้ยืมและอัปโหลดรูปถ่ายผู้ยืม/หลักฐานการยืมให้ครบถ้วน")
@@ -274,15 +268,13 @@ if st.session_state.role == "แอดมิน":
                             st.write(f"**วันที่ยืม:** {row['borrow_date']}")
                             if st.button(f"✅ รับคืนอุปกรณ์รายการนี้", key=f"ret_btn_{row['tx_id']}"):
                                 now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-                                # อัปเดต Transaction
                                 run_query("UPDATE transactions SET return_date = ?, status = 'คืนแล้ว' WHERE id = ?", (now_time, row['tx_id']), is_select=False)
                                 
-                                # คืนจำนวนสต็อก +1 และคืนสถานะเป็นปกติ
                                 current_item = items_df[items_df['id'] == row['item_id']].iloc[0]
-                                new_q = current_item['quantity'] + 1
+                                new_q = int(current_item['quantity']) + 1
                                 run_query("UPDATE items SET quantity = ?, status = 'ปกติ' WHERE id = ?", (new_q, row['item_id']), is_select=False)
                                 
-                                st.success(f"รับคืน {row['item_name']} เรียบร้อยแล้ว (คืนสต็อกเป็น {new_q} ชิ้น)")
+                                st.success(f"รับคืน {row['item_name']} เรียบร้อยแล้ว")
                                 st.rerun()
             else:
                 st.info("ไม่มีรายการอุปกรณ์ที่กำลังถูกยืมในขณะนี้")
@@ -296,13 +288,11 @@ if st.session_state.role == "แอดมิน":
             """)
             st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-    # --- ข้อ 4: จัดการอุปกรณ์ทั้งหมด (รองรับ >50 รายการ ด้วยระบบค้นหา กรอง และ Pagination/Scroll) ---
     with admin_menu[1]:
         st.subheader("📋 จัดการอุปกรณ์ทั้งหมดในระบบ")
-        tab_list, tab_add_edit = st.tabs(["🔍 ดูรายการทั้งหมด (ค้นหา/กรอง)", "➕ เพิ่ม/แก้ไขอุปกรณ์"])
+        tab_list, tab_add_edit = st.tabs(["🔍 ดูรายการทั้งหมด", "➕ เพิ่ม/แก้ไขอุปกรณ์"])
         
         with tab_list:
-            # เครื่องมือค้นหาและกรองเพื่อรองรับ >50 รายการ
             c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
             search_kw = c_f1.text_input("🔍 ค้นหาชื่ออุปกรณ์...", placeholder="พิมพ์ชื่ออุปกรณ์เพื่อค้นหา")
             cat_filter = c_f2.selectbox("กรองตามหมวดหลัก", ["ทั้งหมด", "อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
@@ -317,8 +307,6 @@ if st.session_state.role == "แอดมิน":
                 filtered_df = filtered_df[filtered_df['status'] == status_filter]
                 
             st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ")
-            
-            # ตาราง Dataframe แบบโต้ตอบได้
             st.dataframe(
                 filtered_df[['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'note']], 
                 use_container_width=True, 
@@ -392,9 +380,8 @@ if st.session_state.role == "แอดมิน":
                                 st.success("ลบเรียบร้อยแล้ว!")
                                 st.rerun()
 
-    # --- 3. รายการตรวจเช็ค ---
     with admin_menu[2]:
-        st.subheader("📊 รายการตรวจเช็คสภาพอุปกรณ์ (รายวัน - เดือน - ปี)")
+        st.subheader("📊 รายการตรวจเช็คสภาพอุปกรณ์")
         report_type = st.radio("เลือกมุมมองรายงาน", ["รายวัน (Daily)", "รายเดือน (Monthly)", "รายปี (Yearly)", "ประวัติทั้งหมด"], horizontal=True)
         inspections_df = run_query("SELECT * FROM inspections ORDER BY id DESC")
         
@@ -418,10 +405,9 @@ if st.session_state.role == "แอดมิน":
         else:
             st.info("ยังไม่มีประวัติการตรวจเช็คจากช่างในระบบ")
 
-    # --- 4. ตั้งค่าระบบ & รหัสช่าง ---
     with admin_menu[3]:
         st.subheader("⚙️ ตั้งค่าระบบและบัญชีช่าง")
-        st.markdown("#### ⚠️ ตั้งค่าเกณฑ์แจ้งเตือนอุปกรณ์ทั่วไปใกล้หมด (ไม่รวมเครื่องมือช่าง)")
+        st.markdown("#### ⚠️ ตั้งค่าเกณฑ์แจ้งเตือนอุปกรณ์ทั่วไปใกล้หมด")
         with st.form("low_stock_setting_form"):
             new_threshold = st.number_input("แจ้งเตือนเมื่อจำนวนน้อยกว่าหรือเท่ากับ (ชิ้น)", min_value=0, value=low_stock_limit)
             if st.form_submit_button("บันทึกค่าเกณฑ์การแจ้งเตือน"):
@@ -492,10 +478,9 @@ elif st.session_state.role == "ช่างทั่วไป":
     
     today_str = datetime.now().strftime("%Y-%m-%d")
     
-    # --- ข้อ 2: หน้า tech ปรับแต่งให้เน้นชื่อสะดุดตา แสดงตัวเลือกทันที ตัดเมนูยืมออก ---
     if tech_category_choice == "🔧 หมวดอุปกรณ์ช่าง":
-        st.markdown("### 🔧 หมวดอุปกรณ์ช่าง (เช็คสถานะอุปกรณ์)")
-        st.write("คำชี้แจง: ทำเครื่องหมายติ๊กแจ้งปัญหา และระบุประเภท (ชำรุด หรือ สูญหาย) ทันที")
+        st.markdown("### 🔧 หมวดอุปกรณ์ช่าง (คลิกชื่อเพื่อดูรูปภาพ & เช็คสถานะ)")
+        st.write("คำชี้แจง: คลิกที่ชื่ออุปกรณ์เพื่อดูรูปภาพ และทำเครื่องหมายแจ้งปัญหา (ชำรุด หรือ สูญหาย)")
         
         today_inspections = run_query("SELECT COUNT(*) as cnt FROM inspections WHERE tech_name = ? AND category = 'อุปกรณ์ช่าง' AND inspection_date LIKE ?", 
                                       (st.session_state.username, f"{today_str}%"))
@@ -506,27 +491,28 @@ elif st.session_state.role == "ช่างทั่วไป":
         if check_count >= 3:
             st.error("⚠️ ครบโควต้า 3 ครั้งสำหรับวันนี้แล้ว (หากต้องการตรวจเพิ่ม ให้ติดต่อแอดมินเพื่อรีเซ็ต)")
         else:
-            # ดึงเฉพาะรายการที่จำนวนคงเหลือ > 0 (หากถูกยืมจนเหลือ 0 จะไม่แสดงให้ช่างตรวจ)
             tools_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['quantity'] > 0)]
             
             if not tools_df.empty:
-                # ข้อ 4: ช่องค้นหาบนมือถือสำหรับช่าง เพื่อให้หาอุปกรณ์ได้ง่ายเมื่อรายการ > 50 ชิ้น
                 tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
                 if tech_search.strip():
                     tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
                 
-                # ข้อ 4: ห่อด้วย Scrollable Container ให้ใช้งานบนมือถือง่ายขึ้น
                 with st.container(height=500):
                     item_reports = {}
                     for _, row in tools_df.iterrows():
-                        # ข้อ 2: เน้นชื่อให้สะดุดตาที่สุด ตัดข้อความ รหัส # / หมวดย่อย / คงเหลือ ออก
-                        st.markdown(f"<h3 style='color: #FF4B4B; margin-bottom: 2px;'>🛠️ {row['name']}</h3>", unsafe_allow_html=True)
+                        # ใช้ Expander ให้ช่างคลิกดูชื่อ/รูปภาพได้ และแสดงตัวเลือกในตัว
+                        with st.expander(f"🛠️ {row['name']} (คงเหลือ: {row['quantity']})"):
+                            pil_img = get_pil_image_from_base64(row['image'])
+                            if pil_img:
+                                st.image(pil_img, width=220, caption=f"รูปภาพ: {row['name']}")
+                            else:
+                                st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
                         
                         col_c1, col_c2 = st.columns([1, 2])
                         with col_c1:
                             is_flagged = st.checkbox("แจ้งปัญหา", key=f"flag_{row['id']}")
                         with col_c2:
-                            # ข้อ 2: แสดงตัวเลือกทันทีเมื่อติ๊ก และตัดตัวเลือก 'ยืม' ออก (เหลือแค่ ชำรุด/สูญหาย)
                             issue_type = "ปกติ"
                             if is_flagged:
                                 issue_type = st.selectbox(
@@ -562,7 +548,6 @@ elif st.session_state.role == "ช่างทั่วไป":
             else:
                 st.info("ไม่มีอุปกรณ์ช่างให้ตรวจสอบในขณะนี้")
                 
-    # หมวดสระว่ายน้ำ
     else:
         st.markdown("### 🏊 หมวดอุปกรณ์สระว่ายน้ำ (เช็คจำนวน & ดูรูปภาพ)")
         st.write("คลิกที่ชื่อรายการอุปกรณ์เพื่อดูรูปภาพ และปรับปรุงจำนวนคงเหลือ")
