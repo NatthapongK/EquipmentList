@@ -221,7 +221,6 @@ st.markdown("""
 }
 .stApp{background:var(--bg); color:var(--ink);}
 
-/* ซ่อนแถบ GitHub/Streamlit header ด้านบน และ footer / hamburger menu / deploy icon ด้านล่างขวา */
 header[data-testid="stHeader"] {display: none !important;}
 footer {visibility: hidden !important; display: none !important;}
 #MainMenu {visibility: hidden !important; display: none !important;}
@@ -230,7 +229,6 @@ footer {visibility: hidden !important; display: none !important;}
 .block-container{padding-top:1.5rem; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
 
-/* แถบหัวหน้าเว็บ */
 .app-hero{background:var(--ink); color:#fff; border-radius:14px; padding:1rem 1.25rem;
   display:flex; justify-content:space-between; align-items:center; gap:.75rem 1rem; flex-wrap:wrap; margin-bottom:1rem;}
 .app-hero .t{font-size:1.3rem; font-weight:700; line-height:1.3;}
@@ -238,14 +236,12 @@ h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
 .chip{display:inline-block; padding:.2rem .7rem; border-radius:999px; font-size:.8rem; font-weight:600;
   background:rgba(14,124,134,.9); color:#fff;}
 
-/* การ์ดตัวเลขสรุป */
 .kpi-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:.75rem; margin-bottom:1rem;}
 .kpi{background:var(--card); border:1px solid var(--line); border-left:4px solid var(--c,var(--teal));
   border-radius:10px; padding:.7rem .9rem;}
 .kpi .n{font-size:1.7rem; font-weight:700; line-height:1.15; color:var(--ink);}
 .kpi .l{font-size:.82rem; color:var(--muted);}
 
-/* แถบด้านข้าง */
 section[data-testid="stSidebar"]{background:#fff; border-right:1px solid var(--line);}
 .user-card{display:flex; align-items:center; gap:.7rem; padding:.7rem; border:1px solid var(--line);
   border-radius:12px; background:var(--bg);}
@@ -254,26 +250,22 @@ section[data-testid="stSidebar"]{background:#fff; border-right:1px solid var(--l
 .u-name{font-weight:600; line-height:1.2; word-break:break-all;}
 .u-role{font-size:.8rem; color:var(--muted);}
 
-/* แท็บ */
 .stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto;}
 .stTabs [data-baseweb="tab"]{height:auto; padding:.6rem .9rem; font-weight:500; color:var(--muted); white-space:nowrap;}
 .stTabs [aria-selected="true"]{color:var(--teal-d); font-weight:600;}
 .stTabs [data-baseweb="tab-highlight"]{background:var(--teal); height:3px;}
 
-/* การ์ด/ฟอร์ม/expander */
 [data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card);}
 [data-testid="stForm"]{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:1rem;}
 [data-testid="stDataFrame"]{border:1px solid var(--line); border-radius:10px; overflow:hidden;}
 [data-testid="stAlert"]{border-radius:10px;}
 
-/* ปุ่ม */
 .stApp button{border-radius:8px; font-weight:600;}
 .stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]{background:var(--teal); border-color:var(--teal); color:#fff;}
 .stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
 
-/* แก้ไขรายการตรวจเช็ค: บังคับให้อยู่บรรทัดเดียวกันเสมอทั้งบนมือถือและคอมพิวเตอร์ */
 .st-key-tech_check_list div[data-testid="stHorizontalBlock"]{
   display: flex !important;
   flex-direction: row !important;
@@ -908,21 +900,24 @@ elif st.session_state.role == "ช่างทั่วไป":
     with tech_main_tab[2]:
         render_borrow_return_system()
         
-    # --- ช่าง: ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (แสดงเฉพาะ 'อุปกรณ์ช่างทั่วไป' พร้อมช่องค้นหา) ---
+    # --- ช่าง: ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (แสดงทั้ง 'อุปกรณ์ช่างทั่วไป' และ 'อุปกรณ์สระว่ายน้ำ') ---
     with tech_main_tab[1]:
-        st.markdown("### 📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (หมวดย่อย: อุปกรณ์ช่างทั่วไป)")
-        st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไปที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังแอดมินเพื่อรออนุมัติบวกสต็อก")
+        st.markdown("### 📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
+        st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังแอดมินเพื่อรออนุมัติบวกสต็อก")
         
-        tools_requisition_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'อุปกรณ์ช่างทั่วไป')]
+        tools_requisition_df = items_df[
+            ((items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'อุปกรณ์ช่างทั่วไป')) | 
+            (items_df['category'] == 'อุปกรณ์สระว่ายน้ำ')
+        ]
         
-        req_search_keyword = st.text_input("🔍 ค้นหาชื่ออุปกรณ์ช่างทั่วไป...", placeholder="พิมพ์ชื่ออุปกรณ์เพื่อค้นหา", key="req_general_search")
+        req_search_keyword = st.text_input("🔍 ค้นหาชื่ออุปกรณ์...", placeholder="พิมพ์ชื่ออุปกรณ์เพื่อค้นหา", key="req_general_search")
         if req_search_keyword.strip():
             tools_requisition_df = tools_requisition_df[tools_requisition_df['name'].str.contains(req_search_keyword.strip(), case=False, na=False)]
         
         if not tools_requisition_df.empty:
             with st.form("requisition_request_form", clear_on_submit=True):
-                req_item_dict = {f"#{row['id']} {row['name']} (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id'] for _, row in tools_requisition_df.iterrows()}
-                sel_req_label = st.selectbox("เลือกอุปกรณ์ช่างทั่วไปที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
+                req_item_dict = {f"#{row['id']} {row['name']} [{row['category']}] (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id'] for _, row in tools_requisition_df.iterrows()}
+                sel_req_label = st.selectbox("เลือกอุปกรณ์ที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
                 
                 req_selected_id = req_item_dict[sel_req_label]
                 req_item_info = items_df[items_df['id'] == req_selected_id].iloc[0]
@@ -940,7 +935,7 @@ elif st.session_state.role == "ช่างทั่วไป":
                     else:
                         st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเพิ่มอุปกรณ์")
         else:
-            st.info("ไม่พบรายการอุปกรณ์ช่างทั่วไปตามคำค้นหา")
+            st.info("ไม่พบรายการอุปกรณ์ตามคำค้นหา")
             
         st.markdown("---")
         st.markdown("#### 📜 ประวัติคำขอเพิ่มอุปกรณ์ของคุณ")
@@ -991,7 +986,6 @@ elif st.session_state.role == "ช่างทั่วไป":
                     with keyed_container("tech_check_list", height=500):
                         item_reports = {}
                         for _, row in tools_df.iterrows():
-                            # จัดให้ชื่ออุปกรณ์ (expander) อยู่ซ้าย และปุ่มติ๊กแจ้งปัญหาอยู่ขวาในบรรทัดเดียวกัน
                             col_item, col_flag = st.columns([5, 1.4])
                             
                             with col_item:
