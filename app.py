@@ -222,7 +222,17 @@ st.markdown("""
 }
 .stApp{background:var(--bg); color:var(--ink);}
 footer{visibility:hidden;}
-.block-container{padding-top:1.2rem; padding-bottom:3rem; max-width:1200px;}
+:root{color-scheme:light;}
+
+/* ซ่อนแถบเครื่องมือด้านบน (Share / ดาว / แก้ไข / เมนู) แต่คงปุ่มเปิด-ปิดแถบด้านข้างไว้ */
+[data-testid="stHeader"]{background:transparent !important; box-shadow:none !important;}
+[data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"],
+#MainMenu, .stAppDeployButton{display:none !important;}
+/* ไอคอน/ป้ายมุมล่างขวาของ Streamlit Community Cloud */
+[class*="viewerBadge"], [class*="_profileContainer_"], [class*="_terminalButton_"],
+[data-testid="manage-app-button"], [data-testid="appCreatorAvatar"]{display:none !important;}
+
+.block-container{padding-top:3.5rem; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
 
 /* แถบหัวหน้าเว็บ */
@@ -253,7 +263,7 @@ section[data-testid="stSidebar"]{background:#fff; border-right:1px solid var(--l
 .stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto;}
 .stTabs [data-baseweb="tab"]{height:auto; padding:.6rem .9rem; font-weight:500; color:var(--muted); white-space:nowrap;}
 .stTabs [aria-selected="true"]{color:var(--teal-d); font-weight:600;}
-.stTabs [data-baseweb="tab-highlight"]{background:var(--teal); height:3px;}
+.stTabs [data-baseweb="tab-highlight"]{background:var(--teal) !important; height:3px;}
 
 /* การ์ด/ฟอร์ม/expander */
 [data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card);}
