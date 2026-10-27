@@ -612,16 +612,20 @@ if st.session_state.role == "แอดมิน":
             if status_filter != "ทั้งหมด":
                 filtered_df = filtered_df[filtered_df['status'] == status_filter]
                 
-            st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ (💡 คลิกเลือกแถวในตารางด้านล่างเพื่อแก้ไขข้อมูลทันที)")
+            st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ")
+            
+            # ใช้ selectbox เลือกรายการเพื่อแก้ไขอย่างเสถียร 100% ทุกเวอร์ชัน Streamlit ไม่เกิด Error
+            if not filtered_df.empty:
+                item_options = {f"#{row['id']} - {row['name']} (หมวด: {row['category']} | คงเหลือ: {row['quantity']})": int(row['id']) for _, row in filtered_df.iterrows()}
+                selected_item_label = st.selectbox("📌 เลือกรายการอุปกรณ์ที่ต้องการแก้ไขด่วน", ["-- กรุณาเลือกรายการอุปกรณ์เพื่อแก้ไข --"] + list(item_options.keys()))
+                if selected_item_label != "-- กรุณาเลือกรายการอุปกรณ์เพื่อแก้ไข --":
+                    st.session_state.quick_edit_id = item_options[selected_item_label]
             
             show_df = filtered_df[['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']].copy()
             show_df['alert_zero'] = show_df['alert_zero'].astype(bool)
             
-            table_event = st.dataframe(
-                show_df, use_container_width=True, hide_index=True, height=350,
-                on_selection="rerun",
-                selection_mode="single-row",
-                key="admin_items_table",
+            st.dataframe(
+                show_df, use_container_width=True, hide_index=True, height=300,
                 column_config={
                     "id": st.column_config.NumberColumn("รหัส", width="small"),
                     "name": st.column_config.TextColumn("ชื่ออุปกรณ์", width="large"),
@@ -632,12 +636,6 @@ if st.session_state.role == "แอดมิน":
                     "note": "หมายเหตุ",
                 }
             )
-            
-            selected_rows = table_event.selection.rows if hasattr(table_event, 'selection') else []
-            if selected_rows:
-                row_idx = selected_rows[0]
-                selected_item_id = int(show_df.iloc[row_idx]['id'])
-                st.session_state.quick_edit_id = selected_item_id
             
             if "quick_edit_id" in st.session_state and st.session_state.quick_edit_id:
                 qe_id = st.session_state.quick_edit_id
