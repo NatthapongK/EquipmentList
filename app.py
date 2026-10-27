@@ -705,7 +705,6 @@ if st.session_state.role == "แอดมิน":
         
         st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / ลบ)")
         
-        # เพิ่มตารางแสดงรายชื่อบัญชีช่างทั้งหมดเพื่อให้แอดมินเห็นภาพชัดเจน
         st.markdown("**📋 รายชื่อบัญชีช่างทั้งหมดในระบบ**")
         all_techs_df = run_query("SELECT id as 'รหัส', username as 'ชื่อผู้ใช้งาน (Username)' FROM tech_users")
         st.dataframe(all_techs_df, use_container_width=True, hide_index=True)
@@ -844,17 +843,22 @@ elif st.session_state.role == "ช่างทั่วไป":
                     with st.container(height=500):
                         item_reports = {}
                         for _, row in tools_df.iterrows():
-                            with st.expander(f"🛠️ {row['name']} (คงเหลือ: {row['quantity']})"):
-                                pil_img = get_pil_image_from_base64(row['image'])
-                                if pil_img:
-                                    st.image(pil_img, width=220, caption=f"รูปภาพ: {row['name']}")
-                                else:
-                                    st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
+                            # จัดเรียงเลย์เอาต์ใหม่: ชื่อ+จำนวน (ซ้าย), ปุ่มติ๊กแจ้งปัญหา (กลาง), ประเภทปัญหา+รายละเอียด (ขวา)
+                            col_item, col_flag, col_detail = st.columns([2.5, 1, 2.5])
                             
-                            col_c1, col_c2 = st.columns([1, 2])
-                            with col_c1:
+                            with col_item:
+                                with st.expander(f"🛠️ {row['name']} (คงเหลือ: {row['quantity']})"):
+                                    pil_img = get_pil_image_from_base64(row['image'])
+                                    if pil_img:
+                                        st.image(pil_img, width=220, caption=f"รูปภาพ: {row['name']}")
+                                    else:
+                                        st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
+                            
+                            with col_flag:
+                                st.write("") # จัดระยะแนวตั้งให้ตรงกับแถว Expander
                                 is_flagged = st.checkbox("แจ้งปัญหา", key=f"flag_{row['id']}")
-                            with col_c2:
+                                
+                            with col_detail:
                                 issue_type = "ปกติ"
                                 issue_detail = ""
                                 if is_flagged:
@@ -867,7 +871,7 @@ elif st.session_state.role == "ช่างทั่วไป":
                                         issue_detail = st.text_input("ระบุรายละเอียดการใช้งาน *", key=f"issue_detail_{row['id']}")
                                         
                             item_reports[row['id']] = {"flagged": is_flagged, "status": issue_type, "detail": issue_detail}
-                            st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
+                            st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
                             
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📸 รูปถ่ายรวมหน้างาน / ภาพประกอบการตรวจเช็ค (บังคับครบทั้ง 4 รูป)")
