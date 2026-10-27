@@ -7,7 +7,7 @@ import base64
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ Pro", page_icon="🛠️", layout="wide")
 
-# รายการอุปกรณ์เริ่มต้นทั้งหมด (ปรับหมวดหมู่ย่อยอุปกรณ์สิ้นเปลือง/ทั่วไปเป็น "อุปกรณ์ช่างทั่วไป")
+# รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
     # เครื่องมือช่าง
     ("ปลั๊กโรลElecton", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
@@ -53,7 +53,7 @@ DEFAULT_INITIAL_ITEMS = [
     ("ฟิตเทป", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("เครื่องวัดอุณภูมิหม้อแปลง", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     
-    # รายการใหม่ (ปรับเป็น "อุปกรณ์ช่างทั่วไป")
+    # อุปกรณ์ช่างทั่วไป
     ("สเปรย์หล่อลื่นโซแน็กซ์", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
     ("สเปรย์หล่อลื่นWD40", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
     ("สเปย์ลู่วิ่งSilicone Oil", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
@@ -87,7 +87,7 @@ DEFAULT_INITIAL_ITEMS = [
     ("แปรงขัดสระว่ายน้ำ", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
     ("ด้ามจับยาว", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
     ("ด้ามจับสั้น", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
-    ("ชุดทดสอบคลอรีนและ pH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 1, "ปกติ", "-", None),
+    ("ชุดทดสอบคลอรีนและ pH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
     ("ขวดน้ำยาคลอรีน", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 5, "ปกติ", "-", None),
     ("ขวดน้ำยาpH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 5, "ปกติ", "-", None)
 ]
@@ -126,6 +126,26 @@ def init_db():
             status TEXT,
             borrower_image TEXT,
             quantity INTEGER DEFAULT 1,
+            giver_name TEXT,
+            FOREIGN KEY(item_id) REFERENCES items(id)
+        )
+    ''')
+    c.execute("PRAGMA table_info(transactions)")
+    tx_cols = [col[1] for col in c.fetchall()]
+    if 'giver_name' not in tx_cols:
+        c.execute("ALTER TABLE transactions ADD COLUMN giver_name TEXT")
+        conn.commit()
+
+    # ตารางคำขอเบิกอุปกรณ์
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS requisition_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tech_name TEXT,
+            item_id INTEGER,
+            quantity INTEGER,
+            note TEXT,
+            status TEXT,
+            request_date TEXT,
             FOREIGN KEY(item_id) REFERENCES items(id)
         )
     ''')
@@ -301,7 +321,7 @@ with col_a2:
         st.success(f"✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 st.markdown("---")
 
-# --- SHARED BORROW / RETURN COMPONENT ---
+# --- SHARED BORROW / RETURN COMPONENT (บันทึก User ผู้ให้ยืม/บันทึก) ---
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
@@ -321,21 +341,23 @@ def render_borrow_return_system():
                 borrower_name = st.text_input("ชื่อผู้ยืม * (ระบุชื่อ-นามสกุล / แผนก)")
                 borrow_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายผู้ยืมหรือหลักฐานการยืม *", type=["jpg", "jpeg", "png"])
                 
+                st.info(f"📌 ผู้ทำรายการ/ผู้ให้ยืม: **{st.session_state.username}** (บันทึกอัตโนมัติ)")
+                
                 if st.form_submit_button("ยืนยันการยืมอุปกรณ์"):
                     if borrower_name.strip() and borrow_img_file is not None:
                         b_img_bytes = borrow_img_file.read()
                         b_img_b64 = base64.b64encode(b_img_bytes).decode("utf-8")
                         now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
                         
-                        run_query("INSERT INTO transactions (item_id, borrower_name, borrow_date, status, borrower_image, quantity) VALUES (?,?,?,?,?,?)",
-                                  (selected_id, borrower_name, now_time, "กำลังยืม", b_img_b64, borrow_qty), is_select=False)
+                        run_query("INSERT INTO transactions (item_id, borrower_name, borrow_date, status, borrower_image, quantity, giver_name) VALUES (?,?,?,?,?,?,?)",
+                                  (selected_id, borrower_name, now_time, "กำลังยืม", b_img_b64, borrow_qty, st.session_state.username), is_select=False)
                         
                         new_qty = max_q - borrow_qty
                         new_status = 'ยืม' if new_qty == 0 else item_info['status']
                         
                         run_query("UPDATE items SET quantity = ?, status = ? WHERE id = ?", (new_qty, new_status, selected_id), is_select=False)
                         
-                        st.success(f"บันทึกการยืม {item_info['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
+                        st.success(f"บันทึกการยืม {item_info['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว (ผู้ให้ยืม: {st.session_state.username})")
                         st.rerun()
                     else:
                         st.error("กรุณากรอกชื่อผู้ยืมและอัปโหลดรูปถ่ายผู้ยืม/หลักฐานการยืมให้ครบถ้วน")
@@ -345,14 +367,15 @@ def render_borrow_return_system():
     with sub_return:
         st.markdown("#### รายการที่กำลังถูกยืมอยู่")
         active_tx = run_query("""
-            SELECT t.id as tx_id, t.item_id, i.name as item_name, t.borrower_name, t.borrow_date, t.borrower_image, t.quantity, i.quantity as current_q
+            SELECT t.id as tx_id, t.item_id, i.name as item_name, t.borrower_name, t.borrow_date, t.borrower_image, t.quantity, i.quantity as current_q, t.giver_name
             FROM transactions t JOIN items i ON t.item_id = i.id 
             WHERE t.status = 'กำลังยืม' ORDER BY t.id DESC
         """)
         
         if not active_tx.empty:
             for _, row in active_tx.iterrows():
-                with st.expander(f"📦 อุปกรณ์: {row['item_name']} (จำนวนยืม: {row['quantity']} ชิ้น) | ผู้ยืม: {row['borrower_name']}"):
+                giver_str = f" | ผู้ให้ยืม: {row['giver_name']}" if pd.notnull(row['giver_name']) and row['giver_name'] else ""
+                with st.expander(f"📦 อุปกรณ์: {row['item_name']} (จำนวนยืม: {row['quantity']} ชิ้น) | ผู้ยืม: {row['borrower_name']}{giver_str}"):
                     col_r1, col_r2 = st.columns([1, 2])
                     with col_r1:
                         p_img = get_pil_image_from_base64(row['borrower_image'])
@@ -364,6 +387,8 @@ def render_borrow_return_system():
                         st.write(f"**ชื่ออุปกรณ์:** {row['item_name']}")
                         st.write(f"**จำนวนที่ยืม:** {row['quantity']} ชิ้น")
                         st.write(f"**ผู้ยืม:** {row['borrower_name']}")
+                        if row.get('giver_name'):
+                            st.write(f"**ผู้ให้ยืม/บันทึก:** {row['giver_name']}")
                         st.write(f"**วันที่ยืม:** {row['borrow_date']}")
                         if st.button(f"✅ รับคืนอุปกรณ์รายการนี้", key=f"ret_btn_{row['tx_id']}"):
                             now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -382,7 +407,7 @@ def render_borrow_return_system():
         st.markdown("#### ประวัติการยืม-คืนทั้งหมด")
         tx_history = run_query("""
             SELECT t.id as 'รหัส', i.name as 'ชื่ออุปกรณ์', t.quantity as 'จำนวน', t.borrower_name as 'ผู้ยืม', 
-                   t.borrow_date as 'วันที่ยืม', t.return_date as 'วันที่คืน', t.status as 'สถานะ'
+                   t.giver_name as 'ผู้ให้ยืม', t.borrow_date as 'วันที่ยืม', t.return_date as 'วันที่คืน', t.status as 'สถานะ'
             FROM transactions t JOIN items i ON t.item_id = i.id ORDER BY t.id DESC
         """)
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
@@ -392,8 +417,9 @@ if st.session_state.role == "แอดมิน":
     admin_menu = st.tabs([
         "📋 1. จัดการอุปกรณ์ทั้งหมด", 
         "📊 2. รายงานการตรวจเช็ค", 
-        "🔄 3. ยืม-คืน เครื่องมือ-อุปกรณ์", 
-        "⚙️ 4. ตั้งค่าระบบ & รหัสช่าง"
+        "📥 3. อนุมัติคำขอเบิก", 
+        "🔄 4. ยืม-คืน เครื่องมือ-อุปกรณ์", 
+        "⚙️ 5. ตั้งค่าระบบ & รหัสช่าง"
     ])
     
     with admin_menu[0]:
@@ -504,7 +530,7 @@ if st.session_state.role == "แอดมิน":
                                 st.rerun()
 
         with tab_excel_import:
-            st.markdown("### ⚡ โหลดชุดข้อมูลตั้งต้นทั้งหมด (รวม 54 รายการล่าสุด)")
+            st.markdown("### ⚡ โหลดชุดข้อมูลตั้งต้นทั้งหมด")
             if st.button("🚀 รีเซ็ตและโหลดอุปกรณ์ทั้งหมด 54 รายการ", type="primary"):
                 run_query("DELETE FROM items", is_select=False)
                 run_query("DELETE FROM sqlite_sequence WHERE name='items'", is_select=False)
@@ -561,10 +587,46 @@ if st.session_state.role == "แอดมิน":
         else:
             st.info("ยังไม่มีประวัติการตรวจเช็คจากช่างในระบบ")
 
+    # --- เมนูแอดมิน: อนุมัติคำขอเบิกอุปกรณ์ ---
     with admin_menu[2]:
-        render_borrow_return_system()
+        st.subheader("📥 ตรวจสอบและอนุมัติคำขอเบิกอุปกรณ์จากช่าง")
+        pending_requests = run_query("""
+            SELECT r.id, r.tech_name, i.name as item_name, r.quantity, r.note, r.request_date, r.item_id, i.quantity as current_stock
+            FROM requisition_requests r JOIN items i ON r.item_id = i.id
+            WHERE r.status = 'รออนุมัติ' ORDER BY r.id DESC
+        """)
+        
+        if not pending_requests.empty:
+            for _, req in pending_requests.iterrows():
+                with st.container():
+                    st.write(f"🆔 **รหัสคำขอ:** #{req['id']} | 👤 **ผู้ขอเบิก:** {req['tech_name']} | 📅 **วันที่:** {req['request_date']}")
+                    st.write(f"📦 **อุปกรณ์:** {req['item_name']} | **จำนวนที่ขอเบิก:** {req['quantity']} ชิ้น (คงเหลือในคลัง: {req['current_stock']})")
+                    st.write(f"📝 **หมายเหตุ/งาน:** {req['note']}")
+                    
+                    col_app1, col_app2 = st.columns(2)
+                    if col_app1.button(f"✅ อนุมัติ (ตัดสต็อก)", key=f"approve_{req['id']}"):
+                        new_stock = int(req['current_stock']) - int(req['quantity'])
+                        if new_stock < 0:
+                            new_stock = 0
+                        run_query("UPDATE items SET quantity = ? WHERE id = ?", (new_stock, req['item_id']), is_select=False)
+                        run_query("UPDATE requisition_requests SET status = 'อนุมัติ' WHERE id = ?", (req['id'],), is_select=False)
+                        run_query("INSERT INTO transactions (item_id, borrower_name, borrow_date, return_date, status, quantity, giver_name) VALUES (?,?,?,?,?,?,?)",
+                                  (req['item_id'], f"{req['tech_name']} (เบิก)", req['request_date'], req['request_date'], "เบิกใช้งาน", req['quantity'], st.session_state.username), is_select=False)
+                        st.success(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว (ตัดสต็อกสำเร็จ)")
+                        st.rerun()
+                        
+                    if col_app2.button(f"❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
+                        run_query("UPDATE requisition_requests SET status = 'ไม่อนุมัติ' WHERE id = ?", (req['id'],), is_select=False)
+                        st.warning(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว")
+                        st.rerun()
+                    st.markdown("---")
+        else:
+            st.info("ไม่มีคำขอเบิกอุปกรณ์ที่รอการอนุมัติในขณะนี้")
 
     with admin_menu[3]:
+        render_borrow_return_system()
+
+    with admin_menu[4]:
         st.subheader("⚙️ ตั้งค่าระบบและบัญชีช่าง")
         
         st.markdown("#### ⚠️ ตั้งค่าเกณฑ์แจ้งเตือนอุปกรณ์ทั่วไปใกล้หมด")
@@ -599,7 +661,6 @@ if st.session_state.role == "แอดมิน":
                 
         st.markdown("---")
         
-        # กู้คืนส่วนจัดการบัญชีช่าง (สร้าง / แก้ไข / ลบ) กลับมาแล้ว
         st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / ลบ)")
         col_t1, col_t2 = st.columns(2)
         with col_t1:
@@ -646,20 +707,21 @@ elif st.session_state.role == "ช่างทั่วไป":
     # ------------------ จอสำหรับช่าง (Technician UI) ------------------
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างทั่วไป")
     
-    tech_main_tab = st.tabs(["📋 ตรวจสอบสภาพอุปกรณ์", "📦 เบิกของ (เครื่องมือช่าง)", "🔄 ระบบยืม-คืน อุปกรณ์"])
+    tech_main_tab = st.tabs(["📋 ตรวจสอบสภาพอุปกรณ์", "📦 ส่งคำขอเบิกของ (เครื่องมือช่าง)", "🔄 ระบบยืม-คืน อุปกรณ์"])
     
     with tech_main_tab[2]:
         render_borrow_return_system()
         
+    # --- ช่าง: ส่งคำขอเบิกของ (รอแอดมินอนุมัติ) ---
     with tech_main_tab[1]:
-        st.markdown("### 📦 หน้าเบิกของ (หมวดย่อย: เครื่องมือช่าง)")
-        st.write("เลือกเครื่องมือช่างที่ต้องการเบิกใช้งาน ระบบจะทำการตัดจำนวนคงเหลือในคลังทันที")
+        st.markdown("### 📦 ส่งคำขอเบิกของ (หมวดย่อย: เครื่องมือช่าง)")
+        st.write("เลือกเครื่องมือช่างที่ต้องการเบิก ระบบจะส่งคำขอไปยังแอดมินเพื่อรอการตรวจสอบและอนุมัติ")
         
         tools_requisition_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'เครื่องมือช่าง') & (items_df['quantity'] > 0)]
         
         if not tools_requisition_df.empty:
-            with st.form("requisition_form", clear_on_submit=True):
-                req_item_dict = {f"#{row['id']} {row['name']} (คงเหลือ: {row['quantity']} ชิ้น)": row['id'] for _, row in tools_requisition_df.iterrows()}
+            with st.form("requisition_request_form", clear_on_submit=True):
+                req_item_dict = {f"#{row['id']} {row['name']} (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id'] for _, row in tools_requisition_df.iterrows()}
                 sel_req_label = st.selectbox("เลือกเครื่องมือช่างที่ต้องการเบิก *", list(req_item_dict.keys()))
                 
                 req_selected_id = req_item_dict[sel_req_label]
@@ -667,23 +729,31 @@ elif st.session_state.role == "ช่างทั่วไป":
                 req_max_q = int(req_item_info['quantity'])
                 
                 req_qty = st.number_input("จำนวนที่ต้องการเบิก *", min_value=1, max_value=req_max_q, value=1)
-                req_note = st.text_area("หมายเหตุ / งานที่นำไปใช้ *")
+                req_note = st.text_area("หมายเหตุ / ชื่องานที่นำไปใช้ *")
                 
-                if st.form_submit_button("ยืนยันการเบิกของ"):
+                if st.form_submit_button("📤 ส่งคำขอเบิก (รอแอดมินอนุมัติ)"):
                     if req_note.strip():
                         now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        new_qty = req_max_q - req_qty
-                        
-                        run_query("UPDATE items SET quantity = ? WHERE id = ?", (new_qty, req_selected_id), is_select=False)
-                        run_query("INSERT INTO transactions (item_id, borrower_name, borrow_date, return_date, status, quantity) VALUES (?,?,?,?,?,?)",
-                                  (req_selected_id, f"{st.session_state.username} (เบิกใช้)", now_time, now_time, "เบิกใช้งาน", req_qty), is_select=False)
-                        
-                        st.success(f"เบิก '{req_item_info['name']}' จำนวน {req_qty} ชิ้น เรียบร้อยแล้ว (คงเหลือ {new_qty} ชิ้น)")
+                        run_query("INSERT INTO requisition_requests (tech_name, item_id, quantity, note, status, request_date) VALUES (?,?,?,?,?,?)",
+                                  (st.session_state.username, req_selected_id, req_qty, req_note, 'รออนุมัติ', now_time), is_select=False)
+                        st.success(f"ส่งคำขอเบิก '{req_item_info['name']}' จำนวน {req_qty} ชิ้น ไปยังแอดมินเรียบร้อยแล้ว!")
                         st.rerun()
                     else:
                         st.error("กรุณาระบุหมายเหตุหรือชื่องานที่นำไปใช้")
         else:
-            st.info("ไม่มีเครื่องมือช่างเหลือให้เบิกในขณะนี้")
+            st.info("ไม่มีเครื่องมือช่างในคลังให้เบิกในขณะนี้")
+            
+        st.markdown("---")
+        st.markdown("#### 📜 ประวัติคำขอเบิกของคุณ")
+        my_requests = run_query("""
+            SELECT r.id as 'รหัส', i.name as 'ชื่ออุปกรณ์', r.quantity as 'จำนวน', r.note as 'หมายเหตุ', r.request_date as 'วันที่ขอ', r.status as 'สถานะ'
+            FROM requisition_requests r JOIN items i ON r.item_id = i.id
+            WHERE r.tech_name = ? ORDER BY r.id DESC
+        """, (st.session_state.username,))
+        if not my_requests.empty:
+            st.dataframe(my_requests, use_container_width=True, hide_index=True)
+        else:
+            st.info("ยังไม่มีประวัติการส่งคำขอเบิก")
         
     with tech_main_tab[0]:
         tech_category_choice = st.radio("เลือกหมวดหมู่การทำงาน", ["🔧 หมวดอุปกรณ์ช่าง", "🏊 หมวดอุปกรณ์สระว่ายน้ำ"], horizontal=True)
@@ -790,7 +860,8 @@ elif st.session_state.role == "ช่างทั่วไป":
                                         final_st = f"กำลังใช้งาน ({data['detail']})"
                                     run_query("UPDATE items SET status = ? WHERE id = ?", (final_st, item_id), is_select=False)
                                 else:
-                                    run_query("UPDATE items SET status = 'ปกติ' WHERE id = ?", ("ปกติ", item_id), is_select=False)
+                                    # แก้ไข Bug Parameter ให้ถูกต้องครบถ้วน
+                                    run_query("UPDATE items SET status = ? WHERE id = ?", ("ปกติ", item_id), is_select=False)
                                     
                             photos_str = "|||".join(uploaded_photos_b64)
                             summary_note = f"ตรวจรอบที่ {global_count+1}: อัปเดตสถานะอุปกรณ์ช่าง"
