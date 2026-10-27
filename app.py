@@ -407,7 +407,7 @@ st.sidebar.markdown("")
 with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & ออกจากระบบ", expanded=True):
     st.write(f"ผู้ใช้งาน: **{st.session_state.username}**")
     st.write(f"สิทธิ์: **{st.session_state.role}**")
-    if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True):
+    if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
         st.session_state.logged_in = False
         st.session_state.role = None
         st.session_state.username = ""
@@ -419,6 +419,19 @@ st.markdown(
     f'<div class="s">อุปกรณ์ช่าง & สระว่ายน้ำ · {datetime.now().strftime("%d/%m/%Y")}</div></div>'
     f'<span class="chip">{esc(st.session_state.role)}</span></div>',
     unsafe_allow_html=True)
+
+# --- QUICK ACCOUNT & LOGOUT EXPANDER ON MAIN PAGE (Ensure user never loses access if sidebar is closed) ---
+with st.expander(f"👤 ข้อมูลผู้ใช้งานปัจจุบัน: {st.session_state.username} (สิทธิ์: {st.session_state.role}) — คลิกเพื่อจัดการบัญชี / ออกจากระบบ"):
+    col_u1, col_u2 = st.columns([3, 1])
+    with col_u1:
+        st.write(f"กำลังใช้งานในชื่อ: **{st.session_state.username}** | สิทธิ์ระบบ: **{st.session_state.role}**")
+    with col_u2:
+        if st.button("🚪 ออกจากระบบ", type="primary", use_container_width=True, key="main_page_logout_btn"):
+            st.session_state.logged_in = False
+            st.session_state.role = None
+            st.session_state.username = ""
+            st.query_params.clear()
+            st.rerun()
 
 # --- ALERT SYSTEM ---
 setting_df = run_query("SELECT value FROM settings WHERE key='low_stock_threshold'")
@@ -604,7 +617,6 @@ if st.session_state.role == "แอดมิน":
             show_df = filtered_df[['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']].copy()
             show_df['alert_zero'] = show_df['alert_zero'].astype(bool)
             
-            # เปิดใช้งาน Selection บนตารางเพื่อให้คลิกเลือกแถวได้
             table_event = st.dataframe(
                 show_df, use_container_width=True, hide_index=True, height=350,
                 on_selection="rerun",
@@ -621,14 +633,12 @@ if st.session_state.role == "แอดมิน":
                 }
             )
             
-            # ตรวจสอบว่ามีการคลิกเลือกแถวในตารางหรือไม่
             selected_rows = table_event.selection.rows if hasattr(table_event, 'selection') else []
             if selected_rows:
                 row_idx = selected_rows[0]
                 selected_item_id = int(show_df.iloc[row_idx]['id'])
                 st.session_state.quick_edit_id = selected_item_id
             
-            # หากมีการเลือกรายการ ให้แสดงฟอร์มแก้ไขด่วนทันทีใต้ตาราง
             if "quick_edit_id" in st.session_state and st.session_state.quick_edit_id:
                 qe_id = st.session_state.quick_edit_id
                 qe_item_check = items_df[items_df['id'] == qe_id]
