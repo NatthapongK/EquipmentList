@@ -288,7 +288,7 @@ if st.sidebar.button("🚪 ออกจากระบบ (Logout)", type="prima
 st.title("🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์")
 st.markdown("---")
 
-# --- ALERT SYSTEM (รวม 'อุปกรณ์หมด' ในรายการแจ้งเตือนผิดปกติ) ---
+# --- ALERT SYSTEM ---
 setting_df = run_query("SELECT value FROM settings WHERE key='low_stock_threshold'")
 low_stock_limit = int(setting_df.iloc[0]['value']) if not setting_df.empty else 1
 
@@ -320,7 +320,7 @@ with col_a2:
         st.success(f"✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 st.markdown("---")
 
-# --- SHARED BORROW / RETURN COMPONENT ---
+# --- SHARED BORROW / RETURN COMPONENT (ปรับปรุงการยืมให้อัปโหลดรูปเป็นทางเลือกเสริม) ---
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
@@ -338,14 +338,16 @@ def render_borrow_return_system():
                 
                 borrow_qty = st.number_input("จำนวนที่ต้องการยืม *", min_value=1, max_value=max_q, value=1)
                 borrower_name = st.text_input("ชื่อผู้ยืม * (ระบุชื่อ-นามสกุล / แผนก)")
-                borrow_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายผู้ยืมหรือหลักฐานการยืม *", type=["jpg", "jpeg", "png"])
+                borrow_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายผู้ยืมหรือหลักฐานการยืม (ถ้ามี)", type=["jpg", "jpeg", "png"])
                 
                 st.info(f"📌 ผู้ทำรายการ/ผู้ให้ยืม: **{st.session_state.username}** (บันทึกอัตโนมัติ)")
                 
                 if st.form_submit_button("ยืนยันการยืมอุปกรณ์"):
-                    if borrower_name.strip() and borrow_img_file is not None:
-                        b_img_bytes = borrow_img_file.read()
-                        b_img_b64 = base64.b64encode(b_img_bytes).decode("utf-8")
+                    if borrower_name.strip():
+                        b_img_b64 = None
+                        if borrow_img_file is not None:
+                            b_img_bytes = borrow_img_file.read()
+                            b_img_b64 = base64.b64encode(b_img_bytes).decode("utf-8")
                         now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
                         
                         run_query("INSERT INTO transactions (item_id, borrower_name, borrow_date, status, borrower_image, quantity, giver_name) VALUES (?,?,?,?,?,?,?)",
@@ -359,7 +361,7 @@ def render_borrow_return_system():
                         st.success(f"บันทึกการยืม {item_info['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
                         st.rerun()
                     else:
-                        st.error("กรุณากรอกชื่อผู้ยืมและอัปโหลดรูปถ่ายผู้ยืม/หลักฐานการยืมให้ครบถ้วน")
+                        st.error("❌ กรุณากรอกชื่อผู้ยืมให้เรียบร้อย")
         else:
             st.info("ไม่มีอุปกรณ์ที่มีจำนวนคงเหลือให้ยืมในขณะนี้")
             
@@ -605,7 +607,6 @@ if st.session_state.role == "แอดมิน":
                     
                     col_app1, col_app2 = st.columns(2)
                     if col_app1.button(f"✅ อนุมัติ (เพิ่มจำนวนเข้าคลัง)", key=f"approve_{req['id']}"):
-                        # อนุมัติแล้วต้องเป็นการเพิ่มเข้าไปในระบบ (บวกสต็อกเพิ่ม)
                         new_stock = int(req['current_stock']) + int(req['quantity'])
                         run_query("UPDATE items SET quantity = ?, status = 'ปกติ' WHERE id = ?", (new_stock, req['item_id']), is_select=False)
                         run_query("UPDATE requisition_requests SET status = 'อนุมัติ' WHERE id = ?", (req['id'],), is_select=False)
@@ -711,17 +712,23 @@ elif st.session_state.role == "ช่างทั่วไป":
     with tech_main_tab[2]:
         render_borrow_return_system()
         
-    # --- ช่าง: ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (รอแอดมินอนุมัติเพื่อบวกสต็อก) ---
+    # --- ช่าง: ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (แสดงเฉพาะ 'อุปกรณ์ช่างทั่วไป' และเพิ่มช่องค้นหา) ---
     with tech_main_tab[1]:
-        st.markdown("### 📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (หมวดย่อย: เครื่องมือช่าง)")
-        st.write("เลือกเครื่องมือช่างที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังแอดมินเพื่อรออนุมัติบวกสต็อก")
+        st.markdown("### 📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (หมวดย่อย: อุปกรณ์ช่างทั่วไป)")
+        st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไปที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังแอดมินเพื่อรออนุมัติบวกสต็อก")
         
-        tools_requisition_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'เครื่องมือช่าง')]
+        # กรองเฉพาะหมวด "อุปกรณ์ช่าง" และหมวดย่อย "อุปกรณ์ช่างทั่วไป"
+        tools_requisition_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'อุปกรณ์ช่างทั่วไป')]
+        
+        # เพิ่มช่องค้นหาชื่ออุปกรณ์ช่างทั่วไป
+        req_search_keyword = st.text_input("🔍 ค้นหาชื่ออุปกรณ์ช่างทั่วไป...", placeholder="พิมพ์ชื่ออุปกรณ์เพื่อค้นหา", key="req_general_search")
+        if req_search_keyword.strip():
+            tools_requisition_df = tools_requisition_df[tools_requisition_df['name'].str.contains(req_search_keyword.strip(), case=False, na=False)]
         
         if not tools_requisition_df.empty:
             with st.form("requisition_request_form", clear_on_submit=True):
                 req_item_dict = {f"#{row['id']} {row['name']} (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id'] for _, row in tools_requisition_df.iterrows()}
-                sel_req_label = st.selectbox("เลือกเครื่องมือช่างที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
+                sel_req_label = st.selectbox("เลือกอุปกรณ์ช่างทั่วไปที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
                 
                 req_selected_id = req_item_dict[sel_req_label]
                 req_item_info = items_df[items_df['id'] == req_selected_id].iloc[0]
@@ -739,7 +746,7 @@ elif st.session_state.role == "ช่างทั่วไป":
                     else:
                         st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเพิ่มอุปกรณ์")
         else:
-            st.info("ไม่มีรายการอุปกรณ์ในระบบ")
+            st.info("ไม่พบรายการอุปกรณ์ช่างทั่วไปตามคำค้นหา")
             
         st.markdown("---")
         st.markdown("#### 📜 ประวัติคำขอเพิ่มอุปกรณ์ของคุณ")
@@ -863,7 +870,6 @@ elif st.session_state.role == "ช่างทั่วไป":
                                     if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
                                         final_st = f"กำลังใช้งาน ({data['detail']})"
                                     
-                                    # หากเลือก "อุปกรณ์หมด" หรือ "สูญหาย" ให้ทำการตัดยอดจำนวนในระบบลง 1 ชิ้น
                                     if data["status"] in ["อุปกรณ์หมด", "สูญหาย"]:
                                         new_q = max(0, curr_q - 1)
                                         run_query("UPDATE items SET status = ?, quantity = ? WHERE id = ?", (final_st, new_q, item_id), is_select=False)
