@@ -194,7 +194,8 @@ def init_db():
     
     c.execute("SELECT COUNT(*) FROM items")
     if c.fetchone()[0] == 0:
-        c.executemany("INSERT INTO items (name, category, subcategory, quantity, status, alert_zero, note, image) VALUES (?, ?, ?, ?, ?, ?, ?)", DEFAULT_INITIAL_ITEMS)
+        c.executemany("INSERT INTO items (name, category, subcategory, quantity, status, alert_zero, note, image) VALUES (?, ?, ?, ?, ?, 0, ?, ?)", 
+                      [(i[0], i[1], i[2], i[3], i[4], 0, i[5], i[6]) for i in DEFAULT_INITIAL_ITEMS])
         
     c.execute("SELECT COUNT(*) FROM tech_users")
     if c.fetchone()[0] == 0:
@@ -563,7 +564,7 @@ if st.session_state.role == "แอดมิน":
                 conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
                 c = conn.cursor()
                 c.executemany("INSERT INTO items (name, category, subcategory, quantity, status, alert_zero, note, image) VALUES (?, ?, ?, ?, ?, 0, ?, ?)", 
-                              [(i[0], i[1], i[2], i[3], i[4], i[5], i[6]) for i in DEFAULT_INITIAL_ITEMS])
+                              [(i[0], i[1], i[2], i[3], i[4], 0, i[5], i[6]) for i in DEFAULT_INITIAL_ITEMS])
                 conn.commit()
                 conn.close()
                 st.success("นำเข้าอุปกรณ์ทั้งหมดสำเร็จ!")
