@@ -375,7 +375,7 @@ if not st.session_state.logged_in:
             role_val = ""
             user_val = ""
             if username == "Natthapongk" and password == "0891148075":
-                role_val = "ผู้ออกแบบ/ดูแลระบบ"
+                role_val = "แอดมิน"
                 user_val = "Natthapongk"
             else:
                 matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)]
@@ -974,7 +974,7 @@ if st.session_state.role == "แอดมิน":
                                 st.success("ลบบัญชีช่างเรียบร้อยแล้ว!")
                                 st.rerun()
 
-elif st.session_state.role == "ช่างประจำอาคาร":
+elif st.session_state.role in ["ช่างทั่วไป", "ช่างประจำอาคาร"]:
     # ------------------ จอสำหรับช่าง (Technician UI) ------------------
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างทั่วไป")
     
