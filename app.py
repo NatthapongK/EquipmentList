@@ -136,7 +136,6 @@ def init_db():
         c.execute("ALTER TABLE transactions ADD COLUMN giver_name TEXT")
         conn.commit()
 
-    # ตารางคำขอเบิกอุปกรณ์
     c.execute('''
         CREATE TABLE IF NOT EXISTS requisition_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -289,14 +288,14 @@ if st.sidebar.button("🚪 ออกจากระบบ (Logout)", type="prima
 st.title("🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์")
 st.markdown("---")
 
-# --- ALERT SYSTEM ---
+# --- ALERT SYSTEM (รวม 'อุปกรณ์หมด' ในรายการแจ้งเตือนผิดปกติ) ---
 setting_df = run_query("SELECT value FROM settings WHERE key='low_stock_threshold'")
 low_stock_limit = int(setting_df.iloc[0]['value']) if not setting_df.empty else 1
 
 st.subheader("🚨 การแจ้งเตือนระบบ")
 items_df = run_query("SELECT * FROM items")
 
-abnormal_items = items_df[items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม'])]
+abnormal_items = items_df[items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด'])]
 
 low_stock_list = []
 for _, row in items_df.iterrows():
@@ -311,7 +310,7 @@ col_a1, col_a2 = st.columns(2)
 with col_a1:
     if not abnormal_items.empty:
         alert_text = [f"{row['name']} ({row['status']})" for _, row in abnormal_items.iterrows()]
-        st.error(f"❌ **มีอุปกรณ์ผิดปกติ/ถูกยืม ({len(abnormal_items)} รายการ):** " + ", ".join(alert_text))
+        st.error(f"❌ **มีอุปกรณ์ผิดปกติ/หมด/ถูกยืม ({len(abnormal_items)} รายการ):** " + ", ".join(alert_text))
     else:
         st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
 with col_a2:
@@ -321,7 +320,7 @@ with col_a2:
         st.success(f"✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 st.markdown("---")
 
-# --- SHARED BORROW / RETURN COMPONENT (บันทึก User ผู้ให้ยืม/บันทึก) ---
+# --- SHARED BORROW / RETURN COMPONENT ---
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
@@ -357,7 +356,7 @@ def render_borrow_return_system():
                         
                         run_query("UPDATE items SET quantity = ?, status = ? WHERE id = ?", (new_qty, new_status, selected_id), is_select=False)
                         
-                        st.success(f"บันทึกการยืม {item_info['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว (ผู้ให้ยืม: {st.session_state.username})")
+                        st.success(f"บันทึกการยืม {item_info['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
                         st.rerun()
                     else:
                         st.error("กรุณากรอกชื่อผู้ยืมและอัปโหลดรูปถ่ายผู้ยืม/หลักฐานการยืมให้ครบถ้วน")
@@ -417,7 +416,7 @@ if st.session_state.role == "แอดมิน":
     admin_menu = st.tabs([
         "📋 1. จัดการอุปกรณ์ทั้งหมด", 
         "📊 2. รายงานการตรวจเช็ค", 
-        "📥 3. อนุมัติคำขอเบิก", 
+        "📥 3. อนุมัติคำขอเพิ่มอุปกรณ์", 
         "🔄 4. ยืม-คืน เครื่องมือ-อุปกรณ์", 
         "⚙️ 5. ตั้งค่าระบบ & รหัสช่าง"
     ])
@@ -430,7 +429,7 @@ if st.session_state.role == "แอดมิน":
             c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
             search_kw = c_f1.text_input("🔍 ค้นหาชื่ออุปกรณ์...", placeholder="พิมพ์ชื่ออุปกรณ์เพื่อค้นหา")
             cat_filter = c_f2.selectbox("กรองตามหมวดหลัก", ["ทั้งหมด", "อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
-            status_filter = c_f3.selectbox("กรองตามสถานะ", ["ทั้งหมด", "ปกติ", "ชำรุด", "สูญหาย", "ยืม"])
+            status_filter = c_f3.selectbox("กรองตามสถานะ", ["ทั้งหมด", "ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"])
             
             filtered_df = items_df.copy()
             if search_kw.strip():
@@ -461,7 +460,7 @@ if st.session_state.role == "แอดมิน":
                         st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
                         
                     quantity = st.number_input("จำนวน (ชิ้น)", min_value=1, value=1)
-                    status = st.selectbox("สภาพเริ่มต้น", ["ปกติ", "ชำรุด", "สูญหาย"])
+                    status = st.selectbox("สภาพเริ่มต้น", ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด"])
                     
                     alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0 (ค่าเริ่มต้นเตือนที่ 1)")
                     
@@ -501,7 +500,7 @@ if st.session_state.role == "แอดมิน":
                                 st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
                                 
                             e_quantity = st.number_input("จำนวน", min_value=0, value=int(current_item['quantity']))
-                            status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม"]
+                            status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
                             e_status = st.selectbox("สถานะ", status_list, index=status_list.index(current_item['status']) if current_item['status'] in status_list else 0)
                             
                             e_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(current_item.get('alert_zero', 0)))
@@ -568,10 +567,11 @@ if st.session_state.role == "แอดมิน":
             st.dataframe(filtered_df[['id', 'tech_name', 'category', 'inspection_date', 'session_num', 'details']], use_container_width=True, hide_index=True)
             
             st.markdown("---")
-            st.markdown("#### 📸 ดูรูปถ่ายรวมหน้างานของการตรวจเช็ค")
+            st.markdown("#### 📸 ดูรายละเอียดและรูปถ่ายหน้างานของการตรวจเช็ค")
             for _, row in filtered_df.iterrows():
                 date_str_show = row['inspection_date'].strftime("%Y-%m-%d %H:%M:%S")
-                with st.expander(f"📌 {date_str_show} | ผู้ตรวจ: {row['tech_name']} | หมวด: {row['category']} (ครั้งที่ {row['session_num']})"):
+                with st.expander(f"📌 {date_str_show} | ผู้ตรวจ: {row['tech_name']} | หมวด: {row['category']} (รอบที่ {row['session_num']})"):
+                    st.write(f"📝 **รายละเอียดการตรวจ:** {row['details']}")
                     photos_raw = row['photos']
                     if pd.notnull(photos_raw) and str(photos_raw).strip():
                         photo_list = str(photos_raw).split("|||")
@@ -587,9 +587,9 @@ if st.session_state.role == "แอดมิน":
         else:
             st.info("ยังไม่มีประวัติการตรวจเช็คจากช่างในระบบ")
 
-    # --- เมนูแอดมิน: อนุมัติคำขอเบิกอุปกรณ์ ---
+    # --- เมนูแอดมิน: อนุมัติคำขอเพิ่มอุปกรณ์ (บวกสต็อก) ---
     with admin_menu[2]:
-        st.subheader("📥 ตรวจสอบและอนุมัติคำขอเบิกอุปกรณ์จากช่าง")
+        st.subheader("📥 ตรวจสอบและอนุมัติคำขอเพิ่มอุปกรณ์เข้าคลังจากช่าง")
         pending_requests = run_query("""
             SELECT r.id, r.tech_name, i.name as item_name, r.quantity, r.note, r.request_date, r.item_id, i.quantity as current_stock
             FROM requisition_requests r JOIN items i ON r.item_id = i.id
@@ -599,20 +599,19 @@ if st.session_state.role == "แอดมิน":
         if not pending_requests.empty:
             for _, req in pending_requests.iterrows():
                 with st.container():
-                    st.write(f"🆔 **รหัสคำขอ:** #{req['id']} | 👤 **ผู้ขอเบิก:** {req['tech_name']} | 📅 **วันที่:** {req['request_date']}")
-                    st.write(f"📦 **อุปกรณ์:** {req['item_name']} | **จำนวนที่ขอเบิก:** {req['quantity']} ชิ้น (คงเหลือในคลัง: {req['current_stock']})")
-                    st.write(f"📝 **หมายเหตุ/งาน:** {req['note']}")
+                    st.write(f"🆔 **รหัสคำขอ:** #{req['id']} | 👤 **ผู้ขอเพิ่ม:** {req['tech_name']} | 📅 **วันที่:** {req['request_date']}")
+                    st.write(f"📦 **อุปกรณ์:** {req['item_name']} | **จำนวนที่ขอเพิ่ม:** +{req['quantity']} ชิ้น (คงเหลือในคลังปัจจุบัน: {req['current_stock']})")
+                    st.write(f"📝 **หมายเหตุ/เหตุผล:** {req['note']}")
                     
                     col_app1, col_app2 = st.columns(2)
-                    if col_app1.button(f"✅ อนุมัติ (ตัดสต็อก)", key=f"approve_{req['id']}"):
-                        new_stock = int(req['current_stock']) - int(req['quantity'])
-                        if new_stock < 0:
-                            new_stock = 0
-                        run_query("UPDATE items SET quantity = ? WHERE id = ?", (new_stock, req['item_id']), is_select=False)
+                    if col_app1.button(f"✅ อนุมัติ (เพิ่มจำนวนเข้าคลัง)", key=f"approve_{req['id']}"):
+                        # อนุมัติแล้วต้องเป็นการเพิ่มเข้าไปในระบบ (บวกสต็อกเพิ่ม)
+                        new_stock = int(req['current_stock']) + int(req['quantity'])
+                        run_query("UPDATE items SET quantity = ?, status = 'ปกติ' WHERE id = ?", (new_stock, req['item_id']), is_select=False)
                         run_query("UPDATE requisition_requests SET status = 'อนุมัติ' WHERE id = ?", (req['id'],), is_select=False)
                         run_query("INSERT INTO transactions (item_id, borrower_name, borrow_date, return_date, status, quantity, giver_name) VALUES (?,?,?,?,?,?,?)",
-                                  (req['item_id'], f"{req['tech_name']} (เบิก)", req['request_date'], req['request_date'], "เบิกใช้งาน", req['quantity'], st.session_state.username), is_select=False)
-                        st.success(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว (ตัดสต็อกสำเร็จ)")
+                                  (req['item_id'], f"{req['tech_name']} (เพิ่มสต็อก)", req['request_date'], req['request_date'], "เพิ่มเข้าคลัง", req['quantity'], st.session_state.username), is_select=False)
+                        st.success(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว (เพิ่มจำนวนในคลังเป็น {new_stock} ชิ้น)")
                         st.rerun()
                         
                     if col_app2.button(f"❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
@@ -621,7 +620,7 @@ if st.session_state.role == "แอดมิน":
                         st.rerun()
                     st.markdown("---")
         else:
-            st.info("ไม่มีคำขอเบิกอุปกรณ์ที่รอการอนุมัติในขณะนี้")
+            st.info("ไม่มีคำขอเพิ่มอุปกรณ์ที่รอการอนุมัติในขณะนี้")
 
     with admin_menu[3]:
         render_borrow_return_system()
@@ -707,53 +706,52 @@ elif st.session_state.role == "ช่างทั่วไป":
     # ------------------ จอสำหรับช่าง (Technician UI) ------------------
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างทั่วไป")
     
-    tech_main_tab = st.tabs(["📋 ตรวจสอบสภาพอุปกรณ์", "📦 ส่งคำขอเบิกของ (เครื่องมือช่าง)", "🔄 ระบบยืม-คืน อุปกรณ์"])
+    tech_main_tab = st.tabs(["📋 ตรวจสอบสภาพอุปกรณ์", "📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง", "🔄 ระบบยืม-คืน อุปกรณ์"])
     
     with tech_main_tab[2]:
         render_borrow_return_system()
         
-    # --- ช่าง: ส่งคำขอเบิกของ (รอแอดมินอนุมัติ) ---
+    # --- ช่าง: ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (รอแอดมินอนุมัติเพื่อบวกสต็อก) ---
     with tech_main_tab[1]:
-        st.markdown("### 📦 ส่งคำขอเบิกของ (หมวดย่อย: เครื่องมือช่าง)")
-        st.write("เลือกเครื่องมือช่างที่ต้องการเบิก ระบบจะส่งคำขอไปยังแอดมินเพื่อรอการตรวจสอบและอนุมัติ")
+        st.markdown("### 📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (หมวดย่อย: เครื่องมือช่าง)")
+        st.write("เลือกเครื่องมือช่างที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังแอดมินเพื่อรออนุมัติบวกสต็อก")
         
-        tools_requisition_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'เครื่องมือช่าง') & (items_df['quantity'] > 0)]
+        tools_requisition_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'เครื่องมือช่าง')]
         
         if not tools_requisition_df.empty:
             with st.form("requisition_request_form", clear_on_submit=True):
                 req_item_dict = {f"#{row['id']} {row['name']} (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id'] for _, row in tools_requisition_df.iterrows()}
-                sel_req_label = st.selectbox("เลือกเครื่องมือช่างที่ต้องการเบิก *", list(req_item_dict.keys()))
+                sel_req_label = st.selectbox("เลือกเครื่องมือช่างที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
                 
                 req_selected_id = req_item_dict[sel_req_label]
                 req_item_info = items_df[items_df['id'] == req_selected_id].iloc[0]
-                req_max_q = int(req_item_info['quantity'])
                 
-                req_qty = st.number_input("จำนวนที่ต้องการเบิก *", min_value=1, max_value=req_max_q, value=1)
-                req_note = st.text_area("หมายเหตุ / ชื่องานที่นำไปใช้ *")
+                req_qty = st.number_input("จำนวนที่ต้องการเพิ่มเข้าคลัง *", min_value=1, value=1)
+                req_note = st.text_area("หมายเหตุ / เหตุผลที่ขอเพิ่ม *")
                 
-                if st.form_submit_button("📤 ส่งคำขอเบิก (รอแอดมินอนุมัติ)"):
+                if st.form_submit_button("📤 ส่งคำขอเพิ่มอุปกรณ์ (รอแอดมินอนุมัติ)"):
                     if req_note.strip():
                         now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
                         run_query("INSERT INTO requisition_requests (tech_name, item_id, quantity, note, status, request_date) VALUES (?,?,?,?,?,?)",
                                   (st.session_state.username, req_selected_id, req_qty, req_note, 'รออนุมัติ', now_time), is_select=False)
-                        st.success(f"ส่งคำขอเบิก '{req_item_info['name']}' จำนวน {req_qty} ชิ้น ไปยังแอดมินเรียบร้อยแล้ว!")
+                        st.success(f"ส่งคำขอเพิ่ม '{req_item_info['name']}' จำนวน +{req_qty} ชิ้น ไปยังแอดมินเรียบร้อยแล้ว!")
                         st.rerun()
                     else:
-                        st.error("กรุณาระบุหมายเหตุหรือชื่องานที่นำไปใช้")
+                        st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเพิ่มอุปกรณ์")
         else:
-            st.info("ไม่มีเครื่องมือช่างในคลังให้เบิกในขณะนี้")
+            st.info("ไม่มีรายการอุปกรณ์ในระบบ")
             
         st.markdown("---")
-        st.markdown("#### 📜 ประวัติคำขอเบิกของคุณ")
+        st.markdown("#### 📜 ประวัติคำขอเพิ่มอุปกรณ์ของคุณ")
         my_requests = run_query("""
-            SELECT r.id as 'รหัส', i.name as 'ชื่ออุปกรณ์', r.quantity as 'จำนวน', r.note as 'หมายเหตุ', r.request_date as 'วันที่ขอ', r.status as 'สถานะ'
+            SELECT r.id as 'รหัส', i.name as 'ชื่ออุปกรณ์', r.quantity as 'จำนวนที่ขอ', r.note as 'หมายเหตุ', r.request_date as 'วันที่ขอ', r.status as 'สถานะ'
             FROM requisition_requests r JOIN items i ON r.item_id = i.id
             WHERE r.tech_name = ? ORDER BY r.id DESC
         """, (st.session_state.username,))
         if not my_requests.empty:
             st.dataframe(my_requests, use_container_width=True, hide_index=True)
         else:
-            st.info("ยังไม่มีประวัติการส่งคำขอเบิก")
+            st.info("ยังไม่มีประวัติการส่งคำขอเพิ่มอุปกรณ์")
         
     with tech_main_tab[0]:
         tech_category_choice = st.radio("เลือกหมวดหมู่การทำงาน", ["🔧 หมวดอุปกรณ์ช่าง", "🏊 หมวดอุปกรณ์สระว่ายน้ำ"], horizontal=True)
@@ -853,18 +851,36 @@ elif st.session_state.role == "ช่างทั่วไป":
                             st.error(error_msg)
                         else:
                             now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            flagged_summaries = []
+                            
                             for item_id, data in item_reports.items():
+                                item_row = items_df[items_df['id'] == item_id].iloc[0]
+                                curr_q = int(item_row['quantity'])
+                                item_name = item_row['name']
+                                
                                 if data["flagged"]:
                                     final_st = data["status"]
                                     if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
                                         final_st = f"กำลังใช้งาน ({data['detail']})"
-                                    run_query("UPDATE items SET status = ? WHERE id = ?", (final_st, item_id), is_select=False)
+                                    
+                                    # หากเลือก "อุปกรณ์หมด" หรือ "สูญหาย" ให้ทำการตัดยอดจำนวนในระบบลง 1 ชิ้น
+                                    if data["status"] in ["อุปกรณ์หมด", "สูญหาย"]:
+                                        new_q = max(0, curr_q - 1)
+                                        run_query("UPDATE items SET status = ?, quantity = ? WHERE id = ?", (final_st, new_q, item_id), is_select=False)
+                                    elif data["status"] == "ชำรุด":
+                                        run_query("UPDATE items SET status = ? WHERE id = ?", (final_st, item_id), is_select=False)
+                                    else:
+                                        run_query("UPDATE items SET status = ? WHERE id = ?", (final_st, item_id), is_select=False)
+                                        
+                                    detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "")
+                                    flagged_summaries.append(detail_txt)
                                 else:
-                                    # แก้ไข Bug Parameter ให้ถูกต้องครบถ้วน
                                     run_query("UPDATE items SET status = ? WHERE id = ?", ("ปกติ", item_id), is_select=False)
                                     
                             photos_str = "|||".join(uploaded_photos_b64)
-                            summary_note = f"ตรวจรอบที่ {global_count+1}: อัปเดตสถานะอุปกรณ์ช่าง"
+                            summary_details = ", ".join(flagged_summaries) if flagged_summaries else "ปกติทุกรายการ"
+                            summary_note = f"รอบที่ {global_count+1} | รายการผิดปกติ: {summary_details}"
+                            
                             run_query("INSERT INTO inspections (tech_name, category, inspection_date, session_num, details, photos) VALUES (?,?,?,?,?,?)",
                                       (st.session_state.username, 'อุปกรณ์ช่าง', now_time, global_count+1, summary_note, photos_str), is_select=False)
                             
@@ -911,12 +927,17 @@ elif st.session_state.role == "ช่างทั่วไป":
                         st.error("❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานสระว่ายน้ำให้ครบทั้ง 4 รูป")
                     else:
                         now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        pool_summaries = []
                         for item_id, q_val in updated_quantities.items():
+                            old_row = items_df[items_df['id'] == item_id].iloc[0]
                             run_query("UPDATE items SET quantity = ? WHERE id = ?", (q_val, item_id), is_select=False)
-                            
+                            if q_val != int(old_row['quantity']):
+                                pool_summaries.append(f"{old_row['name']}: ปรับจาก {old_row['quantity']} เหลือ {q_val}")
+                                
                         photos_str = "|||".join(uploaded_pool_photos_b64)
+                        summary_note = "อัปเดตจำนวนอุปกรณ์สระว่ายน้ำ" + (f" | การเปลี่ยนแปลง: {', '.join(pool_summaries)}" if pool_summaries else "")
                         run_query("INSERT INTO inspections (tech_name, category, inspection_date, session_num, details, photos) VALUES (?,?,?,?,?,?)",
-                                  (st.session_state.username, 'อุปกรณ์สระว่ายน้ำ', now_time, 1, "อัปเดตจำนวนอุปกรณ์สระว่ายน้ำ", photos_str), is_select=False)
+                                  (st.session_state.username, 'อุปกรณ์สระว่ายน้ำ', now_time, 1, summary_note, photos_str), is_select=False)
                                   
                         st.success("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
                         st.rerun()
