@@ -221,7 +221,6 @@ st.markdown("""
 }
 .stApp{background:var(--bg); color:var(--ink);}
 
-/* ซ่อนแถบ GitHub/Streamlit header และไอคอนสถานะ/โลโก้มุมขวาล่างทุกรูปแบบอย่างเด็ดขาด */
 header[data-testid="stHeader"] {display: none !important;}
 footer {visibility: hidden !important; display: none !important;}
 #MainMenu {visibility: hidden !important; display: none !important;}
@@ -600,11 +599,17 @@ if st.session_state.role == "แอดมิน":
             if status_filter != "ทั้งหมด":
                 filtered_df = filtered_df[filtered_df['status'] == status_filter]
                 
-            st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ")
+            st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ (💡 คลิกเลือกแถวในตารางด้านล่างเพื่อแก้ไขข้อมูลทันที)")
+            
             show_df = filtered_df[['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']].copy()
             show_df['alert_zero'] = show_df['alert_zero'].astype(bool)
-            st.dataframe(
-                show_df, use_container_width=True, hide_index=True, height=400,
+            
+            # เปิดใช้งาน Selection บนตารางเพื่อให้คลิกเลือกแถวได้
+            table_event = st.dataframe(
+                show_df, use_container_width=True, hide_index=True, height=350,
+                on_selection="rerun",
+                selection_mode="single-row",
+                key="admin_items_table",
                 column_config={
                     "id": st.column_config.NumberColumn("รหัส", width="small"),
                     "name": st.column_config.TextColumn("ชื่ออุปกรณ์", width="large"),
@@ -613,7 +618,68 @@ if st.session_state.role == "แอดมิน":
                     "status": "สถานะ",
                     "alert_zero": st.column_config.CheckboxColumn("เตือนที่ 0", width="small"),
                     "note": "หมายเหตุ",
-                })
+                }
+            )
+            
+            # ตรวจสอบว่ามีการคลิกเลือกแถวในตารางหรือไม่
+            selected_rows = table_event.selection.rows if hasattr(table_event, 'selection') else []
+            if selected_rows:
+                row_idx = selected_rows[0]
+                selected_item_id = int(show_df.iloc[row_idx]['id'])
+                st.session_state.quick_edit_id = selected_item_id
+            
+            # หากมีการเลือกรายการ ให้แสดงฟอร์มแก้ไขด่วนทันทีใต้ตาราง
+            if "quick_edit_id" in st.session_state and st.session_state.quick_edit_id:
+                qe_id = st.session_state.quick_edit_id
+                qe_item_check = items_df[items_df['id'] == qe_id]
+                if not qe_item_check.empty:
+                    qe_row = qe_item_check.iloc[0]
+                    st.markdown("---")
+                    st.markdown(f"### ✏️ แก้ไขข้อมูลอุปกรณ์: #{qe_row['id']} - {qe_row['name']}")
+                    
+                    with st.form(f"quick_edit_form_{qe_id}"):
+                        qe_name = st.text_input("ชื่ออุปกรณ์", value=qe_row['name'])
+                        qe_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if qe_row['category']=="อุปกรณ์ช่าง" else 1)
+                        
+                        if qe_category == "อุปกรณ์ช่าง":
+                            sub_idx = 0 if qe_row['subcategory'] == "เครื่องมือช่าง" else 1
+                            qe_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
+                        else:
+                            qe_subcat = "เคมีภัณฑ์"
+                            st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
+                            
+                        qe_quantity = st.number_input("จำนวน", min_value=0, value=int(qe_row['quantity']))
+                        status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
+                        qe_status = st.selectbox("สถานะ", status_list, index=status_list.index(qe_row['status']) if qe_row['status'] in status_list else 0)
+                        
+                        qe_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(qe_row.get('alert_zero', 0)))
+                        qe_note = st.text_area("หมายเหตุ", value=qe_row['note'] if qe_row['note'] else "")
+                        
+                        pil_img = get_pil_image_from_base64(qe_row['image'])
+                        if pil_img:
+                            st.image(pil_img, width=150, caption="รูปภาพปัจจุบัน")
+                        qe_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"qe_file_{qe_id}")
+                        
+                        col_qe1, col_qe2, col_qe3 = st.columns([1, 1, 2])
+                        if col_qe1.form_submit_button("💾 บันทึกการแก้ไข", type="primary"):
+                            img_base64 = qe_row['image']
+                            if qe_file is not None:
+                                img_bytes = qe_file.read()
+                                img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                            az_val = 1 if qe_alert_zero else 0
+                            run_query("UPDATE items SET name=?, category=?, subcategory=?, quantity=?, status=?, alert_zero=?, note=?, image=? WHERE id=?",
+                                      (qe_name, qe_category, qe_subcat, qe_quantity, qe_status, az_val, qe_note, img_base64, qe_id), is_select=False)
+                            st.success("อัปเดตข้อมูลสำเร็จ!")
+                            del st.session_state.quick_edit_id
+                            st.rerun()
+                        if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
+                            run_query("DELETE FROM items WHERE id=?", (qe_id,), is_select=False)
+                            st.success("ลบเรียบร้อยแล้ว!")
+                            del st.session_state.quick_edit_id
+                            st.rerun()
+                        if col_qe3.form_submit_button("❌ ปิดหน้าต่างแก้ไข"):
+                            del st.session_state.quick_edit_id
+                            st.rerun()
 
         with tab_add_edit:
             sub_a, sub_e = st.tabs(["➕ เพิ่มอุปกรณ์ใหม่", "✏️ แก้ไข/ลบ รายการ"])
