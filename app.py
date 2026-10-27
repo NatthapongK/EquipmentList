@@ -375,12 +375,12 @@ if not st.session_state.logged_in:
             role_val = ""
             user_val = ""
             if username == "Natthapongk" and password == "0891148075":
-                role_val = "แอดมิน"
+                role_val = "ผู้ออกแบบ/ดูแลระบบ"
                 user_val = "Natthapongk"
             else:
                 matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)]
                 if not matched_tech.empty:
-                    role_val = "ช่างทั่วไป"
+                    role_val = "ช่างประจำอาคาร"
                     user_val = username
             
             if role_val:
@@ -585,7 +585,7 @@ def render_borrow_return_system():
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
 # --- DIVISION BY ROLE ---
-if st.session_state.role == "แอดมิน":
+if st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ":
     admin_menu = st.tabs([
         "📋 1. จัดการอุปกรณ์ทั้งหมด", 
         "📊 2. รายงานการตรวจเช็ค", 
@@ -612,20 +612,15 @@ if st.session_state.role == "แอดมิน":
             if status_filter != "ทั้งหมด":
                 filtered_df = filtered_df[filtered_df['status'] == status_filter]
                 
-            st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ")
-            
-            # ใช้ selectbox เลือกรายการเพื่อแก้ไขอย่างเสถียร 100% ทุกเวอร์ชัน Streamlit ไม่เกิด Error
-            if not filtered_df.empty:
-                item_options = {f"#{row['id']} - {row['name']} (หมวด: {row['category']} | คงเหลือ: {row['quantity']})": int(row['id']) for _, row in filtered_df.iterrows()}
-                selected_item_label = st.selectbox("📌 เลือกรายการอุปกรณ์ที่ต้องการแก้ไขด่วน", ["-- กรุณาเลือกรายการอุปกรณ์เพื่อแก้ไข --"] + list(item_options.keys()))
-                if selected_item_label != "-- กรุณาเลือกรายการอุปกรณ์เพื่อแก้ไข --":
-                    st.session_state.quick_edit_id = item_options[selected_item_label]
+            st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ (💡 คลิกเลือกแถวในตารางด้านล่าง เพื่อเปิดหน้าต่างป๊อปอัพแก้ไขข้อมูลทันที)")
             
             show_df = filtered_df[['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']].copy()
             show_df['alert_zero'] = show_df['alert_zero'].astype(bool)
             
-            st.dataframe(
-                show_df, use_container_width=True, hide_index=True, height=300,
+            # เปิดให้คลิกแถวในตารางเพื่อแก้ไขข้อมูลแบบ Interactive (ป๊อปอัพ)
+            table_event = st.dataframe(
+                show_df, use_container_width=True, hide_index=True, height=350,
+                on_select="rerun", selection_mode="single-row",
                 column_config={
                     "id": st.column_config.NumberColumn("รหัส", width="small"),
                     "name": st.column_config.TextColumn("ชื่ออุปกรณ์", width="large"),
@@ -637,57 +632,62 @@ if st.session_state.role == "แอดมิน":
                 }
             )
             
+            selected_rows = table_event.get("selection", {}).get("rows", [])
+            if selected_rows:
+                selected_idx = selected_rows[0]
+                qe_id = int(filtered_df.iloc[selected_idx]['id'])
+                st.session_state.quick_edit_id = qe_id
+
             if "quick_edit_id" in st.session_state and st.session_state.quick_edit_id:
                 qe_id = st.session_state.quick_edit_id
                 qe_item_check = items_df[items_df['id'] == qe_id]
                 if not qe_item_check.empty:
                     qe_row = qe_item_check.iloc[0]
                     st.markdown("---")
-                    st.markdown(f"### ✏️ แก้ไขข้อมูลอุปกรณ์: #{qe_row['id']} - {qe_row['name']}")
-                    
-                    with st.form(f"quick_edit_form_{qe_id}"):
-                        qe_name = st.text_input("ชื่ออุปกรณ์", value=qe_row['name'])
-                        qe_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if qe_row['category']=="อุปกรณ์ช่าง" else 1)
-                        
-                        if qe_category == "อุปกรณ์ช่าง":
-                            sub_idx = 0 if qe_row['subcategory'] == "เครื่องมือช่าง" else 1
-                            qe_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
-                        else:
-                            qe_subcat = "เคมีภัณฑ์"
-                            st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
+                    with st.expander(f"📌 หน้าต่างป๊อปอัพแก้ไขข้อมูลอุปกรณ์: #{qe_row['id']} - {qe_row['name']}", expanded=True):
+                        with st.form(f"quick_edit_form_{qe_id}"):
+                            qe_name = st.text_input("ชื่ออุปกรณ์", value=qe_row['name'])
+                            qe_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if qe_row['category']=="อุปกรณ์ช่าง" else 1)
                             
-                        qe_quantity = st.number_input("จำนวน", min_value=0, value=int(qe_row['quantity']))
-                        status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
-                        qe_status = st.selectbox("สถานะ", status_list, index=status_list.index(qe_row['status']) if qe_row['status'] in status_list else 0)
-                        
-                        qe_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(qe_row.get('alert_zero', 0)))
-                        qe_note = st.text_area("หมายเหตุ", value=qe_row['note'] if qe_row['note'] else "")
-                        
-                        pil_img = get_pil_image_from_base64(qe_row['image'])
-                        if pil_img:
-                            st.image(pil_img, width=150, caption="รูปภาพปัจจุบัน")
-                        qe_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"qe_file_{qe_id}")
-                        
-                        col_qe1, col_qe2, col_qe3 = st.columns([1, 1, 2])
-                        if col_qe1.form_submit_button("💾 บันทึกการแก้ไข", type="primary"):
-                            img_base64 = qe_row['image']
-                            if qe_file is not None:
-                                img_bytes = qe_file.read()
-                                img_base64 = base64.b64encode(img_bytes).decode("utf-8")
-                            az_val = 1 if qe_alert_zero else 0
-                            run_query("UPDATE items SET name=?, category=?, subcategory=?, quantity=?, status=?, alert_zero=?, note=?, image=? WHERE id=?",
-                                      (qe_name, qe_category, qe_subcat, qe_quantity, qe_status, az_val, qe_note, img_base64, qe_id), is_select=False)
-                            st.success("อัปเดตข้อมูลสำเร็จ!")
-                            del st.session_state.quick_edit_id
-                            st.rerun()
-                        if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
-                            run_query("DELETE FROM items WHERE id=?", (qe_id,), is_select=False)
-                            st.success("ลบเรียบร้อยแล้ว!")
-                            del st.session_state.quick_edit_id
-                            st.rerun()
-                        if col_qe3.form_submit_button("❌ ปิดหน้าต่างแก้ไข"):
-                            del st.session_state.quick_edit_id
-                            st.rerun()
+                            if qe_category == "อุปกรณ์ช่าง":
+                                sub_idx = 0 if qe_row['subcategory'] == "เครื่องมือช่าง" else 1
+                                qe_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
+                            else:
+                                qe_subcat = "เคมีภัณฑ์"
+                                st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
+                                
+                            qe_quantity = st.number_input("จำนวน", min_value=0, value=int(qe_row['quantity']))
+                            status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
+                            qe_status = st.selectbox("สถานะ", status_list, index=status_list.index(qe_row['status']) if qe_row['status'] in status_list else 0)
+                            
+                            qe_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(qe_row.get('alert_zero', 0)))
+                            qe_note = st.text_area("หมายเหตุ", value=qe_row['note'] if qe_row['note'] else "")
+                            
+                            pil_img = get_pil_image_from_base64(qe_row['image'])
+                            if pil_img:
+                                st.image(pil_img, width=150, caption="รูปภาพปัจจุบัน")
+                            qe_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"qe_file_{qe_id}")
+                            
+                            col_qe1, col_qe2, col_qe3 = st.columns([1, 1, 2])
+                            if col_qe1.form_submit_button("💾 บันทึกการแก้ไข", type="primary"):
+                                img_base64 = qe_row['image']
+                                if qe_file is not None:
+                                    img_bytes = qe_file.read()
+                                    img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                                az_val = 1 if qe_alert_zero else 0
+                                run_query("UPDATE items SET name=?, category=?, subcategory=?, quantity=?, status=?, alert_zero=?, note=?, image=? WHERE id=?",
+                                          (qe_name, qe_category, qe_subcat, qe_quantity, qe_status, az_val, qe_note, img_base64, qe_id), is_select=False)
+                                st.success("อัปเดตข้อมูลสำเร็จ!")
+                                del st.session_state.quick_edit_id
+                                st.rerun()
+                            if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
+                                run_query("DELETE FROM items WHERE id=?", (qe_id,), is_select=False)
+                                st.success("ลบเรียบร้อยแล้ว!")
+                                del st.session_state.quick_edit_id
+                                st.rerun()
+                            if col_qe3.form_submit_button("❌ ปิดหน้าต่าง"):
+                                del st.session_state.quick_edit_id
+                                st.rerun()
 
         with tab_add_edit:
             sub_a, sub_e = st.tabs(["➕ เพิ่มอุปกรณ์ใหม่", "✏️ แก้ไข/ลบ รายการ"])
@@ -838,7 +838,6 @@ if st.session_state.role == "แอดมิน":
         else:
             st.info("ยังไม่มีประวัติการตรวจเช็คจากช่างในระบบ")
 
-    # --- เมนูแอดมิน: อนุมัติคำขอเพิ่มอุปกรณ์ & ประวัติการอนุมัติ (แยกจากระบบยืม-คืน) ---
     with admin_menu[2]:
         st.subheader("📥 จัดการคำขอเพิ่มอุปกรณ์เข้าคลัง")
         sub_req_pending, sub_req_history = st.tabs(["📥 คำขอที่รออนุมัติ", "📜 ประวัติการอนุมัติคำขอ"])
@@ -974,19 +973,18 @@ if st.session_state.role == "แอดมิน":
                                 st.success("ลบบัญชีช่างเรียบร้อยแล้ว!")
                                 st.rerun()
 
-elif st.session_state.role in ["ช่างทั่วไป", "ช่างประจำอาคาร"]:
+elif st.session_state.role == "ช่างประจำอาคาร":
     # ------------------ จอสำหรับช่าง (Technician UI) ------------------
-    st.subheader("📋 หน้าต่างปฏิบัติงานช่างทั่วไป")
+    st.subheader("📋 หน้าต่างปฏิบัติงานช่างประจำอาคาร")
     
     tech_main_tab = st.tabs(["📋 ตรวจสอบสภาพอุปกรณ์", "📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง", "🔄 ระบบยืม-คืน อุปกรณ์"])
     
     with tech_main_tab[2]:
         render_borrow_return_system()
         
-    # --- ช่าง: ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (แสดงทั้ง 'อุปกรณ์ช่างทั่วไป' และ 'อุปกรณ์สระว่ายน้ำ') ---
     with tech_main_tab[1]:
         st.markdown("### 📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
-        st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังแอดมินเพื่อรออนุมัติบวกสต็อก")
+        st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังผู้ออกแบบ/ดูแลระบบเพื่อรออนุมัติบวกสต็อก")
         
         tools_requisition_df = items_df[
             ((items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'อุปกรณ์ช่างทั่วไป')) | 
@@ -1008,12 +1006,12 @@ elif st.session_state.role in ["ช่างทั่วไป", "ช่าง�
                 req_qty = st.number_input("จำนวนที่ต้องการเพิ่มเข้าคลัง *", min_value=1, value=1)
                 req_note = st.text_area("หมายเหตุ / เหตุผลที่ขอเพิ่ม *")
                 
-                if st.form_submit_button("📤 ส่งคำขอเพิ่มอุปกรณ์ (รอแอดมินอนุมัติ)"):
+                if st.form_submit_button("📤 ส่งคำขอเพิ่มอุปกรณ์ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
                     if req_note.strip():
                         now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
                         run_query("INSERT INTO requisition_requests (tech_name, item_id, quantity, note, status, request_date) VALUES (?,?,?,?,?,?)",
                                   (st.session_state.username, req_selected_id, req_qty, req_note, 'รออนุมัติ', now_time), is_select=False)
-                        st.success(f"ส่งคำขอเพิ่ม '{req_item_info['name']}' จำนวน +{req_qty} ชิ้น ไปยังแอดมินเรียบร้อยแล้ว!")
+                        st.success(f"ส่งคำขอเพิ่ม '{req_item_info['name']}' จำนวน +{req_qty} ชิ้น ไปยังผู้ออกแบบ/ดูแลระบบเรียบร้อยแล้ว!")
                         st.rerun()
                     else:
                         st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเพิ่มอุปกรณ์")
@@ -1054,7 +1052,7 @@ elif st.session_state.role in ["ช่างทั่วไป", "ช่าง�
             total_allowed = base_quota + extra_quota
             
             if global_count >= total_allowed:
-                st.error("⚠️ ครบโควตารอบการตรวจสำหรับวันนี้แล้ว (กรุณาติดต่อแอดมินเพื่อเพิ่มรอบตรวจพิเศษ)")
+                st.error("⚠️ ครบโควตารอบการตรวจสำหรับวันนี้แล้ว (กรุณาติดต่อผู้ออกแบบ/ดูแลระบบเพื่อเพิ่มรอบตรวจพิเศษ)")
             else:
                 tools_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['quantity'] > 0)]
                 
