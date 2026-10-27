@@ -207,13 +207,12 @@ def init_db():
 
 init_db()
 
-# --- THEME / UI HELPERS ---
-# โทนสี: น้ำเงินเขียวสระน้ำ (teal) + เทาเหล็ก (steel) + สีสถานะ เขียว/เหลืองอำพัน/แดง
+# --- THEME / UI HELPERS (Light Theme + Hide Header/Footer/Deploy icons) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
 :root{
-  --ink:#14232B; --muted:#5B6B73; --line:#DCE4E7; --bg:#F3F6F7; --card:#FFFFFF;
+  --ink:#14232B; --muted:#5B6B73; --line:#DCE4E7; --bg:#F8FAFB; --card:#FFFFFF;
   --teal:#0E7C86; --teal-d:#0A5C64; --ok:#2E7D5B; --warn:#B7791F; --bad:#B93A32;
 }
 .stApp, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp p, .stApp label, .stApp li,
@@ -221,18 +220,14 @@ st.markdown("""
   font-family:'IBM Plex Sans Thai','Noto Sans Thai',system-ui,sans-serif;
 }
 .stApp{background:var(--bg); color:var(--ink);}
-footer{visibility:hidden;}
-:root{color-scheme:light;}
 
-/* ซ่อนแถบเครื่องมือด้านบน (Share / ดาว / แก้ไข / เมนู) แต่คงปุ่มเปิด-ปิดแถบด้านข้างไว้ */
-[data-testid="stHeader"]{background:transparent !important; box-shadow:none !important;}
-[data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"],
-#MainMenu, .stAppDeployButton{display:none !important;}
-/* ไอคอน/ป้ายมุมล่างขวาของ Streamlit Community Cloud */
-[class*="viewerBadge"], [class*="_profileContainer_"], [class*="_terminalButton_"],
-[data-testid="manage-app-button"], [data-testid="appCreatorAvatar"]{display:none !important;}
+/* ซ่อนแถบ GitHub/Streamlit header ด้านบน และ footer / hamburger menu / deploy icon ด้านล่างขวา */
+header[data-testid="stHeader"] {display: none !important;}
+footer {visibility: hidden !important; display: none !important;}
+#MainMenu {visibility: hidden !important; display: none !important;}
+.stDeployButton {display: none !important;}
 
-.block-container{padding-top:3.5rem; padding-bottom:3rem; max-width:1200px;}
+.block-container{padding-top:1.5rem; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
 
 /* แถบหัวหน้าเว็บ */
@@ -263,7 +258,7 @@ section[data-testid="stSidebar"]{background:#fff; border-right:1px solid var(--l
 .stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto;}
 .stTabs [data-baseweb="tab"]{height:auto; padding:.6rem .9rem; font-weight:500; color:var(--muted); white-space:nowrap;}
 .stTabs [aria-selected="true"]{color:var(--teal-d); font-weight:600;}
-.stTabs [data-baseweb="tab-highlight"]{background:var(--teal) !important; height:3px;}
+.stTabs [data-baseweb="tab-highlight"]{background:var(--teal); height:3px;}
 
 /* การ์ด/ฟอร์ม/expander */
 [data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card);}
@@ -278,13 +273,26 @@ section[data-testid="stSidebar"]{background:#fff; border-right:1px solid var(--l
 .stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
 
-/* รายการตรวจเช็ค: ช่องติ๊กต่อท้ายชื่ออุปกรณ์ในบรรทัดเดียวกัน (มือถือ) */
-.st-key-tech_check_list div[data-testid="stHorizontalBlock"]{flex-wrap:nowrap !important; align-items:flex-start !important; gap:.5rem !important;}
+/* แก้ไขรายการตรวจเช็ค: บังคับให้อยู่บรรทัดเดียวกันเสมอทั้งบนมือถือและคอมพิวเตอร์ */
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"]{
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 0.5rem !important;
+}
 .st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
-.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{min-width:0 !important; width:auto !important;}
-.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:first-child{flex:1 1 0 !important;}
-.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:last-child{flex:0 0 auto !important;}
-.st-key-tech_check_list div[data-testid="stCheckbox"]{margin-top:.6rem; white-space:nowrap;}
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:last-child {
+  flex: 0 0 110px !important;
+}
+.st-key-tech_check_list div[data-testid="stCheckbox"] {
+  margin-top: 0 !important;
+  white-space: nowrap !important;
+}
 
 @media (max-width:640px){
   .block-container{padding-left:.8rem; padding-right:.8rem;}
@@ -296,11 +304,9 @@ section[data-testid="stSidebar"]{background:#fff; border-right:1px solid var(--l
 """, unsafe_allow_html=True)
 
 def esc(text):
-    """escape ข้อความก่อนแสดงใน HTML"""
     return _html.escape(str(text))
 
 def keyed_container(key, **kwargs):
-    """สร้าง container พร้อม key (ใช้อ้างอิงใน CSS) - รองรับ Streamlit รุ่นเก่าที่ยังไม่มี key"""
     try:
         return st.container(key=key, **kwargs)
     except TypeError:
@@ -362,7 +368,6 @@ if not st.session_state.logged_in:
             '<div class="app-hero"><div><div class="t">🛠️ ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ</div>'
             '<div class="s">เข้าสู่ระบบเพื่อตรวจเช็ค ยืม-คืน และจัดการคลังอุปกรณ์</div></div></div>',
             unsafe_allow_html=True)
-        # ใช้ form เพื่อให้กด Enter / ปุ่มบนมือถือส่งฟอร์มได้
         with st.form("login_form"):
             username = st.text_input("ชื่อผู้ใช้งาน (Username)")
             password = st.text_input("รหัสผ่าน (Password)", type="password")
@@ -435,7 +440,6 @@ low_stock_items = pd.DataFrame(low_stock_list)
 borrowed_cnt = int(run_query("SELECT COUNT(*) AS c FROM transactions WHERE status = 'กำลังยืม'").iloc[0]['c'])
 abn_cnt, low_cnt = len(abnormal_items), len(low_stock_items)
 
-# การ์ดสรุปภาพรวม (สีขอบซ้ายสื่อสถานะ: เขียว = ปกติ / แดง,เหลือง = ต้องดู)
 st.markdown(
     f'''<div class="kpi-grid">
       <div class="kpi"><div class="n">{len(items_df)}</div><div class="l">รายการอุปกรณ์ทั้งหมด</div></div>
@@ -987,7 +991,7 @@ elif st.session_state.role == "ช่างทั่วไป":
                     with keyed_container("tech_check_list", height=500):
                         item_reports = {}
                         for _, row in tools_df.iterrows():
-                            # แถวบน: ชื่ออุปกรณ์ (ซ้าย) + ช่องติ๊กแจ้งปัญหา (ต่อท้ายชื่อ ชิดขวา) อยู่บรรทัดเดียวกันทั้งมือถือและคอม
+                            # จัดให้ชื่ออุปกรณ์ (expander) อยู่ซ้าย และปุ่มติ๊กแจ้งปัญหาอยู่ขวาในบรรทัดเดียวกัน
                             col_item, col_flag = st.columns([5, 1.4])
                             
                             with col_item:
@@ -1001,7 +1005,6 @@ elif st.session_state.role == "ช่างทั่วไป":
                             with col_flag:
                                 is_flagged = st.checkbox("แจ้งปัญหา", key=f"flag_{row['id']}")
                             
-                            # แถวล่าง: แสดงเฉพาะเมื่อติ๊กแจ้งปัญหา (เต็มความกว้าง อ่านง่ายบนมือถือ)
                             issue_type = "ปกติ"
                             issue_detail = ""
                             if is_flagged:
