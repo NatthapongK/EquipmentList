@@ -198,22 +198,18 @@ def init_db():
         c.executemany("INSERT INTO items (name, category, subcategory, quantity, status, alert_zero, note, image) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
                       [(i[0], i[1], i[2], i[3], i[4], 0, i[5], i[6]) for i in DEFAULT_INITIAL_ITEMS])
         
-    c.execute("SELECT COUNT(*) FROM tech_users")
-    if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO tech_users (username, password) VALUES (?, ?)", ("tech", "tech123"))
-        
     conn.commit()
     conn.close()
 
 init_db()
 
-# --- THEME / UI HELPERS (Light Theme + Hide All Streamlit Badges & Status Widgets) ---
+# --- THEME / UI HELPERS (Dark Mode Theme matching user screenshot) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
 :root{
-  --ink:#14232B; --muted:#5B6B73; --line:#DCE4E7; --bg:#F8FAFB; --card:#FFFFFF;
-  --teal:#0E7C86; --teal-d:#0A5C64; --ok:#2E7D5B; --warn:#B7791F; --bad:#B93A32;
+  --ink:#F1F5F9; --muted:#94A3B8; --line:#334155; --bg:#0B132B; --card:#1E293B;
+  --teal:#0E7C86; --teal-d:#0A5C64; --ok:#22C55E; --warn:#F59E0B; --bad:#EF4444;
 }
 .stApp, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp p, .stApp label, .stApp li,
 .stApp input, .stApp textarea, .stApp button, .stApp [data-baseweb="tab"], .stApp [data-baseweb="select"]{
@@ -233,31 +229,31 @@ a[href*="streamlit.io"] {display: none !important; visibility: hidden !important
 .block-container{padding-top:1.5rem; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
 
-.app-hero{background:var(--ink); color:#fff; border-radius:14px; padding:1rem 1.25rem;
+.app-hero{background:#111827; color:#fff; border-radius:14px; padding:1rem 1.25rem; border:1px solid var(--line);
   display:flex; justify-content:space-between; align-items:center; gap:.75rem 1rem; flex-wrap:wrap; margin-bottom:1rem;}
-.app-hero .t{font-size:1.3rem; font-weight:700; line-height:1.3;}
-.app-hero .s{font-size:.85rem; color:#A9BCC4; margin-top:.15rem;}
+.app-hero .t{font-size:1.3rem; font-weight:700; line-height:1.3; color:#F8FAFC;}
+.app-hero .s{font-size:.85rem; color:#94A3B8; margin-top:.15rem;}
 .chip{display:inline-block; padding:.2rem .7rem; border-radius:999px; font-size:.8rem; font-weight:600;
-  background:rgba(14,124,134,.9); color:#fff;}
+  background:var(--teal); color:#fff;}
 
 .kpi-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:.75rem; margin-bottom:1rem;}
 .kpi{background:var(--card); border:1px solid var(--line); border-left:4px solid var(--c,var(--teal));
   border-radius:10px; padding:.7rem .9rem;}
-.kpi .n{font-size:1.7rem; font-weight:700; line-height:1.15; color:var(--ink);}
+.kpi .n{font-size:1.7rem; font-weight:700; line-height:1.15; color:#F8FAFC;}
 .kpi .l{font-size:.82rem; color:var(--muted);}
 
-section[data-testid="stSidebar"]{background:#fff; border-right:1px solid var(--line);}
+section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(--line);}
 .user-card{display:flex; align-items:center; gap:.7rem; padding:.7rem; border:1px solid var(--line);
-  border-radius:12px; background:var(--bg);}
+  border-radius:12px; background:var(--card);}
 .avatar{width:2.4rem; height:2.4rem; border-radius:50%; background:var(--teal); color:#fff;
   display:flex; align-items:center; justify-content:center; font-weight:700; flex:none;}
-.u-name{font-weight:600; line-height:1.2; word-break:break-all;}
+.u-name{font-weight:600; line-height:1.2; word-break:break-all; color:#F8FAFC;}
 .u-role{font-size:.8rem; color:var(--muted);}
 
 .stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto;}
 .stTabs [data-baseweb="tab"]{height:auto; padding:.6rem .9rem; font-weight:500; color:var(--muted); white-space:nowrap;}
-.stTabs [aria-selected="true"]{color:var(--teal-d); font-weight:600;}
-.stTabs [data-baseweb="tab-highlight"]{background:var(--teal); height:3px;}
+.stTabs [aria-selected="true"]{color:#38BDF8; font-weight:600;}
+.stTabs [data-baseweb="tab-highlight"]{background:#38BDF8; height:3px;}
 
 [data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card);}
 [data-testid="stForm"]{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:1rem;}
@@ -374,9 +370,13 @@ if not st.session_state.logged_in:
         if submitted:
             role_val = ""
             user_val = ""
-            if username == "Natthapongk" and password == "0891148075":
+            # ดึงข้อมูลรหัสผ่านแอดมินจาก Secrets
+            admin_user = st.secrets["admin"]["username"]
+            admin_pass = st.secrets["admin"]["password"]
+            
+            if username == admin_user and password == admin_pass:
                 role_val = "ผู้ออกแบบ/ดูแลระบบ"
-                user_val = "Natthapongk"
+                user_val = admin_user
             else:
                 matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)]
                 if not matched_tech.empty:
@@ -617,7 +617,6 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
             show_df = filtered_df[['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']].copy()
             show_df['alert_zero'] = show_df['alert_zero'].astype(bool)
             
-            # เปิดให้คลิกแถวในตารางเพื่อแก้ไขข้อมูลแบบ Interactive (ป๊อปอัพ)
             table_event = st.dataframe(
                 show_df, use_container_width=True, hide_index=True, height=350,
                 on_select="rerun", selection_mode="single-row",
