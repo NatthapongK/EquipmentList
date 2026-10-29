@@ -1,13 +1,12 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import base64
 import html as _html
-import pytz
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
-TZ_TH = pytz.timezone('Asia/Bangkok')
+TZ_TH = timezone(timedelta(hours=7))
 
 def get_now_th():
     return datetime.now(TZ_TH)
@@ -979,7 +978,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
 elif st.session_state.role == "ช่างประจำอาคาร":
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างประจำอาคาร")
     
-    # เปลี่ยนชื่อแท็บตามที่ต้องการ
+    # แท็บชื่อใหม่: ตรวจสอบอุปกรณ์ / เบิกของ / ระบบยืม-คืน อุปกรณ์
     tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกของ", "🔄 ระบบยืม-คืน อุปกรณ์"])
     
     with tech_main_tab[2]:
