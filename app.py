@@ -4,6 +4,16 @@ import pandas as pd
 from datetime import datetime
 import base64
 import html as _html
+import pytz
+
+# --- TIMEZONE CONFIG (Thailand UTC+7) ---
+TZ_TH = pytz.timezone('Asia/Bangkok')
+
+def get_now_th():
+    return datetime.now(TZ_TH)
+
+def get_now_str(fmt="%Y-%m-%d %H:%M:%S"):
+    return get_now_th().strftime(fmt)
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ", page_icon="🛠️", layout="wide")
@@ -203,7 +213,7 @@ def init_db():
 
 init_db()
 
-# --- THEME / UI HELPERS (Dark Mode Theme matching user screenshot) ---
+# --- THEME & RESPONSIVE MOBILE CSS ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
@@ -250,15 +260,21 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .u-name{font-weight:600; line-height:1.2; word-break:break-all; color:#F8FAFC;}
 .u-role{font-size:.8rem; color:var(--muted);}
 
-.stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto;}
+.stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto; flex-wrap:nowrap;}
 .stTabs [data-baseweb="tab"]{height:auto; padding:.6rem .9rem; font-weight:500; color:var(--muted); white-space:nowrap;}
 .stTabs [aria-selected="true"]{color:#38BDF8; font-weight:600;}
 .stTabs [data-baseweb="tab-highlight"]{background:#38BDF8; height:3px;}
 
 [data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card);}
 [data-testid="stForm"]{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:1rem;}
-[data-testid="stDataFrame"]{border:1px solid var(--line); border-radius:10px; overflow:hidden;}
-[data-testid="stAlert"]{border-radius:10px;}
+
+/* Mobile Table & Scroll Optimizations */
+[data-testid="stDataFrame"], .stTable {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
 
 .stApp button{border-radius:8px; font-weight:600;}
 .stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
@@ -286,11 +302,12 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
   white-space: nowrap !important;
 }
 
-@media (max-width:640px){
-  .block-container{padding-left:.8rem; padding-right:.8rem;}
+@media (max-width:768px){
+  .block-container{padding-left:.6rem; padding-right:.6rem;}
   .kpi-grid{grid-template-columns:repeat(2,1fr);}
   .app-hero .t{font-size:1.1rem;}
   .stApp .stButton > button, .stApp [data-testid="stFormSubmitButton"] > button{width:100%;}
+  .stTabs [data-baseweb="tab"]{padding:.5rem .6rem; font-size:0.85rem;}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -333,7 +350,7 @@ def get_pil_image_from_base64(img_base64):
     except:
         return None
 
-# --- SESSION STATE & LOGIN PERSISTENCE ---
+# --- SESSION STATE & 24-HOUR LOGIN PERSISTENCE ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
@@ -343,7 +360,7 @@ qp = st.query_params
 if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "true":
     try:
         login_time = float(qp.get("login_time", 0))
-        if datetime.now().timestamp() - login_time < 24 * 3600:
+        if get_now_th().timestamp() - login_time < 24 * 3600:
             st.session_state.logged_in = True
             st.session_state.role = qp.get("role", "")
             st.session_state.username = qp.get("username", "")
@@ -370,7 +387,7 @@ if not st.session_state.logged_in:
         if submitted:
             role_val = ""
             user_val = ""
-            # ดึงข้อมูลรหัสผ่านแอดมินจาก Secrets
+            
             admin_user = st.secrets["admin"]["username"]
             admin_pass = st.secrets["admin"]["password"]
             
@@ -390,13 +407,13 @@ if not st.session_state.logged_in:
                 st.query_params["logged_in"] = "true"
                 st.query_params["role"] = role_val
                 st.query_params["username"] = user_val
-                st.query_params["login_time"] = str(datetime.now().timestamp())
+                st.query_params["login_time"] = str(get_now_th().timestamp())
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
-# --- MAIN APP LOGGED IN (Sidebar with expandable user profile & logout) ---
+# --- MAIN APP LOGGED IN (Sidebar with user profile & logout) ---
 st.sidebar.markdown(
     f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper())}</div>'
     f'<div><div class="u-name">{esc(st.session_state.username)}</div>'
@@ -416,22 +433,9 @@ with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & �
 
 st.markdown(
     f'<div class="app-hero"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
-    f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {datetime.now().strftime("%d/%m/%Y")}</div></div>'
+    f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
     f'<span class="chip">{esc(st.session_state.role)}</span></div>',
     unsafe_allow_html=True)
-
-# --- QUICK ACCOUNT & LOGOUT EXPANDER ON MAIN PAGE (Ensure user never loses access if sidebar is closed) ---
-with st.expander(f"👤 ข้อมูลผู้ใช้งานปัจจุบัน: {st.session_state.username} (สิทธิ์: {st.session_state.role}) — คลิกเพื่อจัดการบัญชี / ออกจากระบบ"):
-    col_u1, col_u2 = st.columns([3, 1])
-    with col_u1:
-        st.write(f"กำลังใช้งานในชื่อ: **{st.session_state.username}** | สิทธิ์ระบบ: **{st.session_state.role}**")
-    with col_u2:
-        if st.button("🚪 ออกจากระบบ", type="primary", use_container_width=True, key="main_page_logout_btn"):
-            st.session_state.logged_in = False
-            st.session_state.role = None
-            st.session_state.username = ""
-            st.query_params.clear()
-            st.rerun()
 
 # --- ALERT SYSTEM ---
 setting_df = run_query("SELECT value FROM settings WHERE key='low_stock_threshold'")
@@ -508,7 +512,7 @@ def render_borrow_return_system():
                         if borrow_img_file is not None:
                             b_img_bytes = borrow_img_file.read()
                             b_img_b64 = base64.b64encode(b_img_bytes).decode("utf-8")
-                        now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        now_time = get_now_str("%Y-%m-%d %H:%M")
                         
                         run_query("INSERT INTO transactions (item_id, borrower_name, borrow_date, status, borrower_image, quantity, giver_name) VALUES (?,?,?,?,?,?,?)",
                                   (selected_id, borrower_name, now_time, "กำลังยืม", b_img_b64, borrow_qty, st.session_state.username), is_select=False)
@@ -557,7 +561,7 @@ def render_borrow_return_system():
                             ret_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายตอนคืนอุปกรณ์ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"ret_img_{row['tx_id']}")
                             
                             if st.form_submit_button(f"✅ รับคืนอุปกรณ์รายการนี้"):
-                                now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+                                now_time = get_now_str("%Y-%m-%d %H:%M")
                                 r_img_b64 = None
                                 if ret_img_file is not None:
                                     r_img_bytes = ret_img_file.read()
@@ -790,7 +794,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
         
         if not inspections_df.empty:
             inspections_df['inspection_date'] = pd.to_datetime(inspections_df['inspection_date'])
-            now_dt = datetime.now()
+            now_dt = get_now_th()
             if report_type == "รายวัน (Daily)":
                 target_date = st.date_input("เลือกวันที่", value=now_dt.date())
                 filtered_df = inspections_df[inspections_df['inspection_date'].dt.date == target_date]
@@ -858,14 +862,14 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                         col_app1, col_app2 = st.columns(2)
                         if col_app1.button(f"✅ อนุมัติ (เพิ่มจำนวนเข้าคลัง)", key=f"approve_{req['id']}"):
                             new_stock = int(req['current_stock']) + int(req['quantity'])
-                            now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            now_time = get_now_str("%Y-%m-%d %H:%M:%S")
                             run_query("UPDATE items SET quantity = ?, status = 'ปกติ' WHERE id = ?", (new_stock, req['item_id']), is_select=False)
                             run_query("UPDATE requisition_requests SET status = 'อนุมัติ', approval_date = ? WHERE id = ?", (now_time, req['id']), is_select=False)
                             st.success(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว (เพิ่มจำนวนในคลังเป็น {new_stock} ชิ้น)")
                             st.rerun()
                             
                         if col_app2.button(f"❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
-                            now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            now_time = get_now_str("%Y-%m-%d %H:%M:%S")
                             run_query("UPDATE requisition_requests SET status = 'ไม่อนุมัติ', approval_date = ? WHERE id = ?", (now_time, req['id']), is_select=False)
                             st.warning(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว")
                             st.rerun()
@@ -908,7 +912,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
         
         with st.form("global_quota_form"):
             new_base_quota = st.number_input("กำหนดโควต้ารอบตรวจมาตรฐานต่อวัน (รอบ)", min_value=1, value=current_base_quota)
-            reset_date = st.date_input("เลือกวันที่ต้องการเพิ่มรอบตรวจพิเศษ", value=datetime.now().date())
+            reset_date = st.date_input("เลือกวันที่ต้องการเพิ่มรอบตรวจพิเศษ", value=get_now_th().date())
             date_str = reset_date.strftime("%Y-%m-%d")
             
             extra_df = run_query("SELECT value FROM settings WHERE key=?", (f"extra_quota_{date_str}",))
@@ -973,16 +977,16 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                 st.rerun()
 
 elif st.session_state.role == "ช่างประจำอาคาร":
-    # ------------------ จอสำหรับช่าง (Technician UI) ------------------
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างประจำอาคาร")
     
-    tech_main_tab = st.tabs(["📋 ตรวจสอบสภาพอุปกรณ์", "📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง", "🔄 ระบบยืม-คืน อุปกรณ์"])
+    # เปลี่ยนชื่อแท็บตามที่ต้องการ
+    tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกของ", "🔄 ระบบยืม-คืน อุปกรณ์"])
     
     with tech_main_tab[2]:
         render_borrow_return_system()
         
     with tech_main_tab[1]:
-        st.markdown("### 📦 ส่งคำขอเพิ่มอุปกรณ์เข้าคลัง (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
+        st.markdown("### 📦 เบิกของ (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
         st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังผู้ออกแบบ/ดูแลระบบเพื่อรออนุมัติบวกสต็อก")
         
         tools_requisition_df = items_df[
@@ -1005,20 +1009,20 @@ elif st.session_state.role == "ช่างประจำอาคาร":
                 req_qty = st.number_input("จำนวนที่ต้องการเพิ่มเข้าคลัง *", min_value=1, value=1)
                 req_note = st.text_area("หมายเหตุ / เหตุผลที่ขอเพิ่ม *")
                 
-                if st.form_submit_button("📤 ส่งคำขอเพิ่มอุปกรณ์ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
+                if st.form_submit_button("📤 ส่งคำขอเบิกของ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
                     if req_note.strip():
-                        now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        now_time = get_now_str("%Y-%m-%d %H:%M")
                         run_query("INSERT INTO requisition_requests (tech_name, item_id, quantity, note, status, request_date) VALUES (?,?,?,?,?,?)",
                                   (st.session_state.username, req_selected_id, req_qty, req_note, 'รออนุมัติ', now_time), is_select=False)
-                        st.success(f"ส่งคำขอเพิ่ม '{req_item_info['name']}' จำนวน +{req_qty} ชิ้น ไปยังผู้ออกแบบ/ดูแลระบบเรียบร้อยแล้ว!")
+                        st.success(f"ส่งคำขอเบิกของ '{req_item_info['name']}' จำนวน +{req_qty} ชิ้น ไปยังผู้ออกแบบ/ดูแลระบบเรียบร้อยแล้ว!")
                         st.rerun()
                     else:
-                        st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเพิ่มอุปกรณ์")
+                        st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเบิกของ")
         else:
             st.info("ไม่พบรายการอุปกรณ์ตามคำค้นหา")
             
         st.markdown("---")
-        st.markdown("#### 📜 ประวัติคำขอเพิ่มอุปกรณ์ของคุณ")
+        st.markdown("#### 📜 ประวัติคำขอเบิกของของคุณ")
         my_requests = run_query("""
             SELECT r.id as 'รหัส', i.name as 'ชื่ออุปกรณ์', r.quantity as 'จำนวนที่ขอ', r.note as 'หมายเหตุ', r.request_date as 'วันที่ขอ', r.approval_date as 'วันที่อนุมัติ', r.status as 'สถานะ'
             FROM requisition_requests r JOIN items i ON r.item_id = i.id
@@ -1027,13 +1031,13 @@ elif st.session_state.role == "ช่างประจำอาคาร":
         if not my_requests.empty:
             st.dataframe(my_requests, use_container_width=True, hide_index=True)
         else:
-            st.info("ยังไม่มีประวัติการส่งคำขอเพิ่มอุปกรณ์")
+            st.info("ยังไม่มีประวัติการส่งคำขอเบิกของ")
         
     with tech_main_tab[0]:
         tech_category_choice = st.radio("เลือกหมวดหมู่การทำงาน", ["🔧 หมวดอุปกรณ์ช่าง", "🏊 หมวดอุปกรณ์สระว่ายน้ำ"], horizontal=True)
         st.markdown("---")
         
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = get_now_str("%Y-%m-%d")
         
         if tech_category_choice == "🔧 หมวดอุปกรณ์ช่าง":
             st.markdown("### 🔧 หมวดอุปกรณ์ช่าง (คลิกชื่อเพื่อดูรูปภาพ & เช็คสถานะ)")
@@ -1125,7 +1129,7 @@ elif st.session_state.role == "ช่างประจำอาคาร":
                         if has_error:
                             st.error(error_msg)
                         else:
-                            now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            now_time = get_now_str("%Y-%m-%d %H:%M:%S")
                             flagged_summaries = []
                             
                             for item_id, data in item_reports.items():
@@ -1200,7 +1204,7 @@ elif st.session_state.role == "ช่างประจำอาคาร":
                     if len(uploaded_pool_photos_b64) < 4:
                         st.error("❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานสระว่ายน้ำให้ครบทั้ง 4 รูป")
                     else:
-                        now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        now_time = get_now_str("%Y-%m-%d %H:%M:%S")
                         pool_summaries = []
                         for item_id, q_val in updated_quantities.items():
                             old_row = items_df[items_df['id'] == item_id].iloc[0]
