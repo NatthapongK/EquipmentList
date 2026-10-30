@@ -390,10 +390,14 @@ if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "
             st.session_state.logged_in = True
             st.session_state.role = qp.get("role", "")
             st.session_state.username = qp.get("username", "")
+            st.session_state.original_role = qp.get("original_role", None)
         else:
             st.query_params.clear()
     except:
         st.query_params.clear()
+
+if st.session_state.logged_in and "original_role" in qp and qp["original_role"]:
+    st.session_state.original_role = qp["original_role"]
 
 # --- LOGIN UI ---
 if not st.session_state.logged_in:
@@ -430,11 +434,15 @@ if not st.session_state.logged_in:
                 st.session_state.logged_in = True
                 st.session_state.role = role_val
                 st.session_state.username = user_val
-                st.session_state.original_role = role_val if role_val == "ผู้ออกแบบ/ดูแลระบบ" else None
+                orig_role = role_val if role_val == "ผู้ออกแบบ/ดูแลระบบ" else ""
+                st.session_state.original_role = orig_role if orig_role else None
+                
                 st.query_params["logged_in"] = "true"
                 st.query_params["role"] = role_val
                 st.query_params["username"] = user_val
                 st.query_params["login_time"] = str(get_now_th().timestamp())
+                if orig_role:
+                    st.query_params["original_role"] = orig_role
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
@@ -453,15 +461,23 @@ with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & �
     st.write(f"สิทธิ์: **{st.session_state.role}**")
     
     # --- ADMIN ROLE SWITCH BUTTON ---
-    if st.session_state.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ" or st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ":
+    is_admin_origin = (st.session_state.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ") or (st.query_params.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ") or (st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ")
+    
+    if is_admin_origin:
         st.markdown("---")
         if st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ":
             if st.button("🔀 สลับเป็น 'ช่างประจำอาคารพิเศษ'", type="secondary", use_container_width=True):
                 st.session_state.role = "ช่างประจำอาคารพิเศษ"
+                st.session_state.original_role = "ผู้ออกแบบ/ดูแลระบบ"
+                st.query_params["role"] = "ช่างประจำอาคารพิเศษ"
+                st.query_params["original_role"] = "ผู้ออกแบบ/ดูแลระบบ"
                 st.rerun()
         else:
-            if st.button("🔙 กลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True):
+            if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True):
                 st.session_state.role = "ผู้ออกแบบ/ดูแลระบบ"
+                st.session_state.original_role = "ผู้ออกแบบ/ดูแลระบบ"
+                st.query_params["role"] = "ผู้ออกแบบ/ดูแลระบบ"
+                st.query_params["original_role"] = "ผู้ออกแบบ/ดูแลระบบ"
                 st.rerun()
     
     st.markdown("---")
@@ -1073,7 +1089,16 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
 
 elif st.session_state.role in ["ช่างประจำอาคาร", "ช่างประจำอาคารพิเศษ"]:
     if st.session_state.role == "ช่างประจำอาคารพิเศษ":
-        st.info("⭐ คุณเข้าใช้งานในสถานะ **ช่างประจำอาคารพิเศษ** (สิทธิ์พิเศษจากแอดมิน สามารถสลับกลับเป็นแอดมินได้ที่เมนูด้านซ้าย)")
+        col_banner, col_btn_back = st.columns([3, 1])
+        with col_banner:
+            st.info("⭐ คุณเข้าใช้งานในสถานะ **ช่างประจำอาคารพิเศษ** (สิทธิ์พิเศษจากแอดมิน)")
+        with col_btn_back:
+            if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
+                st.session_state.role = "ผู้ออกแบบ/ดูแลระบบ"
+                st.session_state.original_role = "ผู้ออกแบบ/ดูแลระบบ"
+                st.query_params["role"] = "ผู้ออกแบบ/ดูแลระบบ"
+                st.query_params["original_role"] = "ผู้ออกแบบ/ดูแลระบบ"
+                st.rerun()
     
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างประจำอาคาร")
     
@@ -1205,14 +1230,26 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                                     key=f"issue_type_{row['id']}"
                                 )
                                 
+                                item_total_q = int(row['quantity'])
+                                
                                 if issue_type == "กำลังใช้งาน":
                                     issue_detail = st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{row['id']}")
                                     
-                                    # หากมีจำนวนในคลังมากกว่า 1 ชิ้น ให้เลือกจำนวนชิ้นที่นำไปใช้งาน
-                                    item_total_q = int(row['quantity'])
                                     if item_total_q > 1:
                                         issue_qty = st.number_input(
                                             "จำนวนชิ้นที่นำไปใช้งาน *", 
+                                            min_value=1, 
+                                            max_value=item_total_q, 
+                                            value=1, 
+                                            key=f"issue_qty_{row['id']}"
+                                        )
+                                    else:
+                                        issue_qty = 1
+                                        
+                                elif issue_type in ["ชำรุด", "สูญหาย", "อุปกรณ์หมด"]:
+                                    if item_total_q > 1:
+                                        issue_qty = st.number_input(
+                                            f"จำนวนชิ้นที่{issue_type} *", 
                                             min_value=1, 
                                             max_value=item_total_q, 
                                             value=1, 
@@ -1277,20 +1314,16 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                                     if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
                                         final_st = f"กำลังใช้งาน ({data['detail']})"
                                     
-                                    if data["status"] in ["อุปกรณ์หมด", "สูญหาย"]:
-                                        new_q = max(0, curr_q - 1)
-                                        run_query("UPDATE items SET status = ?, quantity = ? WHERE id = ?", (final_st, new_q, item_id), is_select=False)
-                                    elif data["status"] == "กำลังใช้งาน":
-                                        # ตัดจำนวนออกตามจำนวนจริงที่ช่างเลือกใช้งาน
-                                        u_qty = data["qty"]
+                                    u_qty = data["qty"]
+                                    
+                                    if data["status"] in ["ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]:
+                                        # หักลบจำนวนชิ้นที่เลือกออกจากจำนวนคงเหลือในคลังจริง
                                         new_q = max(0, curr_q - u_qty)
                                         run_query("UPDATE items SET status = ?, quantity = ? WHERE id = ?", (final_st, new_q, item_id), is_select=False)
-                                    elif data["status"] == "ชำรุด":
-                                        run_query("UPDATE items SET status = ? WHERE id = ?", (final_st, item_id), is_select=False)
                                     else:
                                         run_query("UPDATE items SET status = ? WHERE id = ?", (final_st, item_id), is_select=False)
                                         
-                                    detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [นำไปใช้ {data['qty']} ชิ้น]" if data['status'] == "กำลังใช้งาน" and data['qty'] > 1 else "")
+                                    detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 else "")
                                     flagged_summaries.append(detail_txt)
                                 else:
                                     run_query("UPDATE items SET status = ? WHERE id = ?", ("ปกติ", item_id), is_select=False)
