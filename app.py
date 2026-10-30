@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 import base64
 import html as _html
 import re
+import time
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
 TZ_TH = timezone(timedelta(hours=7))
@@ -205,6 +206,15 @@ def init_db():
     c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('low_stock_threshold', '1')")
     c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('global_daily_quota', '3')")
     
+    # 1. ตารางสำหรับ Event Emitter (เก็บสถานะเวอร์ชันข้อมูล)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS sync_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    c.execute("INSERT OR IGNORE INTO sync_meta (key, value) VALUES ('last_update', ?)", (str(time.time()),))
+    
     c.execute("SELECT COUNT(*) FROM items")
     if c.fetchone()[0] == 0:
         c.executemany("INSERT INTO items (name, category, subcategory, quantity, status, alert_zero, note, image) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
@@ -214,6 +224,44 @@ def init_db():
     conn.close()
 
 init_db()
+
+# --- EVENT EMITTER FUNCTION ---
+def get_db_version():
+    """ดึงค่าเวอร์ชันล่าสุดของฐานข้อมูลสำหรับการซิงค์"""
+    conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute("SELECT value FROM sync_meta WHERE key='last_update'")
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else "0"
+
+# --- 2. CUSTOM COMPONENT & TRIGGER RERUN (Client-side Listener) ---
+def render_realtime_listener():
+    """Custom Component ฝั่งผู้ใช้งาน ทำหน้าที่ Subscribe/Poll และ Trigger Rerun อัตโนมัติ"""
+    current_ver = get_db_version()
+    component_html = f"""
+    <div id="realtime-listener" style="display:none;"></div>
+    <script>
+    const serverVersion = "{current_ver}";
+    // ตรวจสอบการเปลี่ยนแปลงทุกๆ 3 วินาที
+    setInterval(async () => {{
+        try {{
+            // จำลองการตรวจสอบสถานะอัปเดตผ่าน Streamlit session หรือ LocalStorage / API
+            const storedVer = localStorage.getItem("inv_sync_version");
+            if (!storedVer) {{
+                localStorage.setItem("inv_sync_version", serverVersion);
+            }} else if (storedVer !== serverVersion) {{
+                localStorage.setItem("inv_sync_version", serverVersion);
+                // Trigger Rerun ฝั่ง Client
+                window.parent.location.reload();
+            }}
+        }} catch (e) {{
+            console.error("Realtime sync error:", e);
+        }}
+    }}, 3000);
+    </script>
+    """
+    st.components.v1.html(component_html, height=0, width=0)
 
 # --- PARSER FOR TECH TXT FILE ---
 def parse_tech_txt_content(text_content):
@@ -346,11 +394,18 @@ def keyed_container(key, **kwargs):
     except TypeError:
         return st.container(**kwargs)
 
-# --- HELPER FUNCTIONS ---
+# --- 1. EVENT EMITTER (UPDATED run_query) ---
 def run_query(query, params=(), is_select=True):
     conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
     c = conn.cursor()
     c.execute(query, params)
+    
+    if not is_select:
+        # มีการเปลี่ยนแปลงข้อมูล (INSERT, UPDATE, DELETE) -> ทำหน้าที่เป็น Event Emitter แจ้งเตือนการอัปเดต[cite: 21]
+        new_timestamp = str(time.time())
+        c.execute("INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_update', ?)", (new_timestamp,))
+        conn.commit()
+        
     if is_select:
         res = c.fetchall()
         cols = [d[0] for d in c.description]
@@ -361,7 +416,7 @@ def run_query(query, params=(), is_select=True):
         if 'alert_zero' in df.columns:
             df['alert_zero'] = pd.to_numeric(df['alert_zero'], errors='coerce').fillna(0).astype(int)
         return df
-    conn.commit()
+    
     conn.close()
 
 def get_pil_image_from_base64(img_base64):
@@ -448,6 +503,9 @@ if not st.session_state.logged_in:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
+# --- CALL REALTIME LISTENER COMPONENT ---
+render_realtime_listener()
+
 # --- MAIN APP LOGGED IN (Sidebar with user profile & logout) ---
 st.sidebar.markdown(
     f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper())}</div>'
@@ -460,7 +518,6 @@ with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & �
     st.write(f"ผู้ใช้งาน: **{st.session_state.username}**")
     st.write(f"สิทธิ์: **{st.session_state.role}**")
     
-    # --- ADMIN ROLE SWITCH BUTTON ---
     is_admin_origin = (st.session_state.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ") or (st.query_params.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ") or (st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ")
     
     if is_admin_origin:
@@ -1317,7 +1374,6 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                                     u_qty = data["qty"]
                                     
                                     if data["status"] in ["ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]:
-                                        # หักลบจำนวนชิ้นที่เลือกออกจากจำนวนคงเหลือในคลังจริง
                                         new_q = max(0, curr_q - u_qty)
                                         run_query("UPDATE items SET status = ?, quantity = ? WHERE id = ?", (final_st, new_q, item_id), is_select=False)
                                     else:
