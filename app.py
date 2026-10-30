@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 import base64
 import html as _html
+import re
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
 TZ_TH = timezone(timedelta(hours=7))
@@ -212,6 +213,29 @@ def init_db():
 
 init_db()
 
+# --- PARSER FOR TECH TXT FILE ---
+def parse_tech_txt_content(text_content):
+    tech_list = []
+    lines = text_content.splitlines()
+    u = None
+    p = None
+    for line in lines:
+        line_s = line.strip()
+        if not line_s:
+            continue
+        if "username" in line_s:
+            m = re.search(r'["\']([^"\']+)["\']', line_s)
+            if m:
+                u = m.group(1)
+        elif "password" in line_s:
+            m = re.search(r'["\']([^"\']+)["\']', line_s)
+            if m:
+                p = m.group(1)
+        if u and p:
+            tech_list.append((u, p))
+            u, p = None, None
+    return tech_list
+
 # --- THEME & RESPONSIVE MOBILE CSS ---
 st.markdown("""
 <style>
@@ -354,6 +378,7 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
     st.session_state.username = ""
+    st.session_state.original_role = None
 
 qp = st.query_params
 if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "true":
@@ -403,6 +428,7 @@ if not st.session_state.logged_in:
                 st.session_state.logged_in = True
                 st.session_state.role = role_val
                 st.session_state.username = user_val
+                st.session_state.original_role = role_val if role_val == "ผู้ออกแบบ/ดูแลระบบ" else None
                 st.query_params["logged_in"] = "true"
                 st.query_params["role"] = role_val
                 st.query_params["username"] = user_val
@@ -423,10 +449,25 @@ st.sidebar.markdown("")
 with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & ออกจากระบบ", expanded=True):
     st.write(f"ผู้ใช้งาน: **{st.session_state.username}**")
     st.write(f"สิทธิ์: **{st.session_state.role}**")
+    
+    # --- ADMIN ROLE SWITCH BUTTON ---
+    if st.session_state.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ" or st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ":
+        st.markdown("---")
+        if st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ":
+            if st.button("🔀 สลับเป็น 'ช่างประจำอาคารพิเศษ'", type="secondary", use_container_width=True):
+                st.session_state.role = "ช่างประจำอาคารพิเศษ"
+                st.rerun()
+        else:
+            if st.button("🔙 กลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True):
+                st.session_state.role = "ผู้ออกแบบ/ดูแลระบบ"
+                st.rerun()
+    
+    st.markdown("---")
     if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
         st.session_state.logged_in = False
         st.session_state.role = None
         st.session_state.username = ""
+        st.session_state.original_role = None
         st.query_params.clear()
         st.rerun()
 
@@ -927,7 +968,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                 
         st.markdown("---")
         
-        st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / ลบ)")
+        st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / นำเข้าจากไฟล์ .txt / ลบ)")
         
         st.markdown("**📋 รายชื่อบัญชีช่างทั้งหมดในระบบ**")
         all_techs_df = run_query("SELECT id as 'รหัส', username as 'ชื่อผู้ใช้งาน (Username)' FROM tech_users")
@@ -936,7 +977,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
 
         col_t1, col_t2 = st.columns(2)
         with col_t1:
-            st.markdown("**➕ เพิ่มบัญชีช่างใหม่**")
+            st.markdown("**➕ เพิ่มบัญชีช่างใหม่ (รายบุคคล)**")
             with st.form("add_tech_form", clear_on_submit=True):
                 new_t_user = st.text_input("Username ช่าง")
                 new_t_pass = st.text_input("Password ช่าง", type="password")
@@ -951,8 +992,8 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                     else:
                         st.error("กรุณากรอกข้อมูลให้ครบถ้วน")
                         
-        with col_t2:
-            st.markdown("**✏️ แก้ไข / ลบบัญชีช่าง**")
+            st.markdown("---")
+            st.markdown("**✏️ แก้ไข / ลบบัญชีช่างรายบุคคล**")
             tech_list_df = run_query("SELECT * FROM tech_users")
             if not tech_list_df.empty:
                 selected_tech_id = st.selectbox("เลือกบัญชีช่าง", tech_list_df['id'].astype(str) + " - " + tech_list_df['username'])
@@ -975,10 +1016,39 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                 st.success("ลบบัญชีช่างเรียบร้อยแล้ว!")
                                 st.rerun()
 
-elif st.session_state.role == "ช่างประจำอาคาร":
+        with col_t2:
+            st.markdown("**📁 นำเข้ารายชื่อช่างจากไฟล์ .txt**")
+            st.write("อัปโหลดไฟล์ `.txt` ที่มีรูปแบบ `username = \"...\"` และ `password = \"...\"` เช่นไฟล์ `tech.txt`")
+            uploaded_tech_txt = st.file_uploader("เลือกไฟล์รายชื่อช่าง (.txt)", type=["txt"])
+            
+            if uploaded_tech_txt is not None:
+                content_str = uploaded_tech_txt.getvalue().decode("utf-8")
+                parsed_techs = parse_tech_txt_content(content_str)
+                st.info(f"ตรวจพบข้อมูลช่างในไฟล์จำนวน: **{len(parsed_techs)} บัญชี**")
+                
+                if parsed_techs:
+                    preview_df = pd.DataFrame(parsed_techs, columns=["Username", "Password"])
+                    preview_df["Password"] = "••••••••"
+                    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                    
+                    if st.button("🚀 ยืนยันนำเข้าบัญชีช่างทั้งหมดลงฐานข้อมูล", type="primary"):
+                        success_count = 0
+                        dup_count = 0
+                        for u, p in parsed_techs:
+                            try:
+                                run_query("INSERT INTO tech_users (username, password) VALUES (?, ?)", (u, p), is_select=False)
+                                success_count += 1
+                            except:
+                                dup_count += 1
+                        st.success(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ/มีอยู่แล้ว {dup_count} บัญชี)")
+                        st.rerun()
+
+elif st.session_state.role in ["ช่างประจำอาคาร", "ช่างประจำอาคารพิเศษ"]:
+    if st.session_state.role == "ช่างประจำอาคารพิเศษ":
+        st.info("⭐ คุณเข้าใช้งานในสถานะ **ช่างประจำอาคารพิเศษ** (สิทธิ์พิเศษจากแอดมิน สามารถสลับกลับเป็นแอดมินได้ที่เมนูด้านซ้าย)")
+    
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างประจำอาคาร")
     
-    # แท็บชื่อใหม่: ตรวจสอบอุปกรณ์ / เบิกของ / ระบบยืม-คืน อุปกรณ์
     tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกของ", "🔄 ระบบยืม-คืน อุปกรณ์"])
     
     with tech_main_tab[2]:
