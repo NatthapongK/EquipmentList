@@ -483,7 +483,11 @@ low_stock_limit = int(setting_df.iloc[0]['value']) if not setting_df.empty else 
 
 items_df = run_query("SELECT * FROM items")
 
-abnormal_items = items_df[items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด'])]
+# อัปเดตเงื่อนไขให้ครอบคลุมสถานะที่ขึ้นต้นด้วย 'กำลังใช้งาน' รวมถึง ชำรุด, สูญหาย, ยืม, อุปกรณ์หมด
+abnormal_items = items_df[
+    items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด']) | 
+    items_df['status'].str.startswith('กำลังใช้งาน', na=False)
+]
 
 low_stock_list = []
 for _, row in items_df.iterrows():
@@ -500,7 +504,7 @@ abn_cnt, low_cnt = len(abnormal_items), len(low_stock_items)
 st.markdown(
     f'''<div class="kpi-grid">
       <div class="kpi"><div class="n">{len(items_df)}</div><div class="l">รายการอุปกรณ์ทั้งหมด</div></div>
-      <div class="kpi" style="--c:{'var(--bad)' if abn_cnt else 'var(--ok)'}"><div class="n">{abn_cnt}</div><div class="l">ผิดปกติ / หมด / ถูกยืม</div></div>
+      <div class="kpi" style="--c:{'var(--bad)' if abn_cnt else 'var(--ok)'}"><div class="n">{abn_cnt}</div><div class="l">ผิดปกติ / กำลังใช้งาน / หมด / ยืม</div></div>
       <div class="kpi" style="--c:{'var(--warn)' if low_cnt else 'var(--ok)'}"><div class="n">{low_cnt}</div><div class="l">เหลือน้อยกว่าเกณฑ์</div></div>
       <div class="kpi" style="--c:var(--teal)"><div class="n">{borrowed_cnt}</div><div class="l">กำลังถูกยืมอยู่</div></div>
     </div>''', unsafe_allow_html=True)
@@ -508,7 +512,7 @@ st.markdown(
 col_a1, col_a2 = st.columns(2)
 with col_a1:
     if abn_cnt:
-        with st.expander(f"❌ อุปกรณ์ผิดปกติ/หมด/ถูกยืม ({abn_cnt} รายการ)"):
+        with st.expander(f"❌ อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด/ถูกยืม ({abn_cnt} รายการ)"):
             st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True,
                          column_config={"name": "ชื่ออุปกรณ์", "category": "หมวดหมู่", "status": "สถานะ",
                                         "quantity": st.column_config.NumberColumn("คงเหลือ", format="%d")})
@@ -733,7 +737,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                 st.rerun()
 
         with tab_add_edit:
-            sub_a, sub_e = st.tabs(["➕ เพิ่มอุปกรณ์ใหม่", "✏️ แก้ไข/ลบ รายการ"])
+            sub_a, sub_e, sub_bulk = st.tabs(["➕ เพิ่มอุปกรณ์ใหม่", "✏️ แก้ไข/ลบ รายการ", "🖼️ อัปโหลดรูปภาพแบบกลุ่ม"])
             with sub_a:
                 with st.form("add_item_form_new", clear_on_submit=True):
                     name = st.text_input("ชื่ออุปกรณ์ *")
@@ -812,6 +816,28 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                 run_query("DELETE FROM items WHERE id=?", (item_id_int,), is_select=False)
                                 st.success("ลบเรียบร้อยแล้ว!")
                                 st.rerun()
+
+            with sub_bulk:
+                st.markdown("### 📁 อัปโหลดรูปภาพอุปกรณ์แบบกลุ่ม (ตามชื่อไฟล์รหัสอุปกรณ์)")
+                st.write("ตั้งชื่อไฟล์รูปภาพตามรหัสอุปกรณ์ เช่น `1.jpg` สำหรับ ปลั๊กโรลElecton, `2.png` สำหรับ แปลงทาสี ฯลฯ แล้วเลือกไฟล์ทั้งหมดพร้อมกันได้เลย")
+                
+                bulk_files = st.file_uploader("เลือกไฟล์รูปภาพทั้งหมด", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="bulk_img_files")
+                if bulk_files:
+                    st.info(f"เลือกไฟล์ทั้งหมด: **{len(bulk_files)} รูป**")
+                    if st.button("🚀 ยืนยันจับคู่และอัปโหลดรูปภาพเข้าระบบ", type="primary"):
+                        success_up = 0
+                        for img_f in bulk_files:
+                            pure_name = img_f.name.split('.')[0]
+                            if pure_name.isdigit():
+                                t_id = int(pure_name)
+                                img_bytes = img_f.read()
+                                img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                                match_check = not items_df[items_df['id'] == t_id].empty
+                                if match_check:
+                                    run_query("UPDATE items SET image = ? WHERE id = ?", (img_b64, t_id), is_select=False)
+                                    success_up += 1
+                        st.success(f"อัปเดตรูปภาพตามชื่อไฟล์สำเร็จทั้งหมด {success_up} รายการ!")
+                        st.rerun()
 
         with tab_excel_import:
             st.markdown("### ⚡ โหลดชุดข้อมูลตั้งต้นทั้งหมด")
@@ -1136,10 +1162,15 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                     with keyed_container("tech_check_list", height=500):
                         item_reports = {}
                         for _, row in tools_df.iterrows():
+                            # ดึงสถานะเดิมมาตรวจสอบความต่อเนื่อง
+                            current_status = row['status']
+                            is_currently_flagged = current_status != "ปกติ"
+                            
                             col_item, col_flag = st.columns([5, 1.4])
                             
                             with col_item:
-                                with st.expander(f"🛠️ {row['name']} (คงเหลือ: {row['quantity']})"):
+                                status_badge = f" (สถานะเดิม: {current_status})" if is_currently_flagged else ""
+                                with st.expander(f"🛠️ {row['name']}{status_badge} (คงเหลือ: {row['quantity']})"):
                                     pil_img = get_pil_image_from_base64(row['image'])
                                     if pil_img:
                                         st.image(pil_img, width=220, caption=f"รูปภาพ: {row['name']}")
@@ -1147,18 +1178,33 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                                         st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
                             
                             with col_flag:
-                                is_flagged = st.checkbox("แจ้งปัญหา", key=f"flag_{row['id']}")
+                                is_flagged = st.checkbox("แจ้งปัญหา", value=is_currently_flagged, key=f"flag_{row['id']}")
                             
                             issue_type = "ปกติ"
                             issue_detail = ""
                             if is_flagged:
+                                # คำนวณ Index เริ่มต้นจากสถานะเดิม เพื่อให้ข้อมูลต่อเนื่อง
+                                options_list = ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"]
+                                default_idx = 0
+                                detail_default = ""
+                                
+                                if current_status.startswith("กำลังใช้งาน"):
+                                    default_idx = 1
+                                    # ดึงข้อความในวงเล็บมาเป็นค่าเริ่มต้นรายละเอียด (ถ้ามี)
+                                    m_detail = re.search(r'\((.*?)\)', current_status)
+                                    if m_detail:
+                                        detail_default = m_detail.group(1)
+                                elif current_status in options_list:
+                                    default_idx = options_list.index(current_status)
+                                
                                 issue_type = st.selectbox(
                                     "ประเภทปัญหา *", 
-                                    ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"], 
+                                    options_list, 
+                                    index=default_idx,
                                     key=f"issue_type_{row['id']}"
                                 )
                                 if issue_type == "กำลังใช้งาน":
-                                    issue_detail = st.text_input("ระบุรายละเอียดการใช้งาน *", key=f"issue_detail_{row['id']}")
+                                    issue_detail = st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{row['id']}")
                                     
                             item_reports[row['id']] = {"flagged": is_flagged, "status": issue_type, "detail": issue_detail}
                             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
