@@ -7,8 +7,6 @@ import html as _html
 import re
 import time
 import io
-import secrets
-import streamlit.components.v1 as components
 from PIL import Image
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -27,13 +25,28 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- PWA META ---
+# --- PWA & PERSISTENT LOGIN FRONTEND BRIDGE ---
 st.markdown("""
 <link rel="manifest" href="app/static/manifest.json">
 <meta name="theme-color" content="#0E7C86">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="InventoryApp">
+<script>
+// ตรวจสอบ LocalStorage หากเคย Login ไว้แต่วิเคราะห์ว่า URL ยังไม่มี Param ให้ดึงค่ามาใส่และรีโหลดอัตโนมัติ
+window.addEventListener('DOMContentLoaded', () => {
+    const savedUser = localStorage.getItem('pwa_username');
+    const savedRole = localStorage.getItem('pwa_role');
+    const currentParams = new URLSearchParams(window.location.search);
+    
+    if (savedUser && savedRole && !currentParams.has('logged_in')) {
+        currentParams.set('logged_in', 'true');
+        currentParams.set('username', savedUser);
+        currentParams.set('role', savedRole);
+        window.location.replace(`${window.location.pathname}?${currentParams.toString()}`);
+    }
+});
+</script>
 """, unsafe_allow_html=True)
 
 # รายการอุปกรณ์เริ่มต้นทั้งหมด
@@ -202,17 +215,6 @@ def init_db():
         )
     ''')
     
-    # ตาราง Token สำหรับจดจำการล็อกอินถาวร (เก็บฝั่งเซิร์ฟเวอร์ + Cookie ฝั่งเบราว์เซอร์)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS auth_tokens (
-            token TEXT PRIMARY KEY,
-            username TEXT NOT NULL,
-            role TEXT NOT NULL,
-            created_at TEXT,
-            expires_at REAL NOT NULL
-        )
-    ''')
-
     c.execute('''
         CREATE TABLE IF NOT EXISTS inspections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -283,80 +285,6 @@ def run_query(query, params=(), is_select=True):
         return df
     
     conn.close()
-
-# --- PERSISTENT LOGIN (Cookie + Server-side Token) ---
-COOKIE_NAME = "inv_auth_token"
-REMEMBER_DAYS = 365  # จำการล็อกอินไว้ 1 ปี (จนกว่าจะกดออกจากระบบ)
-ROLE_ADMIN = "ผู้ออกแบบ/ดูแลระบบ"
-ROLE_TECH = "ช่างประจำอาคาร"
-
-def get_admin_credentials():
-    try:
-        return st.secrets["admin"]["username"], st.secrets["admin"]["password"]
-    except Exception:
-        return "admin", "admin"
-
-def create_auth_token(username, role):
-    token = secrets.token_urlsafe(32)
-    conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
-    c = conn.cursor()
-    c.execute("DELETE FROM auth_tokens WHERE expires_at < ?", (time.time(),))  # ล้าง token หมดอายุ
-    c.execute("INSERT INTO auth_tokens (token, username, role, created_at, expires_at) VALUES (?,?,?,?,?)",
-              (token, username, role, get_now_str(), time.time() + REMEMBER_DAYS * 86400))
-    conn.commit()
-    conn.close()
-    return token
-
-def validate_auth_token(token):
-    """คืนค่า (username, role) ถ้า token ถูกต้องและยังไม่หมดอายุ ไม่งั้นคืน None"""
-    if not token:
-        return None
-    conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT username, role, expires_at FROM auth_tokens WHERE token = ?", (token,))
-    row = c.fetchone()
-    result = None
-    if row and row[2] > time.time():
-        username, role = row[0], row[1]
-        if role == ROLE_ADMIN:
-            if username == get_admin_credentials()[0]:
-                result = (username, role)
-        else:
-            # ตรวจว่าบัญชีช่างยังมีอยู่ (ถ้าแอดมินลบบัญชีแล้ว จะเข้าอัตโนมัติไม่ได้)
-            c.execute("SELECT 1 FROM tech_users WHERE username = ?", (username,))
-            if c.fetchone():
-                result = (username, role)
-    conn.close()
-    return result
-
-def delete_auth_token(token):
-    if not token:
-        return
-    conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
-    conn.execute("DELETE FROM auth_tokens WHERE token = ?", (token,))
-    conn.commit()
-    conn.close()
-
-def get_cookie_token():
-    # อ่าน Cookie จาก request header ฝั่งเซิร์ฟเวอร์ (ต้องใช้ Streamlit >= 1.37)
-    try:
-        return st.context.cookies.get(COOKIE_NAME)
-    except Exception:
-        return None
-
-def set_browser_cookie(token, days=REMEMBER_DAYS):
-    # iframe ของ components.html เป็น same-origin จึงเขียน cookie ของหน้าหลักได้
-    components.html(f"""
-    <script>
-    try {{
-        const secure = window.parent.location.protocol === 'https:' ? '; Secure' : '';
-        window.parent.document.cookie = "{COOKIE_NAME}={token}; max-age={int(days) * 86400}; path=/; SameSite=Lax" + secure;
-    }} catch (e) {{ console.error(e); }}
-    </script>
-    """, height=0)
-
-def clear_browser_cookie():
-    set_browser_cookie("", days=0)
 
 def trigger_smooth_update(msg=None):
     if msg:
@@ -456,17 +384,16 @@ if "logged_in" not in st.session_state:
     st.session_state.role = None
     st.session_state.username = ""
     st.session_state.original_role = None
-    st.session_state.auth_token = None
 
-# กู้คืนการล็อกอินอัตโนมัติจาก Cookie (เปิดเว็บใหม่/รีเฟรช/ปิดแล้วเปิดใหม่ ไม่ต้องล็อกอินซ้ำ)
+qp = st.query_params
 if not st.session_state.logged_in:
-    _cookie_token = get_cookie_token()
-    _saved = validate_auth_token(_cookie_token)
-    if _saved:
+    if "logged_in" in qp and qp["logged_in"] == "true":
         st.session_state.logged_in = True
-        st.session_state.username, st.session_state.role = _saved
-        st.session_state.original_role = ROLE_ADMIN if _saved[1] == ROLE_ADMIN else None
-        st.session_state.auth_token = _cookie_token
+        st.session_state.role = qp.get("role", "")
+        st.session_state.username = qp.get("username", "")
+
+if st.session_state.logged_in and "original_role" in qp and qp["original_role"]:
+    st.session_state.original_role = qp["original_role"]
 
 # --- LOGIN UI ---
 if not st.session_state.logged_in:
@@ -483,44 +410,55 @@ if not st.session_state.logged_in:
         
         tech_df = run_query("SELECT * FROM tech_users")
         
-        # ล้าง Cookie เก่าหลังกดออกจากระบบ
-        if st.session_state.pop("clear_cookie", False):
-            clear_browser_cookie()
-
         if submitted:
             role_val = ""
             user_val = ""
-            admin_user, admin_pass = get_admin_credentials()
-
+            
+            try:
+                admin_user = st.secrets["admin"]["username"]
+                admin_pass = st.secrets["admin"]["password"]
+            except Exception:
+                admin_user = "admin"
+                admin_pass = "admin"
+            
             if username == admin_user and password == admin_pass:
-                role_val = ROLE_ADMIN
+                role_val = "ผู้ออกแบบ/ดูแลระบบ"
                 user_val = admin_user
             else:
                 matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)]
                 if not matched_tech.empty:
-                    role_val = ROLE_TECH
+                    role_val = "ช่างประจำอาคาร"
                     user_val = username
-
+            
             if role_val:
                 st.session_state.logged_in = True
                 st.session_state.role = role_val
                 st.session_state.username = user_val
-                st.session_state.original_role = ROLE_ADMIN if role_val == ROLE_ADMIN else None
-
-                # สร้าง Token เก็บในฐานข้อมูล แล้วส่งให้เบราว์เซอร์เก็บเป็น Cookie ในรอบถัดไป
-                token = create_auth_token(user_val, role_val)
-                st.session_state.auth_token = token
-                st.session_state.pending_cookie_token = token
+                orig_role = role_val if role_val == "ผู้ออกแบบ/ดูแลระบบ" else ""
+                st.session_state.original_role = orig_role if orig_role else None
+                
+                # บันทึกสถานะลง Query Params ของ Streamlit และ LocalStorage โดยตรง
+                st.query_params["logged_in"] = "true"
+                st.query_params["username"] = user_val
+                st.query_params["role"] = role_val
+                if orig_role:
+                    st.query_params["original_role"] = orig_role
+                
+                st.markdown(f"""
+                <script>
+                localStorage.setItem('pwa_username', '{user_val}');
+                localStorage.setItem('pwa_role', '{role_val}');
+                </script>
+                """, unsafe_allow_html=True)
+                
+                st.success("เข้าสู่ระบบสำเร็จ กำลังโหลด...")
+                time.sleep(0.2)
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
 background_sync_watcher()
-
-# เขียน Cookie ลงเบราว์เซอร์ (ทำครั้งเดียวหลังล็อกอินสำเร็จ)
-if st.session_state.get("pending_cookie_token"):
-    set_browser_cookie(st.session_state.pop("pending_cookie_token"))
 
 # --- MAIN APP LOGGED IN (Sidebar with user profile & logout) ---
 st.sidebar.markdown(
@@ -536,6 +474,7 @@ with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & �
     
     is_admin_origin = (
         (st.session_state.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ")
+        or (st.query_params.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ")
         or (st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ")
     )
     
@@ -545,23 +484,30 @@ with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & �
             if st.button("🔀 สลับเป็น 'ช่างประจำอาคารพิเศษ'", type="secondary", use_container_width=True):
                 st.session_state.role = "ช่างประจำอาคารพิเศษ"
                 st.session_state.original_role = "ผู้ออกแบบ/ดูแลระบบ"
+                st.query_params["role"] = "ช่างประจำอาคารพิเศษ"
+                st.query_params["original_role"] = "ผู้ออกแบบ/ดูแลระบบ"
                 st.rerun()
         else:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True):
                 st.session_state.role = "ผู้ออกแบบ/ดูแลระบบ"
                 st.session_state.original_role = "ผู้ออกแบบ/ดูแลระบบ"
+                st.query_params["role"] = "ผู้ออกแบบ/ดูแลระบบ"
+                st.query_params["original_role"] = "ผู้ออกแบบ/ดูแลระบบ"
                 st.rerun()
     
     st.markdown("---")
     if st.button("🚪 ออกจากระบบ (ล้างค่าอุปกรณ์)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
-        # ลบ Token ออกจากฐานข้อมูล (Cookie เก่าจะใช้ไม่ได้อีก) และสั่งล้าง Cookie ในหน้า Login
-        delete_auth_token(st.session_state.get("auth_token") or get_cookie_token())
-        st.session_state.clear_cookie = True
+        st.markdown("""
+        <script>
+        localStorage.removeItem('pwa_username');
+        localStorage.removeItem('pwa_role');
+        </script>
+        """, unsafe_allow_html=True)
         st.session_state.logged_in = False
         st.session_state.role = None
         st.session_state.username = ""
         st.session_state.original_role = None
-        st.session_state.auth_token = None
+        st.query_params.clear()
         st.rerun()
 
 st.markdown(
@@ -895,6 +841,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
         with col_btn_back:
             if st.button("🔙 สลับกลับเป็นแอดมิน", type="primary", use_container_width=True):
                 st.session_state.role = "ผู้ออกแบบ/ดูแลระบบ"
+                st.query_params["role"] = "ผู้ออกแบบ/ดูแลระบบ"
                 st.rerun()
     
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างประจำอาคาร")
