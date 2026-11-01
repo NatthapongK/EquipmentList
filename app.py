@@ -1,5 +1,6 @@
 import streamlit as st
 import pymongo
+import pymongo.operations
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 import base64
@@ -170,7 +171,7 @@ def init_db():
 
 init_db()
 
-# --- OPTIMIZED CACHED DATA FUNCTIONS (TTL ลดเหลือ 0 เพื่อดึงข้อมูลสดทันที) ---
+# --- OPTIMIZED CACHED DATA FUNCTIONS ---
 @st.cache_data(ttl=0, show_spinner=False)
 def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0})))
@@ -335,6 +336,10 @@ if "logged_in" not in st.session_state:
     st.session_state.username = ""
     st.session_state.original_role = None
 
+# ตัวแปรจัดการเวอร์ชันช่องอัปโหลดรูปภาพเพื่อเคลียร์ค่าเมื่อส่งข้อมูลสำเร็จ
+if "uploader_version" not in st.session_state:
+    st.session_state.uploader_version = 0
+
 qp = st.query_params
 if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "true":
     try:
@@ -472,7 +477,6 @@ if st.session_state.role in ["ช่างประจำอาคาร", "ช�
         f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
         unsafe_allow_html=True)
 else:
-    # เพิ่มปุ่มรีเฟรชข้อมูลด่วนสำหรับแอดมิน เพื่อดึงข้อมูลใหม่จากฐานข้อมูลทันทีโดยไม่ต้องกดรีเฟรชเบราว์เซอร์
     col_h_title, col_h_btn = st.columns([4, 1])
     with col_h_title:
         st.markdown(
@@ -1219,7 +1223,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                     else:
                         st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเบิกของ")
         else:
-            st.info("ไม่พบรายการอุปกรณ์ตามคำค้นหา")
+            st.info("ไม่พบรายการอุปกรณ์ตามค้นหา")
             
         st.markdown("---")
         st.markdown("#### 📜 ประวัติคำขอเบิกของของคุณ")
@@ -1341,7 +1345,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                     
                     uploaded_photos_b64 = []
                     for i in range(4):
-                        up_file = st.file_uploader(f"รูปถ่ายรวมที่ {i+1} *", type=["jpg", "jpeg", "png"], key=f"tech_p_{i}")
+                        up_file = st.file_uploader(f"รูปถ่ายรวมที่ {i+1} *", type=["jpg", "jpeg", "png"], key=f"tech_p_{i}_{st.session_state.uploader_version}")
                         if up_file is not None:
                             b64_str = compress_image_to_base64(up_file)
                             uploaded_photos_b64.append(b64_str)
@@ -1371,6 +1375,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                         else:
                             now_time = get_now_str("%Y-%m-%d %H:%M:%S")
                             flagged_summaries = []
+                            bulk_operations = []
                             
                             for item_id, data in item_reports.items():
                                 item_row = items_df[items_df['id'] == item_id].iloc[0]
@@ -1385,14 +1390,18 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                                     u_qty = data["qty"]
                                     if data["status"] in ["ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]:
                                         new_q = max(0, curr_q - u_qty)
-                                        db.items.update_one({"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}})
+                                        bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
                                     else:
-                                        db.items.update_one({"id": item_id}, {"$set": {"status": final_st}})
+                                        bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": final_st}}))
                                         
                                     detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 else "")
                                     flagged_summaries.append(detail_txt)
                                 else:
-                                    db.items.update_one({"id": item_id}, {"$set": {"status": "ปกติ"}})
+                                    bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": "ปกติ"}}))
+                            
+                            # ประมวลผล Bulk Update ทีเดียวเพื่อความรวดเร็วสูงสุด
+                            if bulk_operations:
+                                db.items.bulk_write(bulk_operations)
                                     
                             photos_str = "|||".join(uploaded_photos_b64)
                             summary_details = ", ".join(flagged_summaries) if flagged_summaries else "ปกติทุกรายการ"
@@ -1408,13 +1417,10 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                                 "details": summary_note,
                                 "photos": photos_str
                             })
-                            # เคลียร์แคชทันทีเพื่อให้แอดมินเห็นข้อมูลใหม่ทันที
-                            st.cache_data.clear()
                             
-                            # ล้างค่าไฟล์รูปถ่ายใน session_state เพื่อให้ช่องอัปโหลดว่างเปล่าหลังกดส่ง
-                            for i in range(4):
-                                if f"tech_p_{i}" in st.session_state:
-                                    del st.session_state[f"tech_p_{i}"]
+                            # ล้างแคชและเพิ่มเวอร์ชัน uploader เพื่อเคลียร์รูปภาพออกทันที
+                            st.cache_data.clear()
+                            st.session_state.uploader_version += 1
                             
                             st.success("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
                             st.rerun()
@@ -1448,7 +1454,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                 st.markdown("### 📸 รูปถ่ายรวมหน้างานสระว่ายน้ำ (บังคับครบทั้ง 4 รูป)")
                 uploaded_pool_photos_b64 = []
                 for i in range(4):
-                    up_file = st.file_uploader(f"รูปถ่ายรวมสระที่ {i+1} *", type=["jpg", "jpeg", "png"], key=f"tech_pool_p_{i}")
+                    up_file = st.file_uploader(f"รูปถ่ายรวมสระที่ {i+1} *", type=["jpg", "jpeg", "png"], key=f"tech_pool_p_{i}_{st.session_state.uploader_version}")
                     if up_file is not None:
                         b64_str = compress_image_to_base64(up_file)
                         uploaded_pool_photos_b64.append(b64_str)
@@ -1460,11 +1466,16 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                     else:
                         now_time = get_now_str("%Y-%m-%d %H:%M:%S")
                         pool_summaries = []
+                        bulk_pool_ops = []
+                        
                         for item_id, q_val in updated_quantities.items():
                             old_row = items_df[items_df['id'] == item_id].iloc[0]
-                            db.items.update_one({"id": item_id}, {"$set": {"quantity": q_val}})
+                            bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"quantity": q_val}}))
                             if q_val != int(old_row['quantity']):
                                 pool_summaries.append(f"{old_row['name']}: ปรับจาก {old_row['quantity']} เหลือ {q_val}")
+                                
+                        if bulk_pool_ops:
+                            db.items.bulk_write(bulk_pool_ops)
                                 
                         photos_str = "|||".join(uploaded_pool_photos_b64)
                         summary_note = "อัปเดตจำนวนอุปกรณ์สระว่ายน้ำ" + (f" | การเปลี่ยนแปลง: {', '.join(pool_summaries)}" if pool_summaries else "")
@@ -1479,13 +1490,10 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                             "details": summary_note,
                             "photos": photos_str
                         })
-                        # เคลียร์แคชทันทีเพื่อให้แอดมินเห็นข้อมูลใหม่ทันที
-                        st.cache_data.clear()
                         
-                        # ล้างค่าไฟล์รูปถ่ายสระว่ายน้ำใน session_state หลังกดส่ง
-                        for i in range(4):
-                            if f"tech_pool_p_{i}" in st.session_state:
-                                del st.session_state[f"tech_pool_p_{i}"]
+                        # ล้างแคชและเพิ่มเวอร์ชัน uploader เพื่อเคลียร์รูปภาพออกทันที
+                        st.cache_data.clear()
+                        st.session_state.uploader_version += 1
                                   
                         st.success("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
                         st.rerun()
