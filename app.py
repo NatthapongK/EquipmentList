@@ -19,7 +19,7 @@ def get_now_str(fmt="%Y-%m-%d %H:%M:%S"):
 st.set_page_config(page_title="ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ", page_icon="🛠️", layout="wide")
 
 # --- MONGODB ATLAS CONNECTION ---
-MONGO_URI = "mongodb+srv://mrnatthapongk_db_user:FFTNXnWRJX947bCE@equipmentlist627.44qcj3k.mongodb.net/?retryWrites=true&w=majority"
+MONGO_URI = "mongodb+srv://mrnatthapongk_db_user:MyPassword123@equipmentlist627.44qcj3k.mongodb.net/?retryWrites=true&w=majority"
 
 @st.cache_resource
 def init_mongo():
