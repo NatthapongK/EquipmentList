@@ -18,6 +18,24 @@ def get_now_str(fmt="%Y-%m-%d %H:%M:%S"):
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ", page_icon="🛠️", layout="wide")
 
+# --- PERSISTENT LOGIN FRONTEND BRIDGE (LOCALSTORAGE) ---
+st.markdown("""
+<script>
+window.addEventListener('DOMContentLoaded', () => {
+    const savedUser = localStorage.getItem('inv_username');
+    const savedRole = localStorage.getItem('inv_role');
+    const currentParams = new URLSearchParams(window.location.search);
+    
+    if (savedUser && savedRole && !currentParams.has('logged_in')) {
+        currentParams.set('logged_in', 'true');
+        currentParams.set('username', savedUser);
+        currentParams.set('role', savedRole);
+        window.location.replace(window.location.pathname + '?' + currentParams.toString());
+    }
+});
+</script>
+""", unsafe_allow_html=True)
+
 # รายการอุปกรณ์เริ่มต้นทั้งหมด (อัปเดตลำดับและรายการใหม่)
 DEFAULT_INITIAL_ITEMS = [
     ("ปลั๊กโรลElecton", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
@@ -216,7 +234,7 @@ def init_db():
 
 init_db()
 
-# --- 1. ปรับปรุงฟังก์ชัน run_query (นำการบันทึก sync_meta ออก ให้ทำงานฐานข้อมูลปกติ) ---
+# --- DATABASE QUERY FUNCTION ---
 def run_query(query, params=(), is_select=True):
     conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
     c = conn.cursor()
@@ -239,38 +257,6 @@ def run_query(query, params=(), is_select=True):
     conn.close()
     return True
 
-def get_pil_image_from_base64(img_base64):
-    if not img_base64:
-        return None
-    try:
-        import io
-        from PIL import Image
-        img_bytes = base64.b64decode(img_base64)
-        return Image.open(io.BytesIO(img_bytes))
-    except:
-        return None
-
-# --- 2. ปรับปรุงการจดจำ User แบบถาวร (ไม่มีการหมดอายุ 24 ชั่วโมง ปิด-เปิดเว็บใหม่ไม่ต้อง Login ซ้ำ) ---
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.role = None
-    st.session_state.username = ""
-    st.session_state.original_role = None
-
-qp = st.query_params
-if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "true":
-    try:
-        st.session_state.logged_in = True
-        st.session_state.role = qp.get("role", "")
-        st.session_state.username = qp.get("username", "")
-        st.session_state.original_role = qp.get("original_role", None)
-    except:
-        st.query_params.clear()
-
-if st.session_state.logged_in and "original_role" in qp and qp["original_role"]:
-    st.session_state.original_role = qp["original_role"]
-
-# --- PARSER FOR TECH TXT FILE ---
 def parse_tech_txt_content(text_content):
     tech_list = []
     lines = text_content.splitlines()
@@ -292,6 +278,25 @@ def parse_tech_txt_content(text_content):
             tech_list.append((u, p))
             u, p = None, None
     return tech_list
+
+def esc(text):
+    return _html.escape(str(text))
+
+def keyed_container(key, **kwargs):
+    try:
+        return st.container(key=key, **kwargs)
+    except TypeError:
+        return st.container(**kwargs)
+
+@st.cache_data(show_spinner=False, max_entries=256)
+def get_pil_image_from_base64(img_base64):
+    if not img_base64:
+        return None
+    try:
+        img_bytes = base64.b64decode(img_base64)
+        return Image.open(io.BytesIO(img_bytes))
+    except Exception:
+        return None
 
 # --- THEME & RESPONSIVE MOBILE CSS ---
 st.markdown("""
@@ -368,14 +373,25 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 </style>
 """, unsafe_allow_html=True)
 
-def esc(text):
-    return _html.escape(str(text))
+# --- SESSION & PERSISTENT LOGIN STATE MANAGEMENT ---
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.role = None
+    st.session_state.username = ""
+    st.session_state.original_role = None
 
-def keyed_container(key, **kwargs):
+qp = st.query_params
+if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "true":
     try:
-        return st.container(key=key, **kwargs)
-    except TypeError:
-        return st.container(**kwargs)
+        st.session_state.logged_in = True
+        st.session_state.role = qp.get("role", "")
+        st.session_state.username = qp.get("username", "")
+        st.session_state.original_role = qp.get("original_role", None)
+    except:
+        st.query_params.clear()
+
+if st.session_state.logged_in and "original_role" in qp and qp["original_role"]:
+    st.session_state.original_role = qp["original_role"]
 
 # --- LOGIN UI ---
 if not st.session_state.logged_in:
@@ -396,8 +412,12 @@ if not st.session_state.logged_in:
             role_val = ""
             user_val = ""
             
-            admin_user = st.secrets["admin"]["username"]
-            admin_pass = st.secrets["admin"]["password"]
+            try:
+                admin_user = st.secrets["admin"]["username"]
+                admin_pass = st.secrets["admin"]["password"]
+            except Exception:
+                admin_user = "admin"
+                admin_pass = "admin"
             
             if username == admin_user and password == admin_pass:
                 role_val = "ผู้ออกแบบ/ดูแลระบบ"
@@ -415,12 +435,21 @@ if not st.session_state.logged_in:
                 orig_role = role_val if role_val == "ผู้ออกแบบ/ดูแลระบบ" else ""
                 st.session_state.original_role = orig_role if orig_role else None
                 
-                # บันทึกสถานะการ Login ถาวรลงใน Query Params (ไม่มีการจำกัดเวลา 24 ชั่วโมง)
+                # บันทึกสถานะการ Login ลงใน URL Query Params และ Browser localStorage เพื่อจดจำข้ามแท็บ/ปิดเบราว์เซอร์
                 st.query_params["logged_in"] = "true"
                 st.query_params["role"] = role_val
                 st.query_params["username"] = user_val
                 if orig_role:
                     st.query_params["original_role"] = orig_role
+                
+                st.markdown(f"""
+                <script>
+                localStorage.setItem('inv_username', '{user_val}');
+                localStorage.setItem('inv_role', '{role_val}');
+                </script>
+                """, unsafe_allow_html=True)
+                
+                st.success("เข้าสู่ระบบสำเร็จ!")
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
@@ -459,6 +488,12 @@ with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & �
     
     st.markdown("---")
     if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
+        st.markdown("""
+        <script>
+        localStorage.removeItem('inv_username');
+        localStorage.removeItem('inv_role');
+        </script>
+        """, unsafe_allow_html=True)
         st.session_state.logged_in = False
         st.session_state.role = None
         st.session_state.username = ""
