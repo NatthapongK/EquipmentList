@@ -511,7 +511,7 @@ else:
 # --- HEADER ---
 if st.session_state.role in TECH_ROLES:
     st.markdown(
-        f'<div class="app-hero"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
+        f'<div class="app-hero"><div><div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์</div>'
         f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
         f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
         unsafe_allow_html=True)
@@ -539,9 +539,15 @@ if not items_df.empty:
 else:
     item_name_map = {}
 
+# หน้าช่างแสดงเฉพาะ ชำรุด / กำลังใช้งาน / หมด (รายการยืมแสดงแยกอีกกล่อง)
+is_tech_view = st.session_state.role in TECH_ROLES
+abn_statuses = ['ชำรุด', 'อุปกรณ์หมด'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด']
+abn_label = "ชำรุด / กำลังใช้งาน / หมด" if is_tech_view else "ผิดปกติ / กำลังใช้งาน / หมด / ยืม"
+abn_title = "อุปกรณ์ชำรุด/กำลังใช้งาน/หมด" if is_tech_view else "อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด/ถูกยืม"
+
 if not items_df.empty:
     abnormal_items = items_df[
-        items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด']) |
+        items_df['status'].isin(abn_statuses) |
         items_df['status'].str.startswith('กำลังใช้งาน', na=False)
     ]
     thr = pd.Series(low_stock_limit, index=items_df.index).where(items_df['alert_zero'] != 1, 0)
@@ -580,7 +586,7 @@ if st.session_state.role == ROLE_ADMIN:
 st.markdown(
     f'''<div class="kpi-grid">
       <div class="kpi"><div class="n">{len(items_df)}</div><div class="l">รายการอุปกรณ์ทั้งหมด</div></div>
-      <div class="kpi" style="--c:{'var(--bad)' if abn_cnt else 'var(--ok)'}"><div class="n">{abn_cnt}</div><div class="l">ผิดปกติ / กำลังใช้งาน / หมด / ยืม</div></div>
+      <div class="kpi" style="--c:{'var(--bad)' if abn_cnt else 'var(--ok)'}"><div class="n">{abn_cnt}</div><div class="l">{abn_label}</div></div>
       <div class="kpi" style="--c:{'var(--warn)' if low_cnt else 'var(--ok)'}"><div class="n">{low_cnt}</div><div class="l">เหลือน้อยกว่าเกณฑ์</div></div>
       <div class="kpi" style="--c:var(--teal)"><div class="n">{borrowed_cnt}</div><div class="l">กำลังถูกยืมอยู่</div></div>
     </div>''', unsafe_allow_html=True)
@@ -588,7 +594,7 @@ st.markdown(
 col_a1, col_a2 = st.columns(2)
 with col_a1:
     if abn_cnt:
-        with st.expander(f"❌ อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด/ถูกยืม ({abn_cnt} รายการ)"):
+        with st.expander(f"❌ {abn_title} ({abn_cnt} รายการ)"):
             st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True,
                          column_config={"name": "ชื่ออุปกรณ์", "category": "หมวดหมู่", "status": "สถานะ",
                                         "quantity": st.column_config.NumberColumn("คงเหลือ", format="%d")})
@@ -614,7 +620,7 @@ if borrowed_cnt:
             "วันที่ยืม": t.get("borrow_date"),
         } for t in active_borrows]), hide_index=True, use_container_width=True)
 else:
-    st.success("✅ ไม่มีอุปกรณ์ที่ถูกยืมค้างอยู่")
+    st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)  # ไม่มีรายการยืม: เว้นระยะแทนข้อความ
 st.markdown("")
 
 # --- SHARED BORROW / RETURN COMPONENT ---
@@ -1248,8 +1254,6 @@ elif st.session_state.role in TECH_ROLES:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
                 switch_role(ROLE_ADMIN)
 
-    st.subheader("📋 หน้าต่างปฏิบัติงานช่างประจำอาคาร")
-
     tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกของ", "🔄 ระบบยืม-คืน อุปกรณ์"])
 
     with tech_main_tab[2]:
@@ -1313,7 +1317,7 @@ elif st.session_state.role in TECH_ROLES:
         today_str = get_now_str("%Y-%m-%d")
 
         if tech_category_choice == "🔧 หมวดอุปกรณ์ช่าง":
-            st.markdown("### 🔧 หมวดอุปกรณ์ช่าง (คลิกชื่อเพื่อดูรูปภาพ & เช็คสถานะ)")
+            st.markdown("### 🔧 หมวดอุปกรณ์ช่าง")
 
             global_count = get_inspection_count("อุปกรณ์ช่าง", today_str)
             base_quota = int(get_settings_val('global_daily_quota', '3'))
@@ -1329,7 +1333,7 @@ elif st.session_state.role in TECH_ROLES:
                     render_tool_inspection_list(tools_all_df)
 
                     st.markdown("<br>", unsafe_allow_html=True)
-                    st.markdown("### 📸 รูปถ่ายรวมหน้างาน / ภาพประกอบการตรวจเช็ค (บังคับครบทั้ง 4 รูป)")
+                    st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
 
                     # เก็บแค่ไฟล์ไว้ก่อน ยังไม่บีบอัด (บีบอัดตอนกดยืนยันเท่านั้น)
                     photo_files = []
@@ -1415,14 +1419,13 @@ elif st.session_state.role in TECH_ROLES:
                     st.info("ไม่มีอุปกรณ์ช่างให้ตรวจสอบในขณะนี้")
 
         else:
-            st.markdown("### 🏊 หมวดอุปกรณ์สระว่ายน้ำ (เช็คจำนวน & ดูรูปภาพ)")
-            st.write("คลิกที่ชื่อรายการอุปกรณ์เพื่อดูรูปภาพ และปรับปรุงจำนวนคงเหลือ")
+            st.markdown("### 🏊 หมวดอุปกรณ์สระว่ายน้ำ")
 
             pool_all_df = items_df[items_df['category'] == 'อุปกรณ์สระว่ายน้ำ'] if not items_df.empty else pd.DataFrame()
             if not pool_all_df.empty:
                 render_pool_list(pool_all_df)
 
-                st.markdown("### 📸 รูปถ่ายรวมหน้างานสระว่ายน้ำ (บังคับครบทั้ง 4 รูป)")
+                st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
                 pool_photo_files = []
                 for i in range(4):
                     up_file = st.file_uploader(f"รูปถ่ายรวมสระที่ {i+1} *", type=["jpg", "jpeg", "png"],
