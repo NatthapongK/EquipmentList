@@ -756,6 +756,8 @@ def render_tool_inspection_list(tools_all_df):
 
             if is_flagged:
                 options_list = ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"]
+                if row['subcategory'] == "เครื่องมือช่าง":
+                    options_list.remove("อุปกรณ์หมด")   # เครื่องมือช่างไม่มีตัวเลือก "อุปกรณ์หมด"
                 default_idx = 0
                 detail_default = ""
                 if current_status.startswith("กำลังใช้งาน"):
@@ -773,7 +775,7 @@ def render_tool_inspection_list(tools_all_df):
                     st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{rid}")
                     if item_total_q > 1:
                         st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
-                elif issue_type in ["ชำรุด", "สูญหาย", "อุปกรณ์หมด"]:
+                elif issue_type in ["ชำรุด", "สูญหาย"]:   # "อุปกรณ์หมด" ไม่ต้องเลือกจำนวน (ตัดเป็น 0 ทั้งหมด)
                     if item_total_q > 1:
                         st.number_input(f"จำนวนชิ้นที่{issue_type} *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
@@ -1389,10 +1391,13 @@ elif st.session_state.role in TECH_ROLES:
                                         final_st = data["status"]
                                         if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
                                             final_st = f"กำลังใช้งาน ({data['detail']})"
-                                        new_q = max(0, curr_q - data["qty"])
+                                        if data["status"] == "อุปกรณ์หมด":
+                                            new_q = 0   # อุปกรณ์หมด = ตัดจำนวนคงเหลือทั้งหมดเป็น 0
+                                        else:
+                                            new_q = max(0, curr_q - data["qty"])
                                         bulk_operations.append(pymongo.operations.UpdateOne(
                                             {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
-                                        detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 else "")
+                                        detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
                                         flagged_summaries.append(detail_txt)
                                     else:
                                         bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": "ปกติ"}}))
