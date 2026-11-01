@@ -7,7 +7,19 @@ import base64
 import html as _html
 import re
 import io
-from PIL import Image
+import secrets
+from PIL import Image, ImageOps
+
+# =====================================================================
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ  (เวอร์ชันปรับความเร็ว)
+#  ต้องใช้ Streamlit >= 1.37 (รองรับ st.fragment)
+#  ต้องตั้งค่า .streamlit/secrets.toml:
+#     [mongo]
+#     uri = "mongodb+srv://..."
+#     [admin]
+#     username = "..."
+#     password = "..."
+# =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
 TZ_TH = timezone(timedelta(hours=7))
@@ -21,43 +33,10 @@ def get_now_str(fmt="%Y-%m-%d %H:%M:%S"):
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ", page_icon="🛠️", layout="wide")
 
-# --- MONGODB ATLAS CONNECTION ---
-MONGO_URI = "mongodb+srv://mrnatthapongk_db_user:MyPassword123@equipmentlist627.44qcj3k.mongodb.net/?retryWrites=true&w=majority"
-
-@st.cache_resource
-def init_mongo():
-    client = pymongo.MongoClient(MONGO_URI)
-    db = client["inventory_pro"]
-    return db
-
-db = init_mongo()
-
-# Helper สำหรับ Auto-increment ID แบบจำลองคอลเลกชัน SQL
-def get_next_sequence(name):
-    counter = db.counters.find_one_and_update(
-        {"_id": name},
-        {"$inc": {"seq": 1}},
-        upsert=True,
-        return_document=pymongo.ReturnDocument.AFTER
-    )
-    return counter["seq"]
-
-# --- OPTIMIZED IMAGE COMPRESSION HELPER ---
-def compress_image_to_base64(uploaded_file, max_size=(800, 800), quality=80):
-    if uploaded_file is None:
-        return None
-    try:
-        uploaded_file.seek(0)
-        img = Image.open(uploaded_file)
-        img.thumbnail(max_size, Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        img.save(buffer, format="JPEG", quality=quality)
-        return base64.b64encode(buffer.getvalue()).decode("utf-8")
-    except Exception:
-        uploaded_file.seek(0)
-        return base64.b64encode(uploaded_file.read()).decode("utf-8")
+ROLE_ADMIN = "ผู้ออกแบบ/ดูแลระบบ"
+ROLE_TECH = "ช่างประจำอาคาร"
+ROLE_TECH_SP = "ช่างประจำอาคารพิเศษ"
+TECH_ROLES = [ROLE_TECH, ROLE_TECH_SP]
 
 # รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
@@ -104,7 +83,7 @@ DEFAULT_INITIAL_ITEMS = [
     ("ชุดเครื่องมือช่างพื้นฐาน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("เครื่องวัดอุณภูมิหม้อแปลง", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("ฟิตเทป", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    
+
     # อุปกรณ์ช่างทั่วไป
     ("กาวร้อน", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
     ("เทปพันสายไฟ", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
@@ -129,7 +108,7 @@ DEFAULT_INITIAL_ITEMS = [
     ("ใบตัดอลู", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
     ("ใบตัดปูน", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
     ("ใบเจียรปูน", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
-    
+
     # หมวดสระว่ายน้ำ
     ("คลอรีนผง 90%", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
     ("สารส้ม", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 4, "ปกติ", "-", None),
@@ -144,63 +123,144 @@ DEFAULT_INITIAL_ITEMS = [
     ("ชุดทดสอบคลอรีนและ PH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
     ("ขวดน้ำยาคลอรีน", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
     ("ขวดน้ำยาPH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
-    ("สายดูดตะกอน สั้น+ยาว", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 1, "ปกติ", "-", None)
+    ("สายดูดตะกอน สั้น+ยาว", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 1, "ปกติ", "-", None),
 ]
 
-# --- INITIALIZE MONGODB DEFAULT DATA ---
-def init_db():
-    if db.items.count_documents({}) == 0:
-        for i in DEFAULT_INITIAL_ITEMS:
-            new_id = get_next_sequence("items_id")
-            db.items.insert_one({
-                "id": new_id,
-                "name": i[0],
-                "category": i[1],
-                "subcategory": i[2],
-                "quantity": i[3],
-                "status": i[4],
-                "alert_zero": 0,
-                "note": i[5],
-                "image": i[6]
-            })
-    
-    if db.settings.count_documents({"key": "low_stock_threshold"}) == 0:
-        db.settings.insert_one({"key": "low_stock_threshold", "value": "1"})
-    if db.settings.count_documents({"key": "global_daily_quota"}) == 0:
-        db.settings.insert_one({"key": "global_daily_quota", "value": "3"})
+def build_default_docs():
+    """สร้างเอกสารอุปกรณ์เริ่มต้นพร้อม id ลำดับ 1..N (ใช้ insert_many ครั้งเดียว)"""
+    return [{
+        "id": idx, "name": i[0], "category": i[1], "subcategory": i[2],
+        "quantity": i[3], "status": i[4], "alert_zero": 0, "note": i[5], "image": i[6]
+    } for idx, i in enumerate(DEFAULT_INITIAL_ITEMS, start=1)]
 
-init_db()
+# --- MONGODB CONNECTION (รันครั้งเดียวต่อ process: สร้าง index + seed ข้อมูล) ---
+@st.cache_resource
+def init_mongo():
+    try:
+        uri = st.secrets["mongo"]["uri"]
+    except Exception:
+        st.error("❌ ไม่พบ st.secrets['mongo']['uri'] กรุณาตั้งค่าใน .streamlit/secrets.toml")
+        st.stop()
+    client = pymongo.MongoClient(uri, maxPoolSize=20, serverSelectionTimeoutMS=8000)
+    database = client["inventory_pro"]
 
-# --- OPTIMIZED CACHED DATA FUNCTIONS ---
-@st.cache_data(ttl=0, show_spinner=False)
+    # Index ช่วยให้ query ตาม id / status เร็วขึ้น
+    database.items.create_index("id", unique=True)
+    database.transactions.create_index("id")
+    database.transactions.create_index([("status", 1), ("id", -1)])
+    database.inspections.create_index("id")
+    database.inspections.create_index([("category", 1), ("inspection_date", 1)])
+    database.requisition_requests.create_index("id")
+    database.requisition_requests.create_index([("status", 1), ("id", -1)])
+    database.requisition_requests.create_index("tech_name")
+    database.tech_users.create_index("username")
+    database.settings.create_index("key")
+    database.sessions.create_index("token", unique=True)
+    database.sessions.create_index("created", expireAfterSeconds=60 * 60 * 24 * 30)  # session หมดอายุ 30 วัน
+
+    # Seed ข้อมูลเริ่มต้น (ครั้งแรกเท่านั้น)
+    if database.items.count_documents({}, limit=1) == 0:
+        database.items.insert_many(build_default_docs())
+        database.counters.update_one({"_id": "items_id"}, {"$set": {"seq": len(DEFAULT_INITIAL_ITEMS)}}, upsert=True)
+    database.settings.update_one({"key": "low_stock_threshold"}, {"$setOnInsert": {"value": "1"}}, upsert=True)
+    database.settings.update_one({"key": "global_daily_quota"}, {"$setOnInsert": {"value": "3"}}, upsert=True)
+    return database
+
+db = init_mongo()
+
+# Helper สำหรับ Auto-increment ID
+def get_next_sequence(name):
+    counter = db.counters.find_one_and_update(
+        {"_id": name}, {"$inc": {"seq": 1}}, upsert=True, return_document=pymongo.ReturnDocument.AFTER)
+    return counter["seq"]
+
+# --- IMAGE HELPERS ---
+def compress_image_to_base64(uploaded_file, max_size=(800, 800), quality=80):
+    """บีบอัดรูป -> base64 (เรียกเฉพาะตอนกดบันทึกเท่านั้น ห้ามเรียกทุก rerun)"""
+    if uploaded_file is None:
+        return None
+    try:
+        uploaded_file.seek(0)
+        img = Image.open(uploaded_file)
+        img.draft("RGB", (max_size[0] * 2, max_size[1] * 2))  # JPEG: decode แบบย่อขนาดตั้งแต่ต้น เร็วขึ้นมาก
+        img = ImageOps.exif_transpose(img)                    # แก้รูปหมุนจากมือถือ
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        img.thumbnail(max_size, Image.Resampling.BILINEAR)
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=quality)
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    except Exception:
+        uploaded_file.seek(0)
+        return base64.b64encode(uploaded_file.read()).decode("utf-8")
+
+def b64_to_bytes(img_base64):
+    """แปลง base64 -> bytes ให้ st.image ใช้ได้โดยตรง"""
+    if not img_base64:
+        return None
+    try:
+        return base64.b64decode(img_base64)
+    except Exception:
+        return None
+
+# เก็บรูปอุปกรณ์ทั้งหมดไว้ในหน่วยความจำ (query ครั้งเดียว) ไม่ดึงรูปร่วมกับ items_df
+@st.cache_resource(ttl=600, show_spinner=False)
+def get_image_store():
+    store = {}
+    for d in db.items.find({"image": {"$nin": [None, ""]}}, {"_id": 0, "id": 1, "image": 1}):
+        b = b64_to_bytes(d.get("image"))
+        if b:
+            store[int(d["id"])] = b
+    return store
+
+def get_item_image(item_id):
+    return get_image_store().get(int(item_id))
+
+# --- CACHED DATA FUNCTIONS (ไม่ดึงรูปมาด้วย -> เบามาก) ---
+@st.cache_data(ttl=30, show_spinner=False)
 def get_items_df():
-    df = pd.DataFrame(list(db.items.find({}, {"_id": 0})))
+    df = pd.DataFrame(list(db.items.find({}, {"_id": 0, "image": 0})))
     if not df.empty:
-        if 'quantity' in df.columns:
-            df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype(int)
-        if 'alert_zero' in df.columns:
-            df['alert_zero'] = pd.to_numeric(df['alert_zero'], errors='coerce').fillna(0).astype(int)
+        df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype(int)
+        df['alert_zero'] = pd.to_numeric(df.get('alert_zero', 0), errors='coerce').fillna(0).astype(int)
+        df['note'] = df['note'].fillna("") if 'note' in df.columns else ""
     return df
 
-@st.cache_data(ttl=0, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def get_tech_users_df():
     return pd.DataFrame(list(db.tech_users.find({}, {"_id": 0})))
 
-@st.cache_data(ttl=0, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_settings_val(key, default="1"):
     res = db.settings.find_one({"key": key})
     return res["value"] if res else default
 
 def set_settings_val(key, val):
     db.settings.update_one({"key": key}, {"$set": {"value": str(val)}}, upsert=True)
-    st.cache_data.clear()
+    get_settings_val.clear()
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_borrowed_count():
+    return db.transactions.count_documents({"status": "กำลังยืม"})
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_inspection_count(category, today_str):
+    return db.inspections.count_documents({"category": category, "inspection_date": {"$regex": f"^{today_str}"}})
+
+def refresh_items(images=False):
+    """ล้างแคชเฉพาะที่เกี่ยวข้อง (แทน st.cache_data.clear() ที่ล้างหมด)"""
+    get_items_df.clear()
+    if images:
+        get_image_store.clear()
+
+def nz(v):
+    return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
 
 def parse_tech_txt_content(text_content):
     tech_list = []
-    lines = text_content.splitlines()
     u = None
     p = None
-    for line in lines:
+    for line in text_content.splitlines():
         line_s = line.strip()
         if not line_s:
             continue
@@ -226,33 +286,25 @@ def keyed_container(key, **kwargs):
     except TypeError:
         return st.container(**kwargs)
 
-@st.cache_data(show_spinner=False, max_entries=256)
-def get_pil_image_from_base64(img_base64):
-    if not img_base64:
-        return None
-    try:
-        img_bytes = base64.b64decode(img_base64)
-        return Image.open(io.BytesIO(img_bytes))
-    except:
-        return None
+# st.fragment: rerun เฉพาะส่วน (รองรับชื่อเก่า experimental_fragment)
+fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None) or (lambda f: f)
 
-# --- PERSISTENT LOGIN FRONTEND BRIDGE (LOCALSTORAGE) ---
-st.markdown("""
-<script>
-window.addEventListener('DOMContentLoaded', () => {
-    const savedUser = localStorage.getItem('inv_username');
-    const savedRole = localStorage.getItem('inv_role');
-    const currentParams = new URLSearchParams(window.location.search);
-    
-    if (savedUser && savedRole && !currentParams.has('logged_in')) {
-        currentParams.set('logged_in', 'true');
-        currentParams.set('username', savedUser);
-        currentParams.set('role', savedRole);
-        window.location.replace(window.location.pathname + '?' + currentParams.toString());
-    }
-});
-</script>
-""", unsafe_allow_html=True)
+# --- SESSION TOKEN (แทนการส่ง role ผ่าน URL ที่ใครก็แก้ได้) ---
+def create_session(username, role, original_role):
+    token = secrets.token_urlsafe(24)
+    db.sessions.insert_one({
+        "token": token, "username": username, "role": role,
+        "original_role": original_role, "created": datetime.now(timezone.utc)
+    })
+    return token
+
+def switch_role(new_role):
+    st.session_state.role = new_role
+    st.session_state.original_role = ROLE_ADMIN
+    tk = st.session_state.get("token")
+    if tk:
+        db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
+    st.rerun()
 
 # --- THEME & RESPONSIVE MOBILE CSS ---
 st.markdown("""
@@ -335,23 +387,22 @@ if "logged_in" not in st.session_state:
     st.session_state.role = None
     st.session_state.username = ""
     st.session_state.original_role = None
+    st.session_state.token = None
 
-# ตัวแปรจัดการเวอร์ชันช่องอัปโหลดรูปภาพเพื่อเคลียร์ค่าเมื่อส่งข้อมูลสำเร็จ
 if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0
 
-qp = st.query_params
-if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "true":
-    try:
+# กู้คืน session จาก token ใน URL (ตรวจกับฐานข้อมูล ไม่เชื่อค่า role จาก URL)
+if not st.session_state.logged_in and "token" in st.query_params:
+    sess = db.sessions.find_one({"token": st.query_params["token"]})
+    if sess:
         st.session_state.logged_in = True
-        st.session_state.role = qp.get("role", "")
-        st.session_state.username = qp.get("username", "")
-        st.session_state.original_role = qp.get("original_role", None)
-    except:
+        st.session_state.role = sess["role"]
+        st.session_state.username = sess["username"]
+        st.session_state.original_role = sess.get("original_role")
+        st.session_state.token = sess["token"]
+    else:
         st.query_params.clear()
-
-if st.session_state.logged_in and "original_role" in qp and qp["original_role"]:
-    st.session_state.original_role = qp["original_role"]
 
 # --- LOGIN UI ---
 if not st.session_state.logged_in:
@@ -365,64 +416,37 @@ if not st.session_state.logged_in:
             username = st.text_input("ชื่อผู้ใช้งาน (Username)")
             password = st.text_input("รหัสผ่าน (Password)", type="password")
             submitted = st.form_submit_button("เข้าสู่ระบบ", type="primary", use_container_width=True)
-        
-        tech_df = get_tech_users_df()
-        
+
         if submitted:
-            role_val = ""
-            user_val = ""
-            
+            role_val, user_val = "", ""
             try:
                 admin_user = st.secrets["admin"]["username"]
                 admin_pass = st.secrets["admin"]["password"]
             except Exception:
-                admin_user = "admin"
-                admin_pass = "admin"
-            
+                admin_user, admin_pass = "admin", "admin"
+
             if username == admin_user and password == admin_pass:
-                role_val = "ผู้ออกแบบ/ดูแลระบบ"
-                user_val = admin_user
-            else:
-                matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)] if not tech_df.empty else pd.DataFrame()
-                if not matched_tech.empty:
-                    role_val = "ช่างประจำอาคาร"
-                    user_val = username
-            
+                role_val, user_val = ROLE_ADMIN, admin_user
+            elif db.tech_users.find_one({"username": username, "password": password}, {"_id": 1}):
+                role_val, user_val = ROLE_TECH, username
+
             if role_val:
+                orig_role = ROLE_ADMIN if role_val == ROLE_ADMIN else None
+                token = create_session(user_val, role_val, orig_role)
                 st.session_state.logged_in = True
                 st.session_state.role = role_val
                 st.session_state.username = user_val
-                orig_role = role_val if role_val == "ผู้ออกแบบ/ดูแลระบบ" else ""
-                st.session_state.original_role = orig_role if orig_role else None
-                
-                st.query_params["logged_in"] = "true"
-                st.query_params["role"] = role_val
-                st.query_params["username"] = user_val
-                if orig_role:
-                    st.query_params["original_role"] = orig_role
-                
-                st.markdown(f"""
-                <script>
-                localStorage.setItem('inv_username', '{user_val}');
-                localStorage.setItem('inv_role', '{role_val}');
-                </script>
-                """, unsafe_allow_html=True)
-                
-                st.success("เข้าสู่ระบบสำเร็จ!")
+                st.session_state.original_role = orig_role
+                st.session_state.token = token
+                st.query_params["token"] = token
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
-# --- DYNAMIC SIDEBAR CONTROL BY ROLE ---
-if st.session_state.role in ["ช่างประจำอาคาร", "ช่างประจำอาคารพิเศษ"]:
-    st.markdown("""
-    <style>
-    section[data-testid="stSidebar"] {
-        display: none !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+# --- SIDEBAR ---
+if st.session_state.role in TECH_ROLES:
+    st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
 else:
     st.sidebar.markdown(
         f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper())}</div>'
@@ -434,43 +458,30 @@ else:
     with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & ออกจากระบบ", expanded=True):
         st.write(f"ผู้ใช้งาน: **{st.session_state.username}**")
         st.write(f"สิทธิ์: **{st.session_state.role}**")
-        
-        is_admin_origin = (st.session_state.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ") or (st.query_params.get("original_role") == "ผู้ออกแบบ/ดูแลระบบ") or (st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ")
-        
-        if is_admin_origin:
+
+        if st.session_state.original_role == ROLE_ADMIN:
             st.markdown("---")
-            if st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ":
+            if st.session_state.role == ROLE_ADMIN:
                 if st.button("🔀 สลับเป็น 'ช่างประจำอาคารพิเศษ'", type="secondary", use_container_width=True):
-                    st.session_state.role = "ช่างประจำอาคารพิเศษ"
-                    st.session_state.original_role = "ผู้ออกแบบ/ดูแลระบบ"
-                    st.query_params["role"] = "ช่างประจำอาคารพิเศษ"
-                    st.query_params["original_role"] = "ผู้ออกแบบ/ดูแลระบบ"
-                    st.rerun()
+                    switch_role(ROLE_TECH_SP)
             else:
                 if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True):
-                    st.session_state.role = "ผู้ออกแบบ/ดูแลระบบ"
-                    st.session_state.original_role = "ผู้ออกแบบ/ดูแลระบบ"
-                    st.query_params["role"] = "ผู้ออกแบบ/ดูแลระบบ"
-                    st.query_params["original_role"] = "ผู้ออกแบบ/ดูแลระบบ"
-                    st.rerun()
-        
+                    switch_role(ROLE_ADMIN)
+
         st.markdown("---")
         if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
-            st.markdown("""
-            <script>
-            localStorage.removeItem('inv_username');
-            localStorage.removeItem('inv_role');
-            </script>
-            """, unsafe_allow_html=True)
+            if st.session_state.get("token"):
+                db.sessions.delete_one({"token": st.session_state.token})
             st.session_state.logged_in = False
             st.session_state.role = None
             st.session_state.username = ""
             st.session_state.original_role = None
+            st.session_state.token = None
             st.query_params.clear()
             st.rerun()
 
-# --- HEADER BAR FOR TECH (WITHOUT LOGOUT BUTTON) ---
-if st.session_state.role in ["ช่างประจำอาคาร", "ช่างประจำอาคารพิเศษ"]:
+# --- HEADER ---
+if st.session_state.role in TECH_ROLES:
     st.markdown(
         f'<div class="app-hero"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
         f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
@@ -487,28 +498,31 @@ else:
     with col_h_btn:
         if st.button("🔄 โหลดข้อมูลใหม่", type="secondary", use_container_width=True):
             st.cache_data.clear()
+            get_image_store.clear()
             st.rerun()
 
 # --- ALERT SYSTEM & DATA FETCH ---
 low_stock_limit = int(get_settings_val('low_stock_threshold', '1'))
 items_df = get_items_df()
 
-abnormal_items = items_df[
-    items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด']) | 
-    items_df['status'].str.startswith('กำลังใช้งาน', na=False)
-] if not items_df.empty else pd.DataFrame()
-
-low_stock_list = []
+# lookup dict แทนการ query ทีละรายการในลูป
 if not items_df.empty:
-    for _, row in items_df.iterrows():
-        if row['subcategory'] == 'เครื่องมือช่าง':
-            continue
-        threshold = 0 if row.get('alert_zero', 0) == 1 else low_stock_limit
-        if row['quantity'] <= threshold:
-            low_stock_list.append(row)
-low_stock_items = pd.DataFrame(low_stock_list)
+    item_name_map = dict(zip(items_df['id'], items_df['name']))
+else:
+    item_name_map = {}
 
-borrowed_cnt = db.transactions.count_documents({"status": "กำลังยืม"})
+if not items_df.empty:
+    abnormal_items = items_df[
+        items_df['status'].isin(['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด']) |
+        items_df['status'].str.startswith('กำลังใช้งาน', na=False)
+    ]
+    thr = pd.Series(low_stock_limit, index=items_df.index).where(items_df['alert_zero'] != 1, 0)
+    low_stock_items = items_df[(items_df['subcategory'] != 'เครื่องมือช่าง') & (items_df['quantity'] <= thr)]
+else:
+    abnormal_items = pd.DataFrame()
+    low_stock_items = pd.DataFrame()
+
+borrowed_cnt = get_borrowed_count()
 abn_cnt, low_cnt = len(abnormal_items), len(low_stock_items)
 
 st.markdown(
@@ -542,72 +556,59 @@ st.markdown("")
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
-    
+
     with sub_borrow:
         available_items = items_df[items_df['quantity'] > 0] if not items_df.empty else pd.DataFrame()
         if not available_items.empty:
             with st.form("borrow_form_shared", clear_on_submit=True):
-                item_dict = {f"#{row['id']} {row['name']} (คงเหลือ: {row['quantity']} ชิ้น) [{row['category']}]": row['id'] for _, row in available_items.iterrows()}
+                item_dict = {f"#{row['id']} {row['name']} (คงเหลือ: {row['quantity']} ชิ้น) [{row['category']}]": row['id']
+                             for _, row in available_items.iterrows()}
                 sel_item_label = st.selectbox("เลือกเครื่องมือ/อุปกรณ์ที่ต้องการยืม *", list(item_dict.keys()))
-                
-                selected_id = item_dict[sel_item_label]
-                item_info = items_df[items_df['id'] == selected_id].iloc[0]
-                max_q = int(item_info['quantity'])
-                
-                borrow_qty = st.number_input("จำนวนที่ต้องการยืม *", min_value=1, max_value=max_q, value=1)
+                borrow_qty = st.number_input("จำนวนที่ต้องการยืม *", min_value=1,
+                                             max_value=int(available_items['quantity'].max()), value=1)
                 borrower_name = st.text_input("ชื่อผู้ยืม * (ระบุชื่อ-นามสกุล / แผนก)")
                 borrow_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายผู้ยืมหรือหลักฐานการยืม (ถ้ามี)", type=["jpg", "jpeg", "png"])
-                
                 st.info(f"📌 ผู้ทำรายการ/ผู้ให้ยืม: **{st.session_state.username}** (บันทึกอัตโนมัติ)")
-                
+
                 if st.form_submit_button("ยืนยันการยืมอุปกรณ์"):
-                    if borrower_name.strip():
+                    selected_id = item_dict[sel_item_label]
+                    # อ่านจำนวนล่าสุดจาก DB ตอนกดยืนยัน (กันข้อมูลเก่า)
+                    cur = db.items.find_one({"id": selected_id}, {"_id": 0, "quantity": 1, "status": 1, "name": 1})
+                    if not borrower_name.strip():
+                        st.error("❌ กรุณากรอกชื่อผู้ยืมให้เรียบร้อย")
+                    elif not cur or int(cur["quantity"]) < borrow_qty:
+                        st.error(f"❌ จำนวนคงเหลือไม่พอ (คงเหลือ {cur['quantity'] if cur else 0} ชิ้น)")
+                    else:
                         b_img_b64 = compress_image_to_base64(borrow_img_file)
-                        now_time = get_now_str("%Y-%m-%d %H:%M")
-                        
                         tx_id = get_next_sequence("transactions_id")
                         db.transactions.insert_one({
-                            "id": tx_id,
-                            "item_id": selected_id,
-                            "borrower_name": borrower_name,
-                            "borrow_date": now_time,
-                            "return_date": None,
-                            "status": "กำลังยืม",
-                            "borrower_image": b_img_b64,
-                            "quantity": borrow_qty,
-                            "giver_name": st.session_state.username,
-                            "receiver_name": None,
-                            "return_image": None
+                            "id": tx_id, "item_id": selected_id, "borrower_name": borrower_name,
+                            "borrow_date": get_now_str("%Y-%m-%d %H:%M"), "return_date": None,
+                            "status": "กำลังยืม", "borrower_image": b_img_b64, "quantity": borrow_qty,
+                            "giver_name": st.session_state.username, "receiver_name": None, "return_image": None
                         })
-                        
-                        new_qty = max_q - borrow_qty
-                        new_status = 'ยืม' if new_qty == 0 else item_info['status']
-                        
+                        new_qty = int(cur["quantity"]) - borrow_qty
+                        new_status = 'ยืม' if new_qty == 0 else cur["status"]
                         db.items.update_one({"id": selected_id}, {"$set": {"quantity": new_qty, "status": new_status}})
-                        st.cache_data.clear()
-                        
-                        st.success(f"บันทึกการยืม {item_info['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
+                        refresh_items()
+                        get_borrowed_count.clear()
+                        st.success(f"บันทึกการยืม {cur['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
                         st.rerun()
-                    else:
-                        st.error("❌ กรุณากรอกชื่อผู้ยืมให้เรียบร้อย")
         else:
             st.info("ไม่มีอุปกรณ์ที่มีจำนวนคงเหลือให้ยืมในขณะนี้")
-            
+
     with sub_return:
         st.markdown("#### รายการที่กำลังถูกยืมอยู่")
-        active_txs = list(db.transactions.find({"status": "กำลังยืม"}, {"_id": 0}).sort("id", -1))
-        
+        active_txs = list(db.transactions.find({"status": "กำลังยืม"}, {"_id": 0, "return_image": 0}).sort("id", -1))
+
         if active_txs:
             for t in active_txs:
-                item_info = db.items.find_one({"id": t["item_id"]})
-                item_name = item_info["name"] if item_info else "Unknown"
-                current_q = item_info["quantity"] if item_info else 0
-                
+                item_name = item_name_map.get(t["item_id"], "Unknown")
                 giver_str = f" | ผู้ให้ยืม: {t.get('giver_name')}" if t.get('giver_name') else ""
                 with st.expander(f"📦 อุปกรณ์: {item_name} (จำนวนยืม: {t.get('quantity', 1)} ชิ้น) | ผู้ยืม: {t.get('borrower_name')}{giver_str}"):
                     col_r1, col_r2 = st.columns([1, 2])
                     with col_r1:
-                        p_img = get_pil_image_from_base64(t.get('borrower_image'))
+                        p_img = b64_to_bytes(t.get('borrower_image'))
                         if p_img:
                             st.image(p_img, caption=f"ผู้ยืม: {t.get('borrower_name')}", width=200)
                         else:
@@ -619,75 +620,139 @@ def render_borrow_return_system():
                         if t.get('giver_name'):
                             st.write(f"**ผู้ให้ยืม/บันทึก:** {t.get('giver_name')}")
                         st.write(f"**วันที่ยืม:** {t.get('borrow_date')}")
-                        
+
                         with st.form(key=f"return_form_{t['id']}"):
                             st.info(f"📌 ผู้รับคืน: **{st.session_state.username}** (บันทึกอัตโนมัติ)")
                             ret_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายตอนคืนอุปกรณ์ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"ret_img_{t['id']}")
-                            
-                            if st.form_submit_button(f"✅ รับคืนอุปกรณ์รายการนี้"):
-                                now_time = get_now_str("%Y-%m-%d %H:%M")
+
+                            if st.form_submit_button("✅ รับคืนอุปกรณ์รายการนี้"):
                                 r_img_b64 = compress_image_to_base64(ret_img_file)
-                                    
                                 db.transactions.update_one(
                                     {"id": t['id']},
-                                    {"$set": {
-                                        "return_date": now_time,
-                                        "status": "คืนแล้ว",
-                                        "receiver_name": st.session_state.username,
-                                        "return_image": r_img_b64
-                                    }}
-                                )
-                                
+                                    {"$set": {"return_date": get_now_str("%Y-%m-%d %H:%M"), "status": "คืนแล้ว",
+                                              "receiver_name": st.session_state.username, "return_image": r_img_b64}})
                                 tx_qty = int(t.get('quantity', 1))
-                                new_q = current_q + tx_qty
-                                db.items.update_one({"id": t['item_id']}, {"$set": {"quantity": new_q, "status": "ปกติ"}})
-                                st.cache_data.clear()
-                                
+                                # $inc แบบ atomic ไม่ต้องอ่านค่าเดิมก่อน
+                                db.items.update_one({"id": t['item_id']}, {"$inc": {"quantity": tx_qty}, "$set": {"status": "ปกติ"}})
+                                refresh_items()
+                                get_borrowed_count.clear()
                                 st.success(f"รับคืน {item_name} จำนวน {tx_qty} ชิ้น เรียบร้อยแล้ว")
                                 st.rerun()
         else:
             st.info("ไม่มีรายการอุปกรณ์ที่กำลังถูกยืมในขณะนี้")
-            
+
     with sub_history:
-        st.markdown("#### ประวัติการยืม-คืนทั้งหมด")
-        all_txs = list(db.transactions.find({}, {"_id": 0}).sort("id", -1))
-        tx_history_data = []
-        for t in all_txs:
-            item_info = db.items.find_one({"id": t["item_id"]})
-            tx_history_data.append({
-                "รหัส": t["id"],
-                "ชื่ออุปกรณ์": item_info["name"] if item_info else "Unknown",
-                "จำนวน": t.get("quantity", 1),
-                "ผู้ยืม": t.get("borrower_name"),
-                "ผู้ให้ยืม": t.get("giver_name"),
-                "ผู้รับคืน": t.get("receiver_name"),
-                "วันที่ยืม": t.get("borrow_date"),
-                "วันที่คืน": t.get("วันที่คืน") or t.get("return_date"),
-                "สถานะ": t.get("status")
-            })
-        tx_history = pd.DataFrame(tx_history_data)
+        st.markdown("#### ประวัติการยืม-คืนทั้งหมด (แสดง 300 รายการล่าสุด)")
+        all_txs = list(db.transactions.find({}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1).limit(300))
+        tx_history = pd.DataFrame([{
+            "รหัส": t["id"],
+            "ชื่ออุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
+            "จำนวน": t.get("quantity", 1),
+            "ผู้ยืม": t.get("borrower_name"),
+            "ผู้ให้ยืม": t.get("giver_name"),
+            "ผู้รับคืน": t.get("receiver_name"),
+            "วันที่ยืม": t.get("borrow_date"),
+            "วันที่คืน": t.get("return_date"),
+            "สถานะ": t.get("status"),
+        } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (fragment: ติ๊ก/เลือกแล้ว rerun เฉพาะส่วนนี้) ---
+@fragment
+def render_tool_inspection_list(tools_all_df):
+    tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
+    tools_df = tools_all_df
+    if tech_search.strip():
+        tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
+
+    with keyed_container("tech_check_list", height=500):
+        for _, row in tools_df.iterrows():
+            rid = row['id']
+            current_status = row['status']
+            is_currently_flagged = current_status != "ปกติ"
+
+            col_item, col_flag = st.columns([5, 1.4])
+            with col_item:
+                status_badge = f" (สถานะเดิม: {current_status})" if is_currently_flagged else ""
+                with st.expander(f"🛠️ {row['name']}{status_badge} (คงเหลือ: {row['quantity']})"):
+                    img_bytes = get_item_image(rid)
+                    if img_bytes:
+                        st.image(img_bytes, width=220, caption=f"รูปภาพ: {row['name']}")
+                    else:
+                        st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
+            with col_flag:
+                is_flagged = st.checkbox("แจ้งปัญหา", value=is_currently_flagged, key=f"flag_{rid}")
+
+            if is_flagged:
+                options_list = ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"]
+                default_idx = 0
+                detail_default = ""
+                if current_status.startswith("กำลังใช้งาน"):
+                    default_idx = 1
+                    m_detail = re.search(r'\((.*?)\)', current_status)
+                    if m_detail:
+                        detail_default = m_detail.group(1)
+                elif current_status in options_list:
+                    default_idx = options_list.index(current_status)
+
+                issue_type = st.selectbox("ประเภทปัญหา *", options_list, index=default_idx, key=f"issue_type_{rid}")
+                item_total_q = int(row['quantity'])
+
+                if issue_type == "กำลังใช้งาน":
+                    st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{rid}")
+                    if item_total_q > 1:
+                        st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
+                elif issue_type in ["ชำรุด", "สูญหาย", "อุปกรณ์หมด"]:
+                    if item_total_q > 1:
+                        st.number_input(f"จำนวนชิ้นที่{issue_type} *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
+            st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
+
+# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (fragment) ---
+@fragment
+def render_pool_list(pool_all_df):
+    tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
+    pool_df = pool_all_df
+    if tech_pool_search.strip():
+        pool_df = pool_df[pool_df['name'].str.contains(tech_pool_search.strip(), case=False, na=False)]
+
+    with st.container(height=500):
+        for _, row in pool_df.iterrows():
+            with st.expander(f"📦 {row['name']} (คงเหลือปัจจุบัน: {row['quantity']} ชิ้น)"):
+                img_bytes = get_item_image(row['id'])
+                if img_bytes:
+                    st.image(img_bytes, width=220, caption=f"รูปภาพ: {row['name']}")
+                else:
+                    st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
+            st.number_input(f"จำนวนคงเหลือ: {row['name']}", min_value=0, value=int(row['quantity']), key=f"pool_q_{row['id']}")
+            st.markdown("---")
+
+def clear_inspection_widget_state():
+    """ล้างค่า widget ของหน้าตรวจเช็คหลังบันทึก เพื่อให้ค่าเริ่มต้นอิงจาก DB ล่าสุด"""
+    prefixes = ("flag_", "issue_type_", "issue_detail_", "issue_qty_", "pool_q_")
+    for k in list(st.session_state.keys()):
+        if isinstance(k, str) and k.startswith(prefixes):
+            del st.session_state[k]
+
 # --- DIVISION BY ROLE ---
-if st.session_state.role == "ผู้ออกแบบ/ดูแลระบบ":
+if st.session_state.role == ROLE_ADMIN:
     admin_menu = st.tabs([
-        "📋 1. จัดการอุปกรณ์ทั้งหมด", 
-        "📊 2. รายงานการตรวจเช็ค", 
-        "📥 3. อนุมัติคำขอเพิ่มอุปกรณ์", 
-        "🔄 4. ยืม-คืน เครื่องมือ-อุปกรณ์", 
+        "📋 1. จัดการอุปกรณ์ทั้งหมด",
+        "📊 2. รายงานการตรวจเช็ค",
+        "📥 3. อนุมัติคำขอเพิ่มอุปกรณ์",
+        "🔄 4. ยืม-คืน เครื่องมือ-อุปกรณ์",
         "⚙️ 5. ตั้งค่าระบบ & รหัสช่าง"
     ])
-    
+
     with admin_menu[0]:
         st.subheader("📋 จัดการอุปกรณ์ทั้งหมดในระบบ")
         tab_list, tab_add_edit, tab_excel_import = st.tabs(["🔍 ดูรายการทั้งหมด", "➕ เพิ่ม/แก้ไขอุปกรณ์", "📥 นำเข้า/รีเซ็ตข้อมูล"])
-        
+
         with tab_list:
             c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
             search_kw = c_f1.text_input("🔍 ค้นหาชื่ออุปกรณ์...", placeholder="พิมพ์ชื่ออุปกรณ์เพื่อค้นหา")
             cat_filter = c_f2.selectbox("กรองตามหมวดหลัก", ["ทั้งหมด", "อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
             status_filter = c_f3.selectbox("กรองตามสถานะ", ["ทั้งหมด", "ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"])
-            
+
             filtered_df = items_df.copy()
             if not filtered_df.empty:
                 if search_kw.strip():
@@ -696,13 +761,14 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                     filtered_df = filtered_df[filtered_df['category'] == cat_filter]
                 if status_filter != "ทั้งหมด":
                     filtered_df = filtered_df[filtered_df['status'] == status_filter]
-                
-            st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ (💡 คลิกเลือกแถวในตารางด้านล่าง เพื่อเปิดหน้าต่างป๊อปอัพแก้ไขข้อมูลทันที)")
-            
-            show_df = filtered_df[['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']].copy() if not filtered_df.empty else pd.DataFrame(columns=['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note'])
+
+            st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ (💡 คลิกเลือกแถวในตารางด้านล่าง เพื่อเปิดหน้าต่างแก้ไขข้อมูลทันที)")
+
+            cols_show = ['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']
+            show_df = filtered_df[cols_show].copy() if not filtered_df.empty else pd.DataFrame(columns=cols_show)
             if not show_df.empty:
                 show_df['alert_zero'] = show_df['alert_zero'].astype(bool)
-            
+
             table_event = st.dataframe(
                 show_df, use_container_width=True, hide_index=True, height=350,
                 on_select="rerun", selection_mode="single-row",
@@ -716,68 +782,54 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                     "note": "หมายเหตุ",
                 }
             )
-            
+
             selected_rows = table_event.get("selection", {}).get("rows", [])
             if selected_rows:
-                selected_idx = selected_rows[0]
-                qe_id = int(filtered_df.iloc[selected_idx]['id'])
-                st.session_state.quick_edit_id = qe_id
+                st.session_state.quick_edit_id = int(filtered_df.iloc[selected_rows[0]]['id'])
 
-            if "quick_edit_id" in st.session_state and st.session_state.quick_edit_id:
+            if st.session_state.get("quick_edit_id"):
                 qe_id = st.session_state.quick_edit_id
-                qe_row = db.items.find_one({"id": qe_id}, {"_id": 0})
+                qe_row = db.items.find_one({"id": qe_id}, {"_id": 0, "image": 0})
                 if qe_row:
                     st.markdown("---")
-                    with st.expander(f"📌 หน้าต่างป๊อปอัพแก้ไขข้อมูลอุปกรณ์: #{qe_row['id']} - {qe_row['name']}", expanded=True):
+                    with st.expander(f"📌 หน้าต่างแก้ไขข้อมูลอุปกรณ์: #{qe_row['id']} - {qe_row['name']}", expanded=True):
                         with st.form(f"quick_edit_form_{qe_id}"):
                             qe_name = st.text_input("ชื่ออุปกรณ์", value=qe_row['name'])
-                            qe_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if qe_row['category']=="อุปกรณ์ช่าง" else 1)
-                            
+                            qe_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if qe_row['category'] == "อุปกรณ์ช่าง" else 1)
+
                             if qe_category == "อุปกรณ์ช่าง":
                                 sub_idx = 0 if qe_row.get('subcategory') == "เครื่องมือช่าง" else 1
                                 qe_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
                             else:
                                 qe_subcat = "เคมีภัณฑ์"
                                 st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
-                                
+
                             qe_quantity = st.number_input("จำนวน", min_value=0, value=int(qe_row['quantity']))
                             status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
                             qe_status = st.selectbox("สถานะ", status_list, index=status_list.index(qe_row['status']) if qe_row['status'] in status_list else 0)
-                            
                             qe_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(qe_row.get('alert_zero', 0)))
-                            qe_note = st.text_area("หมายเหตุ", value=qe_row.get('note') if qe_row.get('note') else "")
-                            
-                            pil_img = get_pil_image_from_base64(qe_row.get('image'))
-                            if pil_img:
-                                st.image(pil_img, width=150, caption="รูปภาพปัจจุบัน")
+                            qe_note = st.text_area("หมายเหตุ", value=nz(qe_row.get('note')))
+
+                            cur_img = get_item_image(qe_id)
+                            if cur_img:
+                                st.image(cur_img, width=150, caption="รูปภาพปัจจุบัน")
                             qe_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"qe_file_{qe_id}")
-                            
+
                             col_qe1, col_qe2, col_qe3 = st.columns([1, 1, 2])
                             if col_qe1.form_submit_button("💾 บันทึกการแก้ไข", type="primary"):
-                                img_base64 = qe_row.get('image')
-                                if qe_file is not None:
-                                    img_base64 = compress_image_to_base64(qe_file)
-                                az_val = 1 if qe_alert_zero else 0
-                                db.items.update_one(
-                                    {"id": qe_id},
-                                    {"$set": {
-                                        "name": qe_name,
-                                        "category": qe_category,
-                                        "subcategory": qe_subcat,
-                                        "quantity": qe_quantity,
-                                        "status": qe_status,
-                                        "alert_zero": az_val,
-                                        "note": qe_note,
-                                        "image": img_base64
-                                    }}
-                                )
-                                st.cache_data.clear()
+                                upd = {"name": qe_name, "category": qe_category, "subcategory": qe_subcat,
+                                       "quantity": qe_quantity, "status": qe_status,
+                                       "alert_zero": 1 if qe_alert_zero else 0, "note": qe_note}
+                                if qe_file is not None:   # อัปเดตรูปเฉพาะตอนมีการเปลี่ยนจริง
+                                    upd["image"] = compress_image_to_base64(qe_file)
+                                db.items.update_one({"id": qe_id}, {"$set": upd})
+                                refresh_items(images=qe_file is not None)
                                 st.success("อัปเดตข้อมูลสำเร็จ!")
                                 del st.session_state.quick_edit_id
                                 st.rerun()
                             if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
                                 db.items.delete_one({"id": qe_id})
-                                st.cache_data.clear()
+                                refresh_items(images=True)
                                 st.success("ลบเรียบร้อยแล้ว!")
                                 del st.session_state.quick_edit_id
                                 st.rerun()
@@ -796,112 +848,93 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                     else:
                         subcategory = "เคมีภัณฑ์"
                         st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
-                        
+
                     quantity = st.number_input("จำนวน (ชิ้น)", min_value=1, value=1)
                     status = st.selectbox("สภาพเริ่มต้น", ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด"])
                     alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0 (ค่าเริ่มต้นเตือนที่ 1)")
                     note = st.text_area("หมายเหตุ")
                     uploaded_file = st.file_uploader("อัปโหลดรูปภาพอุปกรณ์", type=["jpg", "jpeg", "png"])
-                    
+
                     if st.form_submit_button("บันทึกอุปกรณ์ใหม่"):
                         if name.strip():
-                            img_base64 = compress_image_to_base64(uploaded_file)
-                            az_val = 1 if alert_zero else 0
                             new_id = get_next_sequence("items_id")
                             db.items.insert_one({
-                                "id": new_id,
-                                "name": name,
-                                "category": category,
-                                "subcategory": subcategory,
-                                "quantity": quantity,
-                                "status": status,
-                                "alert_zero": az_val,
-                                "note": note,
-                                "image": img_base64
+                                "id": new_id, "name": name, "category": category, "subcategory": subcategory,
+                                "quantity": quantity, "status": status, "alert_zero": 1 if alert_zero else 0,
+                                "note": note, "image": compress_image_to_base64(uploaded_file)
                             })
-                            st.cache_data.clear()
+                            refresh_items(images=uploaded_file is not None)
                             st.success("เพิ่มอุปกรณ์สำเร็จ!")
                             st.rerun()
                         else:
                             st.error("กรุณากรอกชื่ออุปกรณ์")
-                            
+
             with sub_e:
                 if not items_df.empty:
                     selected_item_id = st.selectbox("เลือกอุปกรณ์ที่ต้องการแก้ไข", items_df['id'].astype(str) + " - " + items_df['name'])
                     if selected_item_id:
                         item_id_int = int(selected_item_id.split(" - ")[0])
                         current_item = items_df[items_df['id'] == item_id_int].iloc[0]
-                        
+
                         with st.form(f"edit_form_{item_id_int}"):
                             e_name = st.text_input("ชื่ออุปกรณ์", value=current_item['name'])
-                            e_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if current_item['category']=="อุปกรณ์ช่าง" else 1)
-                            
+                            e_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if current_item['category'] == "อุปกรณ์ช่าง" else 1)
+
                             if e_category == "อุปกรณ์ช่าง":
                                 sub_idx = 0 if current_item['subcategory'] == "เครื่องมือช่าง" else 1
                                 e_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
                             else:
                                 e_subcat = "เคมีภัณฑ์"
                                 st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
-                                
+
                             e_quantity = st.number_input("จำนวน", min_value=0, value=int(current_item['quantity']))
                             status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
                             e_status = st.selectbox("สถานะ", status_list, index=status_list.index(current_item['status']) if current_item['status'] in status_list else 0)
                             e_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(current_item.get('alert_zero', 0)))
-                            e_note = st.text_area("หมายเหตุ", value=current_item['note'] if current_item['note'] else "")
-                            
-                            pil_img = get_pil_image_from_base64(current_item['image'])
-                            if pil_img:
-                                st.image(pil_img, width=150, caption="รูปภาพปัจจุบัน")
+                            e_note = st.text_area("หมายเหตุ", value=nz(current_item['note']))
+
+                            cur_img = get_item_image(item_id_int)
+                            if cur_img:
+                                st.image(cur_img, width=150, caption="รูปภาพปัจจุบัน")
                             e_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"file_{item_id_int}")
-                            
+
                             col_e1, col_e2 = st.columns(2)
                             if col_e1.form_submit_button("บันทึกการแก้ไข", type="primary"):
-                                img_base64 = current_item['image']
+                                upd = {"name": e_name, "category": e_category, "subcategory": e_subcat,
+                                       "quantity": e_quantity, "status": e_status,
+                                       "alert_zero": 1 if e_alert_zero else 0, "note": e_note}
                                 if e_file is not None:
-                                    img_base64 = compress_image_to_base64(e_file)
-                                az_val = 1 if e_alert_zero else 0
-                                db.items.update_one(
-                                    {"id": item_id_int},
-                                    {"$set": {
-                                        "name": e_name,
-                                        "category": e_category,
-                                        "subcategory": e_subcat,
-                                        "quantity": e_quantity,
-                                        "status": e_status,
-                                        "alert_zero": az_val,
-                                        "note": e_note,
-                                        "image": img_base64
-                                    }}
-                                )
-                                st.cache_data.clear()
+                                    upd["image"] = compress_image_to_base64(e_file)
+                                db.items.update_one({"id": item_id_int}, {"$set": upd})
+                                refresh_items(images=e_file is not None)
                                 st.success("อัปเดตข้อมูลสำเร็จ!")
                                 st.rerun()
                             if col_e2.form_submit_button("ลบอุปกรณ์นี้", type="secondary"):
                                 db.items.delete_one({"id": item_id_int})
-                                st.cache_data.clear()
+                                refresh_items(images=True)
                                 st.success("ลบเรียบร้อยแล้ว!")
                                 st.rerun()
 
             with sub_bulk:
                 st.markdown("### 📁 อัปโหลดรูปภาพอุปกรณ์แบบกลุ่ม (ตามชื่อไฟล์รหัสอุปกรณ์)")
                 st.write("ตั้งชื่อไฟล์รูปภาพตามรหัสอุปกรณ์ เช่น `1.jpg` สำหรับ ปลั๊กโรลElecton, `2.png` สำหรับ สว่านแบตMakita ฯลฯ แล้วเลือกไฟล์ทั้งหมดพร้อมกันได้เลย")
-                
+
                 bulk_files = st.file_uploader("เลือกไฟล์รูปภาพทั้งหมด", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="bulk_img_files")
                 if bulk_files:
                     st.info(f"เลือกไฟล์ทั้งหมด: **{len(bulk_files)} รูป**")
                     if st.button("🚀 ยืนยันจับคู่และอัปโหลดรูปภาพเข้าระบบ", type="primary"):
-                        success_up = 0
-                        for img_f in bulk_files:
-                            pure_name = img_f.name.split('.')[0]
-                            if pure_name.isdigit():
-                                t_id = int(pure_name)
-                                img_b64 = compress_image_to_base64(img_f)
-                                match_check = db.items.find_one({"id": t_id})
-                                if match_check:
-                                    db.items.update_one({"id": t_id}, {"$set": {"image": img_b64}})
-                                    success_up += 1
-                        st.cache_data.clear()
-                        st.success(f"อัปเดตรูปภาพตามชื่อไฟล์สำเร็จทั้งหมด {success_up} รายการ!")
+                        valid_ids = set(items_df['id'].tolist()) if not items_df.empty else set()
+                        ops = []
+                        with st.spinner("กำลังบีบอัดและอัปโหลดรูปภาพ..."):
+                            for img_f in bulk_files:
+                                pure_name = img_f.name.rsplit('.', 1)[0]
+                                if pure_name.isdigit() and int(pure_name) in valid_ids:
+                                    ops.append(pymongo.operations.UpdateOne(
+                                        {"id": int(pure_name)}, {"$set": {"image": compress_image_to_base64(img_f)}}))
+                            if ops:
+                                db.items.bulk_write(ops, ordered=False)   # เขียนทีเดียวทั้งหมด
+                        refresh_items(images=True)
+                        st.success(f"อัปเดตรูปภาพตามชื่อไฟล์สำเร็จทั้งหมด {len(ops)} รายการ!")
                         st.rerun()
 
         with tab_excel_import:
@@ -909,48 +942,37 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
             st.write("การคลิกปุ่มนี้จะล้างข้อมูลเดิมและโหลดรายการพร้อมลำดับใหม่ทั้งหมด")
             if st.button("🚀 รีเซ็ตและโหลดอุปกรณ์ทั้งหมดตามรายการใหม่", type="primary"):
                 db.items.delete_many({})
-                db.counters.delete_one({"_id": "items_id"})
-                for i in DEFAULT_INITIAL_ITEMS:
-                    new_id = get_next_sequence("items_id")
-                    db.items.insert_one({
-                        "id": new_id,
-                        "name": i[0],
-                        "category": i[1],
-                        "subcategory": i[2],
-                        "quantity": i[3],
-                        "status": i[4],
-                        "alert_zero": 0,
-                        "note": i[5],
-                        "image": i[6]
-                    })
-                st.cache_data.clear()
+                db.items.insert_many(build_default_docs())
+                db.counters.update_one({"_id": "items_id"}, {"$set": {"seq": len(DEFAULT_INITIAL_ITEMS)}}, upsert=True)
+                refresh_items(images=True)
                 st.success("นำเข้าอุปกรณ์และลำดับใหม่สำเร็จ!")
                 st.rerun()
 
     with admin_menu[1]:
         st.subheader("📊 รายการตรวจเช็คสภาพอุปกรณ์")
         report_type = st.radio("เลือกมุมมองรายงาน", ["รายวัน (Daily)", "รายเดือน (Monthly)", "รายปี (Yearly)", "ประวัติทั้งหมด"], horizontal=True)
-        inspections_df = pd.DataFrame(list(db.inspections.find({}, {"_id": 0}).sort("id", -1)))
-        
+        # ไม่ดึงฟิลด์ photos มาในตาราง (หนักมาก) และจำกัดจำนวน
+        inspections_df = pd.DataFrame(list(db.inspections.find({}, {"_id": 0, "photos": 0}).sort("id", -1).limit(1000)))
+
         if not inspections_df.empty:
             inspections_df['inspection_date'] = pd.to_datetime(inspections_df['inspection_date'])
             now_dt = get_now_th()
             if report_type == "รายวัน (Daily)":
                 target_date = st.date_input("เลือกวันที่", value=now_dt.date())
-                filtered_df = inspections_df[inspections_df['inspection_date'].dt.date == target_date]
+                filtered_insp = inspections_df[inspections_df['inspection_date'].dt.date == target_date]
             elif report_type == "รายเดือน (Monthly)":
                 col_m1, col_m2 = st.columns(2)
-                selected_month = col_m1.selectbox("เดือน", list(range(1, 13)), index=now_dt.month-1)
+                selected_month = col_m1.selectbox("เดือน", list(range(1, 13)), index=now_dt.month - 1)
                 selected_year = col_m2.number_input("ปี (ค.ศ.)", value=now_dt.year)
-                filtered_df = inspections_df[(inspections_df['inspection_date'].dt.month == selected_month) & (inspections_df['inspection_date'].dt.year == selected_year)]
+                filtered_insp = inspections_df[(inspections_df['inspection_date'].dt.month == selected_month) & (inspections_df['inspection_date'].dt.year == selected_year)]
             elif report_type == "รายปี (Yearly)":
                 selected_year = st.number_input("ปี ค.ศ.", value=now_dt.year)
-                filtered_df = inspections_df[inspections_df['inspection_date'].dt.year == selected_year]
+                filtered_insp = inspections_df[inspections_df['inspection_date'].dt.year == selected_year]
             else:
-                filtered_df = inspections_df
-            
+                filtered_insp = inspections_df
+
             st.dataframe(
-                filtered_df[['id', 'tech_name', 'category', 'inspection_date', 'session_num', 'details']],
+                filtered_insp[['id', 'tech_name', 'category', 'inspection_date', 'session_num', 'details']],
                 use_container_width=True, hide_index=True,
                 column_config={
                     "id": st.column_config.NumberColumn("รหัส", width="small"),
@@ -959,83 +981,74 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                     "session_num": st.column_config.NumberColumn("รอบ", width="small"),
                     "details": st.column_config.TextColumn("รายละเอียด", width="large"),
                 })
-            
+
             st.markdown("---")
             st.markdown("#### 📸 ดูรายละเอียดและรูปถ่ายหน้างานของการตรวจเช็ค")
-            for _, row in filtered_df.iterrows():
+            st.caption("แสดงสูงสุด 30 รายการล่าสุดของตัวกรองนี้ · ติ๊ก 'โหลดรูปถ่าย' เพื่อดึงรูปเฉพาะรายการที่ต้องการ")
+            for _, row in filtered_insp.head(30).iterrows():
                 date_str_show = row['inspection_date'].strftime("%Y-%m-%d %H:%M:%S")
                 with st.expander(f"📌 {date_str_show} | ผู้ตรวจ: {row['tech_name']} | หมวด: {row['category']} (รอบที่ {row['session_num']})"):
                     st.write(f"📝 **รายละเอียดการตรวจ:** {row['details']}")
-                    photos_raw = row.get('photos')
-                    if pd.notnull(photos_raw) and str(photos_raw).strip():
-                        photo_list = str(photos_raw).split("|||")
-                        st.write(f"จำนวนรูปถ่ายทั้งหมด: **{len(photo_list)} รูป**")
-                        cols_p = st.columns(min(len(photo_list), 4))
-                        for idx, p_b64 in enumerate(photo_list):
-                            col_idx = idx % 4
-                            p_img = get_pil_image_from_base64(p_b64)
-                            if p_img:
-                                cols_p[col_idx].image(p_img, caption=f"รูปที่ {idx+1}", use_container_width=True)
-                    else:
-                        st.info("*(การตรวจเช็ครอบนี้ไม่ได้อัปโหลดรูปถ่ายรวม)*")
+                    if st.checkbox("🖼️ โหลดรูปถ่าย", key=f"load_photos_{row['id']}"):
+                        doc = db.inspections.find_one({"id": int(row['id'])}, {"_id": 0, "photos": 1})
+                        photos_raw = doc.get("photos") if doc else None
+                        if photos_raw and str(photos_raw).strip():
+                            photo_list = str(photos_raw).split("|||")
+                            st.write(f"จำนวนรูปถ่ายทั้งหมด: **{len(photo_list)} รูป**")
+                            cols_p = st.columns(min(len(photo_list), 4))
+                            for idx, p_b64 in enumerate(photo_list):
+                                p_img = b64_to_bytes(p_b64)
+                                if p_img:
+                                    cols_p[idx % 4].image(p_img, caption=f"รูปที่ {idx + 1}", use_container_width=True)
+                        else:
+                            st.info("*(การตรวจเช็ครอบนี้ไม่ได้อัปโหลดรูปถ่ายรวม)*")
         else:
             st.info("ยังไม่มีประวัติการตรวจเช็คจากช่างในระบบ")
 
     with admin_menu[2]:
         st.subheader("📥 จัดการคำขอเพิ่มอุปกรณ์เข้าคลัง")
         sub_req_pending, sub_req_history = st.tabs(["📥 คำขอที่รออนุมัติ", "📜 ประวัติการอนุมัติคำขอ"])
-        
+
         with sub_req_pending:
             pending_reqs = list(db.requisition_requests.find({"status": "รออนุมัติ"}, {"_id": 0}).sort("id", -1))
-            
+            current_qty_map = dict(zip(items_df['id'], items_df['quantity'])) if not items_df.empty else {}
+
             if pending_reqs:
                 for req in pending_reqs:
-                    item_info = db.items.find_one({"id": req["item_id"]})
-                    item_name = item_info["name"] if item_info else "Unknown"
-                    current_stock = item_info["quantity"] if item_info else 0
-                    
+                    item_name = item_name_map.get(req["item_id"], "Unknown")
+                    current_stock = current_qty_map.get(req["item_id"], 0)
+
                     with st.container():
                         st.write(f"🆔 **รหัสคำขอ:** #{req['id']} | 👤 **ผู้ขอเพิ่ม:** {req['tech_name']} | 📅 **วันที่ขอ:** {req['request_date']}")
                         st.write(f"📦 **อุปกรณ์:** {item_name} | **จำนวนที่ขอเพิ่ม:** +{req['quantity']} ชิ้น (คงเหลือในคลังปัจจุบัน: {current_stock})")
                         st.write(f"📝 **หมายเหตุ/เหตุผล:** {req['note']}")
-                        
+
                         col_app1, col_app2 = st.columns(2)
-                        if col_app1.button(f"✅ อนุมัติ (เพิ่มจำนวนเข้าคลัง)", key=f"approve_{req['id']}"):
-                            new_stock = current_stock + int(req['quantity'])
-                            now_time = get_now_str("%Y-%m-%d %H:%M:%S")
-                            db.items.update_one({"id": req['item_id']}, {"$set": {"quantity": new_stock, "status": "ปกติ"}})
-                            db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "อนุมัติ", "approval_date": now_time}})
-                            st.cache_data.clear()
-                            st.success(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว (เพิ่มจำนวนในคลังเป็น {new_stock} ชิ้น)")
+                        if col_app1.button("✅ อนุมัติ (เพิ่มจำนวนเข้าคลัง)", key=f"approve_{req['id']}"):
+                            db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
+                            db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}})
+                            refresh_items()
+                            st.success(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
                             st.rerun()
-                            
-                        if col_app2.button(f"❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
-                            now_time = get_now_str("%Y-%m-%d %H:%M:%S")
-                            db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": now_time}})
-                            st.cache_data.clear()
+
+                        if col_app2.button("❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
+                            db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": get_now_str()}})
                             st.warning(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว")
                             st.rerun()
                         st.markdown("---")
             else:
                 st.info("ไม่มีคำขอเพิ่มอุปกรณ์ที่รอการอนุมัติในขณะนี้")
-                
+
         with sub_req_history:
             st.markdown("#### 📜 ประวัติการอนุมัติคำขอเพิ่มอุปกรณ์")
-            req_history_list = list(db.requisition_requests.find({"status": {"$ne": "รออนุมัติ"}}, {"_id": 0}).sort("id", -1))
-            req_history_data = []
-            for r in req_history_list:
-                item_info = db.items.find_one({"id": r["item_id"]})
-                req_history_data.append({
-                    "รหัส": r["id"],
-                    "ผู้ขอ": r.get("tech_name"),
-                    "ชื่ออุปกรณ์": item_info["name"] if item_info else "Unknown",
-                    "จำนวนที่ขอ": r.get("quantity"),
-                    "หมายเหตุ": r.get("note"),
-                    "วันที่ขอ": r.get("request_date"),
-                    "วันที่อนุมัติ": r.get("approval_date"),
-                    "สถานะ": r.get("status")
-                })
-            req_history_df = pd.DataFrame(req_history_data)
+            req_history_list = list(db.requisition_requests.find({"status": {"$ne": "รออนุมัติ"}}, {"_id": 0}).sort("id", -1).limit(300))
+            req_history_df = pd.DataFrame([{
+                "รหัส": r["id"], "ผู้ขอ": r.get("tech_name"),
+                "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
+                "จำนวนที่ขอ": r.get("quantity"), "หมายเหตุ": r.get("note"),
+                "วันที่ขอ": r.get("request_date"), "วันที่อนุมัติ": r.get("approval_date"),
+                "สถานะ": r.get("status")
+            } for r in req_history_list])
             if not req_history_df.empty:
                 st.dataframe(req_history_df, use_container_width=True, hide_index=True)
             else:
@@ -1046,7 +1059,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
 
     with admin_menu[4]:
         st.subheader("⚙️ ตั้งค่าระบบและบัญชีช่าง")
-        
+
         st.markdown("#### ⚠️ ตั้งค่าเกณฑ์แจ้งเตือนอุปกรณ์ทั่วไปใกล้หมด")
         with st.form("low_stock_setting_form"):
             new_threshold = st.number_input("แจ้งเตือนเมื่อจำนวนน้อยกว่าหรือเท่ากับ (ชิ้น)", min_value=0, value=low_stock_limit)
@@ -1054,28 +1067,25 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                 set_settings_val('low_stock_threshold', new_threshold)
                 st.success("บันทึกค่าการแจ้งเตือนสำเร็จ!")
                 st.rerun()
-                
+
         st.markdown("---")
-        
         st.markdown("#### 🔄 ตั้งค่าและเพิ่มโควต้าการตรวจเช็คประจำวัน (นับรวมทุกคน)")
         current_base_quota = int(get_settings_val('global_daily_quota', '3'))
-        
+
         with st.form("global_quota_form"):
             new_base_quota = st.number_input("กำหนดโควต้ารอบตรวจมาตรฐานต่อวัน (รอบ)", min_value=1, value=current_base_quota)
             reset_date = st.date_input("เลือกวันที่ต้องการเพิ่มรอบตรวจพิเศษ", value=get_now_th().date())
             date_str = reset_date.strftime("%Y-%m-%d")
-            
             current_extra = int(get_settings_val(f"extra_quota_{date_str}", '0'))
             add_more_quota = st.number_input("ระบุจำนวนรอบที่ต้องการเพิ่มให้ตรวจอีกสำหรับวันนี้ (รอบพิเศษ)", min_value=0, value=current_extra)
-            
+
             if st.form_submit_button("บันทึกการตั้งค่าโควต้า"):
                 set_settings_val('global_daily_quota', new_base_quota)
                 set_settings_val(f"extra_quota_{date_str}", add_more_quota)
                 st.success("บันทึกการตั้งค่าโควต้าเรียบร้อยแล้ว!")
                 st.rerun()
-                
+
         st.markdown("---")
-        
         st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / นำเข้าจากไฟล์ .txt / ลบ)")
         st.markdown("**📋 รายชื่อบัญชีช่างทั้งหมดในระบบ**")
         all_techs_df = get_tech_users_df()
@@ -1091,18 +1101,17 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                 new_t_pass = st.text_input("Password ช่าง", type="password")
                 if st.form_submit_button("สร้างบัญชีช่าง"):
                     if new_t_user.strip() and new_t_pass.strip():
-                        existing = db.tech_users.find_one({"username": new_t_user})
-                        if not existing:
+                        if not db.tech_users.find_one({"username": new_t_user}, {"_id": 1}):
                             t_id = get_next_sequence("tech_users_id")
                             db.tech_users.insert_one({"id": t_id, "username": new_t_user, "password": new_t_pass})
-                            st.cache_data.clear()
+                            get_tech_users_df.clear()
                             st.success(f"สร้างบัญชีช่าง '{new_t_user}' สำเร็จ!")
                             st.rerun()
                         else:
                             st.error("Username นี้มีอยู่ในระบบแล้ว")
                     else:
                         st.error("กรุณากรอกข้อมูลให้ครบถ้วน")
-                        
+
             st.markdown("---")
             st.markdown("**✏️ แก้ไข / ลบบัญชีช่างรายบุคคล**")
             tech_list_df = get_tech_users_df()
@@ -1117,7 +1126,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                         col_tu1, col_tu2 = st.columns(2)
                         if col_tu1.form_submit_button("บันทึกการแก้ไข"):
                             db.tech_users.update_one({"id": t_id_int}, {"$set": {"username": edit_u, "password": edit_p}})
-                            st.cache_data.clear()
+                            get_tech_users_df.clear()
                             st.success("อัปเดตบัญชีช่างสำเร็จ!")
                             st.rerun()
                         if col_tu2.form_submit_button("ลบบัญชีนี้"):
@@ -1125,7 +1134,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                 st.error("ต้องเหลือบัญชีช่างไว้อย่างน้อย 1 บัญชี")
                             else:
                                 db.tech_users.delete_one({"id": t_id_int})
-                                st.cache_data.clear()
+                                get_tech_users_df.clear()
                                 st.success("ลบบัญชีช่างเรียบร้อยแล้ว!")
                                 st.rerun()
 
@@ -1133,368 +1142,260 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
             st.markdown("**📁 นำเข้ารายชื่อช่างจากไฟล์ .txt**")
             st.write("อัปโหลดไฟล์ `.txt` ที่มีรูปแบบ `username = \"...\"` และ `password = \"...\"` เช่นไฟล์ `tech.txt`")
             uploaded_tech_txt = st.file_uploader("เลือกไฟล์รายชื่อช่าง (.txt)", type=["txt"])
-            
+
             if uploaded_tech_txt is not None:
                 content_str = uploaded_tech_txt.getvalue().decode("utf-8")
                 parsed_techs = parse_tech_txt_content(content_str)
                 st.info(f"ตรวจพบข้อมูลช่างในไฟล์จำนวน: **{len(parsed_techs)} บัญชี**")
-                
+
                 if parsed_techs:
                     preview_df = pd.DataFrame(parsed_techs, columns=["Username", "Password"])
                     preview_df["Password"] = "••••••••"
                     st.dataframe(preview_df, use_container_width=True, hide_index=True)
-                    
+
                     if st.button("🚀 ยืนยันนำเข้าบัญชีช่างทั้งหมดลงฐานข้อมูล", type="primary"):
-                        success_count = 0
-                        dup_count = 0
+                        existing_users = {d["username"] for d in db.tech_users.find({}, {"username": 1, "_id": 0})}
+                        success_count, dup_count = 0, 0
                         for u, p in parsed_techs:
-                            existing = db.tech_users.find_one({"username": u})
-                            if not existing:
-                                t_id = get_next_sequence("tech_users_id")
-                                db.tech_users.insert_one({"id": t_id, "username": u, "password": p})
-                                success_count += 1
-                            else:
+                            if u in existing_users:
                                 dup_count += 1
-                        st.cache_data.clear()
+                            else:
+                                db.tech_users.insert_one({"id": get_next_sequence("tech_users_id"), "username": u, "password": p})
+                                existing_users.add(u)
+                                success_count += 1
+                        get_tech_users_df.clear()
                         st.success(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ/มีอยู่แล้ว {dup_count} บัญชี)")
                         st.rerun()
 
-elif st.session_state.role in ["ช่างประจำอาคาร", "ช่างประจำอาคารพิเศษ"]:
-    if st.session_state.role == "ช่างประจำอาคารพิเศษ":
+elif st.session_state.role in TECH_ROLES:
+    if st.session_state.role == ROLE_TECH_SP:
         col_banner, col_btn_back = st.columns([3, 1])
         with col_banner:
             st.info("⭐ คุณเข้าใช้งานในสถานะ **ช่างประจำอาคารพิเศษ** (สิทธิ์พิเศษจากแอดมิน)")
         with col_btn_back:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
-                st.session_state.role = "ผู้ออกแบบ/ดูแลระบบ"
-                st.session_state.original_role = "ผู้ออกแบบ/ดูแลระบบ"
-                st.query_params["role"] = "ผู้ออกแบบ/ดูแลระบบ"
-                st.query_params["original_role"] = "ผู้ออกแบบ/ดูแลระบบ"
-                st.rerun()
-    
+                switch_role(ROLE_ADMIN)
+
     st.subheader("📋 หน้าต่างปฏิบัติงานช่างประจำอาคาร")
-    
+
     tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกของ", "🔄 ระบบยืม-คืน อุปกรณ์"])
-    
+
     with tech_main_tab[2]:
         render_borrow_return_system()
-        
+
     with tech_main_tab[1]:
         st.markdown("### 📦 เบิกของ (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
         st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังผู้ออกแบบ/ดูแลระบบเพื่อรออนุมัติบวกสต็อก")
-        
+
         tools_requisition_df = items_df[
-            ((items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'อุปกรณ์ช่างทั่วไป')) | 
+            ((items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'อุปกรณ์ช่างทั่วไป')) |
             (items_df['category'] == 'อุปกรณ์สระว่ายน้ำ')
         ] if not items_df.empty else pd.DataFrame()
-        
+
         req_search_keyword = st.text_input("🔍 ค้นหาชื่ออุปกรณ์...", placeholder="พิมพ์ชื่ออุปกรณ์เพื่อค้นหา", key="req_general_search")
         if not tools_requisition_df.empty and req_search_keyword.strip():
             tools_requisition_df = tools_requisition_df[tools_requisition_df['name'].str.contains(req_search_keyword.strip(), case=False, na=False)]
-        
+
         if not tools_requisition_df.empty:
             with st.form("requisition_request_form", clear_on_submit=True):
-                req_item_dict = {f"#{row['id']} {row['name']} [{row['category']}] (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id'] for _, row in tools_requisition_df.iterrows()}
+                req_item_dict = {f"#{row['id']} {row['name']} [{row['category']}] (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id']
+                                 for _, row in tools_requisition_df.iterrows()}
                 sel_req_label = st.selectbox("เลือกอุปกรณ์ที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
-                
-                req_selected_id = req_item_dict[sel_req_label]
-                req_item_info = items_df[items_df['id'] == req_selected_id].iloc[0]
-                
                 req_qty = st.number_input("จำนวนที่ต้องการเพิ่มเข้าคลัง *", min_value=1, value=1)
                 req_note = st.text_area("หมายเหตุ / เหตุผลที่ขอเพิ่ม *")
-                
+
                 if st.form_submit_button("📤 ส่งคำขอเบิกของ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
                     if req_note.strip():
-                        now_time = get_now_str("%Y-%m-%d %H:%M")
-                        req_id = get_next_sequence("requisition_requests_id")
+                        req_selected_id = req_item_dict[sel_req_label]
                         db.requisition_requests.insert_one({
-                            "id": req_id,
-                            "tech_name": st.session_state.username,
-                            "item_id": req_selected_id,
-                            "quantity": req_qty,
-                            "note": req_note,
-                            "status": "รออนุมัติ",
-                            "request_date": now_time,
-                            "approval_date": None
+                            "id": get_next_sequence("requisition_requests_id"),
+                            "tech_name": st.session_state.username, "item_id": req_selected_id,
+                            "quantity": req_qty, "note": req_note, "status": "รออนุมัติ",
+                            "request_date": get_now_str("%Y-%m-%d %H:%M"), "approval_date": None
                         })
-                        st.cache_data.clear()
-                        st.success(f"ส่งคำขอเบิกของ '{req_item_info['name']}' จำนวน +{req_qty} ชิ้น ไปยังผู้ออกแบบ/ดูแลระบบเรียบร้อยแล้ว!")
+                        st.success(f"ส่งคำขอเบิกของ '{item_name_map.get(req_selected_id, '')}' จำนวน +{req_qty} ชิ้น ไปยังผู้ออกแบบ/ดูแลระบบเรียบร้อยแล้ว!")
                         st.rerun()
                     else:
                         st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเบิกของ")
         else:
             st.info("ไม่พบรายการอุปกรณ์ตามค้นหา")
-            
+
         st.markdown("---")
         st.markdown("#### 📜 ประวัติคำขอเบิกของของคุณ")
-        my_reqs_list = list(db.requisition_requests.find({"tech_name": st.session_state.username}, {"_id": 0}).sort("id", -1))
-        my_reqs_data = []
-        for r in my_reqs_list:
-            item_info = db.items.find_one({"id": r["item_id"]})
-            my_reqs_data.append({
-                "รหัส": r["id"],
-                "ชื่ออุปกรณ์": item_info["name"] if item_info else "Unknown",
-                "จำนวนที่ขอ": r.get("quantity"),
-                "หมายเหตุ": r.get("note"),
-                "วันที่ขอ": r.get("request_date"),
-                "วันที่อนุมัติ": r.get("approval_date"),
-                "สถานะ": r.get("status")
-            })
-        my_requests = pd.DataFrame(my_reqs_data)
+        my_reqs_list = list(db.requisition_requests.find({"tech_name": st.session_state.username}, {"_id": 0}).sort("id", -1).limit(200))
+        my_requests = pd.DataFrame([{
+            "รหัส": r["id"], "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
+            "จำนวนที่ขอ": r.get("quantity"), "หมายเหตุ": r.get("note"),
+            "วันที่ขอ": r.get("request_date"), "วันที่อนุมัติ": r.get("approval_date"),
+            "สถานะ": r.get("status")
+        } for r in my_reqs_list])
         if not my_requests.empty:
             st.dataframe(my_requests, use_container_width=True, hide_index=True)
         else:
             st.info("ยังไม่มีประวัติการส่งคำขอเบิกของ")
-        
+
     with tech_main_tab[0]:
         tech_category_choice = st.radio("เลือกหมวดหมู่การทำงาน", ["🔧 หมวดอุปกรณ์ช่าง", "🏊 หมวดอุปกรณ์สระว่ายน้ำ"], horizontal=True)
         st.markdown("---")
-        
         today_str = get_now_str("%Y-%m-%d")
-        
+
         if tech_category_choice == "🔧 หมวดอุปกรณ์ช่าง":
             st.markdown("### 🔧 หมวดอุปกรณ์ช่าง (คลิกชื่อเพื่อดูรูปภาพ & เช็คสถานะ)")
-            
-            global_count = db.inspections.count_documents({
-                "category": "อุปกรณ์ช่าง",
-                "inspection_date": {"$regex": f"^{today_str}"}
-            })
-            
+
+            global_count = get_inspection_count("อุปกรณ์ช่าง", today_str)
             base_quota = int(get_settings_val('global_daily_quota', '3'))
             extra_quota = int(get_settings_val(f"extra_quota_{today_str}", '0'))
             total_allowed = base_quota + extra_quota
-            
+
             if global_count >= total_allowed:
                 st.error("⚠️ ครบโควตารอบการตรวจสำหรับวันนี้แล้ว (กรุณาติดต่อผู้ออกแบบ/ดูแลระบบเพื่อเพิ่มรอบตรวจพิเศษ)")
             else:
-                tools_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['quantity'] > 0)] if not items_df.empty else pd.DataFrame()
-                
-                if not tools_df.empty:
-                    tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
-                    if tech_search.strip():
-                        tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
-                    
-                    with keyed_container("tech_check_list", height=500):
-                        item_reports = {}
-                        for _, row in tools_df.iterrows():
-                            current_status = row['status']
-                            is_currently_flagged = current_status != "ปกติ"
-                            
-                            col_item, col_flag = st.columns([5, 1.4])
-                            
-                            with col_item:
-                                status_badge = f" (สถานะเดิม: {current_status})" if is_currently_flagged else ""
-                                with st.expander(f"🛠️ {row['name']}{status_badge} (คงเหลือ: {row['quantity']})"):
-                                    pil_img = get_pil_image_from_base64(row['image'])
-                                    if pil_img:
-                                        st.image(pil_img, width=220, caption=f"รูปภาพ: {row['name']}")
-                                    else:
-                                        st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
-                            
-                            with col_flag:
-                                is_flagged = st.checkbox("แจ้งปัญหา", value=is_currently_flagged, key=f"flag_{row['id']}")
-                            
-                            issue_type = "ปกติ"
-                            issue_detail = ""
-                            issue_qty = 1
-                            
-                            if is_flagged:
-                                options_list = ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"]
-                                default_idx = 0
-                                detail_default = ""
-                                
-                                if current_status.startswith("กำลังใช้งาน"):
-                                    default_idx = 1
-                                    m_detail = re.search(r'\((.*?)\)', current_status)
-                                    if m_detail:
-                                        detail_default = m_detail.group(1)
-                                elif current_status in options_list:
-                                    default_idx = options_list.index(current_status)
-                                
-                                issue_type = st.selectbox(
-                                    "ประเภทปัญหา *", 
-                                    options_list, 
-                                    index=default_idx,
-                                    key=f"issue_type_{row['id']}"
-                                )
-                                
-                                item_total_q = int(row['quantity'])
-                                
-                                if issue_type == "กำลังใช้งาน":
-                                    issue_detail = st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{row['id']}")
-                                    if item_total_q > 1:
-                                        issue_qty = st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{row['id']}")
-                                    else:
-                                        issue_qty = 1
-                                elif issue_type in ["ชำรุด", "สูญหาย", "อุปกรณ์หมด"]:
-                                    if item_total_q > 1:
-                                        issue_qty = st.number_input(f"จำนวนชิ้นที่{issue_type} *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{row['id']}")
-                                    else:
-                                        issue_qty = 1
-                                    
-                            item_reports[row['id']] = {
-                                "flagged": is_flagged, 
-                                "status": issue_type, 
-                                "detail": issue_detail,
-                                "qty": issue_qty
-                            }
-                            st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
-                            
+                tools_all_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['quantity'] > 0)] if not items_df.empty else pd.DataFrame()
+
+                if not tools_all_df.empty:
+                    render_tool_inspection_list(tools_all_df)
+
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📸 รูปถ่ายรวมหน้างาน / ภาพประกอบการตรวจเช็ค (บังคับครบทั้ง 4 รูป)")
-                    
-                    uploaded_photos_b64 = []
+
+                    # เก็บแค่ไฟล์ไว้ก่อน ยังไม่บีบอัด (บีบอัดตอนกดยืนยันเท่านั้น)
+                    photo_files = []
                     for i in range(4):
-                        up_file = st.file_uploader(f"รูปถ่ายรวมที่ {i+1} *", type=["jpg", "jpeg", "png"], key=f"tech_p_{i}_{st.session_state.uploader_version}")
+                        up_file = st.file_uploader(f"รูปถ่ายรวมที่ {i+1} *", type=["jpg", "jpeg", "png"],
+                                                   key=f"tech_p_{i}_{st.session_state.uploader_version}")
                         if up_file is not None:
-                            b64_str = compress_image_to_base64(up_file)
-                            uploaded_photos_b64.append(b64_str)
-                            
-                    st.progress(len(uploaded_photos_b64) / 4, text=f"📸 แนบรูปแล้ว {len(uploaded_photos_b64)}/4 รูป")
+                            photo_files.append(up_file)
+
+                    st.progress(len(photo_files) / 4, text=f"📸 แนบรูปแล้ว {len(photo_files)}/4 รูป")
                     if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
-                        has_error = False
+                        # อ่านค่าที่ช่างกรอกจาก session_state (เฉพาะรายการที่แสดงอยู่)
+                        item_reports = {}
+                        for _, row in tools_all_df.iterrows():
+                            rid = row['id']
+                            if f"flag_{rid}" not in st.session_state:
+                                continue
+                            item_reports[rid] = {
+                                "flagged": bool(st.session_state.get(f"flag_{rid}")),
+                                "status": st.session_state.get(f"issue_type_{rid}", "ปกติ"),
+                                "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
+                                "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
+                            }
+
                         error_msg = ""
-                        
-                        for item_id, data in item_reports.items():
+                        for data in item_reports.values():
                             if data["flagged"]:
-                                if data["status"] == "-- เลือกประเภท --":
-                                    has_error = True
+                                if data["status"] in ("-- เลือกประเภท --", "ปกติ"):
                                     error_msg = "❌ กรุณาเลือกประเภทปัญหาให้ครบถ้วนสำหรับรายการที่ติ๊ก"
                                     break
                                 if data["status"] == "กำลังใช้งาน" and not data["detail"].strip():
-                                    has_error = True
                                     error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
                                     break
-                        
-                        if not has_error and len(uploaded_photos_b64) < 4:
-                            has_error = True
+                        if not error_msg and len(photo_files) < 4:
                             error_msg = "❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบทั้ง 4 รูป จึงจะสามารถยืนยันผลตรวจได้"
-                            
-                        if has_error:
+
+                        if error_msg:
                             st.error(error_msg)
                         else:
-                            now_time = get_now_str("%Y-%m-%d %H:%M:%S")
-                            flagged_summaries = []
-                            bulk_operations = []
-                            
-                            for item_id, data in item_reports.items():
-                                item_row = items_df[items_df['id'] == item_id].iloc[0]
-                                curr_q = int(item_row['quantity'])
-                                item_name = item_row['name']
-                                
-                                if data["flagged"]:
-                                    final_st = data["status"]
-                                    if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
-                                        final_st = f"กำลังใช้งาน ({data['detail']})"
-                                    
-                                    u_qty = data["qty"]
-                                    if data["status"] in ["ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]:
-                                        new_q = max(0, curr_q - u_qty)
-                                        bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
+                            with st.spinner("กำลังบันทึกผลการตรวจ..."):
+                                photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in photo_files]
+                                flagged_summaries = []
+                                bulk_operations = []
+                                row_map = tools_all_df.set_index('id')
+
+                                for item_id, data in item_reports.items():
+                                    curr_q = int(row_map.loc[item_id, 'quantity'])
+                                    item_name = row_map.loc[item_id, 'name']
+
+                                    if data["flagged"]:
+                                        final_st = data["status"]
+                                        if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
+                                            final_st = f"กำลังใช้งาน ({data['detail']})"
+                                        new_q = max(0, curr_q - data["qty"])
+                                        bulk_operations.append(pymongo.operations.UpdateOne(
+                                            {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
+                                        detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 else "")
+                                        flagged_summaries.append(detail_txt)
                                     else:
-                                        bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": final_st}}))
-                                        
-                                    detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 else "")
-                                    flagged_summaries.append(detail_txt)
-                                else:
-                                    bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": "ปกติ"}}))
-                            
-                            # ประมวลผล Bulk Update ทีเดียวเพื่อความรวดเร็วสูงสุด
-                            if bulk_operations:
-                                db.items.bulk_write(bulk_operations)
-                                    
-                            photos_str = "|||".join(uploaded_photos_b64)
-                            summary_details = ", ".join(flagged_summaries) if flagged_summaries else "ปกติทุกรายการ"
-                            summary_note = f"รอบที่ {global_count+1} | รายการผิดปกติ: {summary_details}"
-                            
-                            insp_id = get_next_sequence("inspections_id")
-                            db.inspections.insert_one({
-                                "id": insp_id,
-                                "tech_name": st.session_state.username,
-                                "category": "อุปกรณ์ช่าง",
-                                "inspection_date": now_time,
-                                "session_num": global_count + 1,
-                                "details": summary_note,
-                                "photos": photos_str
-                            })
-                            
-                            # ล้างแคชและเพิ่มเวอร์ชัน uploader เพื่อเคลียร์รูปภาพออกทันที
-                            st.cache_data.clear()
+                                        bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": "ปกติ"}}))
+
+                                if bulk_operations:
+                                    db.items.bulk_write(bulk_operations, ordered=False)
+
+                                summary_details = ", ".join(flagged_summaries) if flagged_summaries else "ปกติทุกรายการ"
+                                db.inspections.insert_one({
+                                    "id": get_next_sequence("inspections_id"),
+                                    "tech_name": st.session_state.username,
+                                    "category": "อุปกรณ์ช่าง",
+                                    "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
+                                    "session_num": global_count + 1,
+                                    "details": f"รอบที่ {global_count + 1} | รายการผิดปกติ: {summary_details}",
+                                    "photos": "|||".join(photos_b64)
+                                })
+
+                            refresh_items()
+                            get_inspection_count.clear()
+                            clear_inspection_widget_state()
                             st.session_state.uploader_version += 1
-                            
                             st.success("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
                             st.rerun()
                 else:
                     st.info("ไม่มีอุปกรณ์ช่างให้ตรวจสอบในขณะนี้")
-                    
+
         else:
             st.markdown("### 🏊 หมวดอุปกรณ์สระว่ายน้ำ (เช็คจำนวน & ดูรูปภาพ)")
             st.write("คลิกที่ชื่อรายการอุปกรณ์เพื่อดูรูปภาพ และปรับปรุงจำนวนคงเหลือ")
-            
-            pool_df = items_df[items_df['category'] == 'อุปกรณ์สระว่ายน้ำ'] if not items_df.empty else pd.DataFrame()
-            if not pool_df.empty:
-                tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
-                if tech_pool_search.strip():
-                    pool_df = pool_df[pool_df['name'].str.contains(tech_pool_search.strip(), case=False, na=False)]
-                    
-                with st.container(height=500):
-                    updated_quantities = {}
-                    for _, row in pool_df.iterrows():
-                        with st.expander(f"📦 {row['name']} (คงเหลือปัจจุบัน: {row['quantity']} ชิ้น)"):
-                            pil_img = get_pil_image_from_base64(row['image'])
-                            if pil_img:
-                                st.image(pil_img, width=220, caption=f"รูปภาพ: {row['name']}")
-                            else:
-                                st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
-                                
-                        new_qty = st.number_input(f"จำนวนคงเหลือ: {row['name']}", min_value=0, value=int(row['quantity']), key=f"pool_q_{row['id']}")
-                        updated_quantities[row['id']] = new_qty
-                        st.markdown("---")
-                        
+
+            pool_all_df = items_df[items_df['category'] == 'อุปกรณ์สระว่ายน้ำ'] if not items_df.empty else pd.DataFrame()
+            if not pool_all_df.empty:
+                render_pool_list(pool_all_df)
+
                 st.markdown("### 📸 รูปถ่ายรวมหน้างานสระว่ายน้ำ (บังคับครบทั้ง 4 รูป)")
-                uploaded_pool_photos_b64 = []
+                pool_photo_files = []
                 for i in range(4):
-                    up_file = st.file_uploader(f"รูปถ่ายรวมสระที่ {i+1} *", type=["jpg", "jpeg", "png"], key=f"tech_pool_p_{i}_{st.session_state.uploader_version}")
+                    up_file = st.file_uploader(f"รูปถ่ายรวมสระที่ {i+1} *", type=["jpg", "jpeg", "png"],
+                                               key=f"tech_pool_p_{i}_{st.session_state.uploader_version}")
                     if up_file is not None:
-                        b64_str = compress_image_to_base64(up_file)
-                        uploaded_pool_photos_b64.append(b64_str)
-                        
-                st.progress(len(uploaded_pool_photos_b64) / 4, text=f"📸 แนบรูปแล้ว {len(uploaded_pool_photos_b64)}/4 รูป")
+                        pool_photo_files.append(up_file)
+
+                st.progress(len(pool_photo_files) / 4, text=f"📸 แนบรูปแล้ว {len(pool_photo_files)}/4 รูป")
                 if st.button("💾 บันทึกจำนวนอุปกรณ์สระว่ายน้ำ", type="primary", use_container_width=True):
-                    if len(uploaded_pool_photos_b64) < 4:
+                    if len(pool_photo_files) < 4:
                         st.error("❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานสระว่ายน้ำให้ครบทั้ง 4 รูป")
                     else:
-                        now_time = get_now_str("%Y-%m-%d %H:%M:%S")
-                        pool_summaries = []
-                        bulk_pool_ops = []
-                        
-                        for item_id, q_val in updated_quantities.items():
-                            old_row = items_df[items_df['id'] == item_id].iloc[0]
-                            bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"quantity": q_val}}))
-                            if q_val != int(old_row['quantity']):
-                                pool_summaries.append(f"{old_row['name']}: ปรับจาก {old_row['quantity']} เหลือ {q_val}")
-                                
-                        if bulk_pool_ops:
-                            db.items.bulk_write(bulk_pool_ops)
-                                
-                        photos_str = "|||".join(uploaded_pool_photos_b64)
-                        summary_note = "อัปเดตจำนวนอุปกรณ์สระว่ายน้ำ" + (f" | การเปลี่ยนแปลง: {', '.join(pool_summaries)}" if pool_summaries else "")
-                        
-                        insp_id = get_next_sequence("inspections_id")
-                        db.inspections.insert_one({
-                            "id": insp_id,
-                            "tech_name": st.session_state.username,
-                            "category": "อุปกรณ์สระว่ายน้ำ",
-                            "inspection_date": now_time,
-                            "session_num": 1,
-                            "details": summary_note,
-                            "photos": photos_str
-                        })
-                        
-                        # ล้างแคชและเพิ่มเวอร์ชัน uploader เพื่อเคลียร์รูปภาพออกทันที
-                        st.cache_data.clear()
+                        with st.spinner("กำลังบันทึกข้อมูล..."):
+                            photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in pool_photo_files]
+                            pool_summaries = []
+                            bulk_pool_ops = []
+                            row_map = pool_all_df.set_index('id')
+
+                            for item_id in pool_all_df['id']:
+                                key = f"pool_q_{item_id}"
+                                if key not in st.session_state:
+                                    continue
+                                q_val = int(st.session_state[key])
+                                old_q = int(row_map.loc[item_id, 'quantity'])
+                                if q_val != old_q:   # อัปเดตเฉพาะรายการที่เปลี่ยนจริง
+                                    bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"quantity": q_val}}))
+                                    pool_summaries.append(f"{row_map.loc[item_id, 'name']}: ปรับจาก {old_q} เหลือ {q_val}")
+
+                            if bulk_pool_ops:
+                                db.items.bulk_write(bulk_pool_ops, ordered=False)
+
+                            summary_note = "อัปเดตจำนวนอุปกรณ์สระว่ายน้ำ" + (f" | การเปลี่ยนแปลง: {', '.join(pool_summaries)}" if pool_summaries else "")
+                            db.inspections.insert_one({
+                                "id": get_next_sequence("inspections_id"),
+                                "tech_name": st.session_state.username,
+                                "category": "อุปกรณ์สระว่ายน้ำ",
+                                "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
+                                "session_num": 1,
+                                "details": summary_note,
+                                "photos": "|||".join(photos_b64)
+                            })
+
+                        refresh_items()
+                        get_inspection_count.clear()
+                        clear_inspection_widget_state()
                         st.session_state.uploader_version += 1
-                                  
                         st.success("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
                         st.rerun()
             else:
