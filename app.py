@@ -33,7 +33,7 @@ st.markdown("""
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="InventoryApp">
 <script>
-// ตรวจสอบและซิงค์สถานะ LocalStorage อัตโนมัติเมื่อเปิดแอปผ่านมือถือ/แท็บเล็ต
+// ตรวจสอบและซิงค์สถานะ LocalStorage อัตโนมัติเมื่อเปิดเว็บ และรีเฟรชหน้าจอเพื่อให้ Streamlit โหลดสถานะทันที
 window.addEventListener('DOMContentLoaded', () => {
     const savedUser = localStorage.getItem('pwa_username');
     const savedRole = localStorage.getItem('pwa_role');
@@ -43,7 +43,7 @@ window.addEventListener('DOMContentLoaded', () => {
         currentParams.set('logged_in', 'true');
         currentParams.set('username', savedUser);
         currentParams.set('role', savedRole);
-        window.history.replaceState({}, '', `${window.location.pathname}?${currentParams.toString()}`);
+        window.location.replace(`${window.location.pathname}?${currentParams.toString()}`);
     }
 });
 </script>
