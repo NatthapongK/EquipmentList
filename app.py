@@ -1337,8 +1337,10 @@ elif st.session_state.role in TECH_ROLES:
 
                     # เก็บแค่ไฟล์ไว้ก่อน ยังไม่บีบอัด (บีบอัดตอนกดยืนยันเท่านั้น)
                     photo_files = []
+                    tool_photo_labels = ["รูปถ่ายแผงไม้เครื่องมือ", "รูปถ่ายชั้นเครื่องมือชั้นบน",
+                                         "รูปถ่ายชั้นเครื่องมือชั้นกลาง", "รูปถ่ายชั้นเครื่องมือชั้นล่าง"]
                     for i in range(4):
-                        up_file = st.file_uploader(f"รูปถ่ายรวมที่ {i+1} *", type=["jpg", "jpeg", "png"],
+                        up_file = st.file_uploader(tool_photo_labels[i], type=["jpg", "jpeg", "png"],
                                                    key=f"tech_p_{i}_{st.session_state.uploader_version}")
                         if up_file is not None:
                             photo_files.append(up_file)
@@ -1428,7 +1430,7 @@ elif st.session_state.role in TECH_ROLES:
                 st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
                 pool_photo_files = []
                 for i in range(4):
-                    up_file = st.file_uploader(f"รูปถ่ายรวมสระที่ {i+1} *", type=["jpg", "jpeg", "png"],
+                    up_file = st.file_uploader(f"รูปถ่ายอุปกรณ์ที่ {i+1}", type=["jpg", "jpeg", "png"],
                                                key=f"tech_pool_p_{i}_{st.session_state.uploader_version}")
                     if up_file is not None:
                         pool_photo_files.append(up_file)
