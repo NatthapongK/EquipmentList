@@ -240,8 +240,14 @@ def set_settings_val(key, val):
     get_settings_val.clear()
 
 @st.cache_data(ttl=15, show_spinner=False)
-def get_borrowed_count():
-    return db.transactions.count_documents({"status": "กำลังยืม"})
+def get_active_borrows():
+    """รายการที่กำลังถูกยืมอยู่ (ไม่ดึงรูป)"""
+    return list(db.transactions.find({"status": "กำลังยืม"}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1))
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_pending_reqs():
+    """คำขอเบิกของที่รอ admin อนุมัติ"""
+    return list(db.requisition_requests.find({"status": "รออนุมัติ"}, {"_id": 0}).sort("id", -1))
 
 @st.cache_data(ttl=15, show_spinner=False)
 def get_inspection_count(category, today_str):
@@ -370,6 +376,15 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]{background:var(--teal); border-color:var(--teal); color:#fff;}
 .stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
+
+/* แบนเนอร์แจ้งเตือนคำขอเบิกของ (หน้าแรกของแอดมิน) */
+.req-banner{display:flex; align-items:center; gap:.9rem; padding:.9rem 1.1rem; margin-bottom:1rem;
+  border-radius:12px; border:2px solid var(--warn); background:linear-gradient(90deg,#78350F,#92400E);
+  animation:reqpulse 1.8s ease-in-out infinite;}
+.req-banner .ic{font-size:1.9rem; line-height:1;}
+.req-banner .t{font-size:1.1rem; font-weight:700; color:#FEF3C7;}
+.req-banner .s{font-size:.85rem; color:#FDE68A; margin-top:.1rem;}
+@keyframes reqpulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.55);} 50%{box-shadow:0 0 0 8px rgba(245,158,11,0);}}
 
 /* รายการตรวจเช็คของช่าง: บังคับให้ "ชื่อ + ช่องควบคุม" อยู่แถวเดียวกันแม้บนมือถือ */
 .st-key-tech_check_list [data-testid="stHorizontalBlock"],
@@ -535,8 +550,32 @@ else:
     abnormal_items = pd.DataFrame()
     low_stock_items = pd.DataFrame()
 
-borrowed_cnt = get_borrowed_count()
+active_borrows = get_active_borrows()
+borrowed_cnt = len(active_borrows)
 abn_cnt, low_cnt = len(abnormal_items), len(low_stock_items)
+
+def _pending_req_banner():
+    pending = get_pending_reqs()
+    if not pending:
+        return
+    st.markdown(
+        f'<div class="req-banner"><div class="ic">📥</div><div>'
+        f'<div class="t">มีคำขอเบิกของรออนุมัติ {len(pending)} รายการ</div>'
+        f'<div class="s">ไปที่แท็บ "3. อนุมัติคำขอเพิ่มอุปกรณ์" เพื่อพิจารณาอนุมัติ/ปฏิเสธ</div></div></div>',
+        unsafe_allow_html=True)
+    with st.expander(f"📥 รายการคำขอเบิกของที่รออนุมัติ ({len(pending)} รายการ)", expanded=True):
+        st.dataframe(pd.DataFrame([{
+            "รหัสคำขอ": r["id"], "ผู้ขอ": r.get("tech_name"),
+            "อุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
+            "จำนวนที่ขอ": r.get("quantity"), "เหตุผล": r.get("note"), "วันที่ขอ": r.get("request_date"),
+        } for r in pending]), hide_index=True, use_container_width=True)
+
+if st.session_state.role == ROLE_ADMIN:
+    try:
+        # รีเฟรชแบนเนอร์อัตโนมัติทุก 30 วินาที ไม่ต้องกดโหลดใหม่
+        st.fragment(run_every="30s")(_pending_req_banner)()
+    except TypeError:
+        _pending_req_banner()
 
 st.markdown(
     f'''<div class="kpi-grid">
@@ -563,6 +602,19 @@ with col_a2:
                                         "quantity": st.column_config.NumberColumn("คงเหลือ", format="%d")})
     else:
         st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
+
+# รายการที่กำลังถูกยืม (แสดงทุกกรณี แม้อุปกรณ์ยังเหลือในคลัง)
+if borrowed_cnt:
+    with st.expander(f"📤 อุปกรณ์ที่กำลังถูกยืม ({borrowed_cnt} รายการ)"):
+        st.dataframe(pd.DataFrame([{
+            "อุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
+            "จำนวนที่ยืม": t.get("quantity", 1),
+            "ผู้ยืม": t.get("borrower_name"),
+            "ผู้ให้ยืม": t.get("giver_name"),
+            "วันที่ยืม": t.get("borrow_date"),
+        } for t in active_borrows]), hide_index=True, use_container_width=True)
+else:
+    st.success("✅ ไม่มีอุปกรณ์ที่ถูกยืมค้างอยู่")
 st.markdown("")
 
 # --- SHARED BORROW / RETURN COMPONENT ---
@@ -604,7 +656,7 @@ def render_borrow_return_system():
                         new_status = 'ยืม' if new_qty == 0 else cur["status"]
                         db.items.update_one({"id": selected_id}, {"$set": {"quantity": new_qty, "status": new_status}})
                         refresh_items()
-                        get_borrowed_count.clear()
+                        get_active_borrows.clear()
                         st.success(f"บันทึกการยืม {cur['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
                         st.rerun()
         else:
@@ -648,7 +700,7 @@ def render_borrow_return_system():
                                 # $inc แบบ atomic ไม่ต้องอ่านค่าเดิมก่อน
                                 db.items.update_one({"id": t['item_id']}, {"$inc": {"quantity": tx_qty}, "$set": {"status": "ปกติ"}})
                                 refresh_items()
-                                get_borrowed_count.clear()
+                                get_active_borrows.clear()
                                 st.success(f"รับคืน {item_name} จำนวน {tx_qty} ชิ้น เรียบร้อยแล้ว")
                                 st.rerun()
         else:
@@ -1046,11 +1098,13 @@ if st.session_state.role == ROLE_ADMIN:
                             db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
                             db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}})
                             refresh_items()
+                            get_pending_reqs.clear()
                             st.success(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
                             st.rerun()
 
                         if col_app2.button("❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
                             db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": get_now_str()}})
+                            get_pending_reqs.clear()
                             st.warning(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว")
                             st.rerun()
                         st.markdown("---")
@@ -1231,6 +1285,7 @@ elif st.session_state.role in TECH_ROLES:
                             "quantity": req_qty, "note": req_note, "status": "รออนุมัติ",
                             "request_date": get_now_str("%Y-%m-%d %H:%M"), "approval_date": None
                         })
+                        get_pending_reqs.clear()
                         st.success(f"ส่งคำขอเบิกของ '{item_name_map.get(req_selected_id, '')}' จำนวน +{req_qty} ชิ้น ไปยังผู้ออกแบบ/ดูแลระบบเรียบร้อยแล้ว!")
                         st.rerun()
                     else:
