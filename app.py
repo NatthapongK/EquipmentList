@@ -5,6 +5,8 @@ from datetime import datetime, timezone, timedelta
 import base64
 import html as _html
 import re
+import io
+from PIL import Image
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
 TZ_TH = timezone(timedelta(hours=7))
@@ -38,6 +40,23 @@ def get_next_sequence(name):
         return_document=pymongo.ReturnDocument.AFTER
     )
     return counter["seq"]
+
+# --- OPTIMIZED IMAGE COMPRESSION HELPER ---
+def compress_image_to_base64(uploaded_file, max_size=(800, 800), quality=80):
+    if uploaded_file is None:
+        return None
+    try:
+        uploaded_file.seek(0)
+        img = Image.open(uploaded_file)
+        img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        img.save(buffer, format="JPEG", quality=quality)
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    except Exception:
+        uploaded_file.seek(0)
+        return base64.b64encode(uploaded_file.read()).decode("utf-8")
 
 # รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
@@ -151,7 +170,8 @@ def init_db():
 
 init_db()
 
-# --- HELPER FUNCTIONS FOR DATAFRAMES ---
+# --- OPTIMIZED CACHED DATA FUNCTIONS ---
+@st.cache_data(ttl=300, show_spinner=False)
 def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0})))
     if not df.empty:
@@ -161,15 +181,18 @@ def get_items_df():
             df['alert_zero'] = pd.to_numeric(df['alert_zero'], errors='coerce').fillna(0).astype(int)
     return df
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_tech_users_df():
     return pd.DataFrame(list(db.tech_users.find({}, {"_id": 0})))
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_settings_val(key, default="1"):
     res = db.settings.find_one({"key": key})
     return res["value"] if res else default
 
 def set_settings_val(key, val):
     db.settings.update_one({"key": key}, {"$set": {"value": str(val)}}, upsert=True)
+    st.cache_data.clear()
 
 def parse_tech_txt_content(text_content):
     tech_list = []
@@ -207,8 +230,6 @@ def get_pil_image_from_base64(img_base64):
     if not img_base64:
         return None
     try:
-        import io
-        from PIL import Image
         img_bytes = base64.b64decode(img_base64)
         return Image.open(io.BytesIO(img_bytes))
     except:
@@ -513,10 +534,7 @@ def render_borrow_return_system():
                 
                 if st.form_submit_button("ยืนยันการยืมอุปกรณ์"):
                     if borrower_name.strip():
-                        b_img_b64 = None
-                        if borrow_img_file is not None:
-                            b_img_bytes = borrow_img_file.read()
-                            b_img_b64 = base64.b64encode(b_img_bytes).decode("utf-8")
+                        b_img_b64 = compress_image_to_base64(borrow_img_file)
                         now_time = get_now_str("%Y-%m-%d %H:%M")
                         
                         tx_id = get_next_sequence("transactions_id")
@@ -538,6 +556,7 @@ def render_borrow_return_system():
                         new_status = 'ยืม' if new_qty == 0 else item_info['status']
                         
                         db.items.update_one({"id": selected_id}, {"$set": {"quantity": new_qty, "status": new_status}})
+                        st.cache_data.clear()
                         
                         st.success(f"บันทึกการยืม {item_info['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
                         st.rerun()
@@ -579,10 +598,7 @@ def render_borrow_return_system():
                             
                             if st.form_submit_button(f"✅ รับคืนอุปกรณ์รายการนี้"):
                                 now_time = get_now_str("%Y-%m-%d %H:%M")
-                                r_img_b64 = None
-                                if ret_img_file is not None:
-                                    r_img_bytes = ret_img_file.read()
-                                    r_img_b64 = base64.b64encode(r_img_bytes).decode("utf-8")
+                                r_img_b64 = compress_image_to_base64(ret_img_file)
                                     
                                 db.transactions.update_one(
                                     {"id": t['id']},
@@ -597,6 +613,7 @@ def render_borrow_return_system():
                                 tx_qty = int(t.get('quantity', 1))
                                 new_q = current_q + tx_qty
                                 db.items.update_one({"id": t['item_id']}, {"$set": {"quantity": new_q, "status": "ปกติ"}})
+                                st.cache_data.clear()
                                 
                                 st.success(f"รับคืน {item_name} จำนวน {tx_qty} ชิ้น เรียบร้อยแล้ว")
                                 st.rerun()
@@ -711,8 +728,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                             if col_qe1.form_submit_button("💾 บันทึกการแก้ไข", type="primary"):
                                 img_base64 = qe_row.get('image')
                                 if qe_file is not None:
-                                    img_bytes = qe_file.read()
-                                    img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                                    img_base64 = compress_image_to_base64(qe_file)
                                 az_val = 1 if qe_alert_zero else 0
                                 db.items.update_one(
                                     {"id": qe_id},
@@ -727,11 +743,13 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                         "image": img_base64
                                     }}
                                 )
+                                st.cache_data.clear()
                                 st.success("อัปเดตข้อมูลสำเร็จ!")
                                 del st.session_state.quick_edit_id
                                 st.rerun()
                             if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
                                 db.items.delete_one({"id": qe_id})
+                                st.cache_data.clear()
                                 st.success("ลบเรียบร้อยแล้ว!")
                                 del st.session_state.quick_edit_id
                                 st.rerun()
@@ -759,10 +777,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                     
                     if st.form_submit_button("บันทึกอุปกรณ์ใหม่"):
                         if name.strip():
-                            img_base64 = None
-                            if uploaded_file is not None:
-                                img_bytes = uploaded_file.read()
-                                img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                            img_base64 = compress_image_to_base64(uploaded_file)
                             az_val = 1 if alert_zero else 0
                             new_id = get_next_sequence("items_id")
                             db.items.insert_one({
@@ -776,6 +791,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                 "note": note,
                                 "image": img_base64
                             })
+                            st.cache_data.clear()
                             st.success("เพิ่มอุปกรณ์สำเร็จ!")
                             st.rerun()
                         else:
@@ -814,8 +830,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                             if col_e1.form_submit_button("บันทึกการแก้ไข", type="primary"):
                                 img_base64 = current_item['image']
                                 if e_file is not None:
-                                    img_bytes = e_file.read()
-                                    img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                                    img_base64 = compress_image_to_base64(e_file)
                                 az_val = 1 if e_alert_zero else 0
                                 db.items.update_one(
                                     {"id": item_id_int},
@@ -830,10 +845,12 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                         "image": img_base64
                                     }}
                                 )
+                                st.cache_data.clear()
                                 st.success("อัปเดตข้อมูลสำเร็จ!")
                                 st.rerun()
                             if col_e2.form_submit_button("ลบอุปกรณ์นี้", type="secondary"):
                                 db.items.delete_one({"id": item_id_int})
+                                st.cache_data.clear()
                                 st.success("ลบเรียบร้อยแล้ว!")
                                 st.rerun()
 
@@ -850,12 +867,12 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                             pure_name = img_f.name.split('.')[0]
                             if pure_name.isdigit():
                                 t_id = int(pure_name)
-                                img_bytes = img_f.read()
-                                img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                                img_b64 = compress_image_to_base64(img_f)
                                 match_check = db.items.find_one({"id": t_id})
                                 if match_check:
                                     db.items.update_one({"id": t_id}, {"$set": {"image": img_b64}})
                                     success_up += 1
+                        st.cache_data.clear()
                         st.success(f"อัปเดตรูปภาพตามชื่อไฟล์สำเร็จทั้งหมด {success_up} รายการ!")
                         st.rerun()
 
@@ -878,6 +895,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                         "note": i[5],
                         "image": i[6]
                     })
+                st.cache_data.clear()
                 st.success("นำเข้าอุปกรณ์และลำดับใหม่สำเร็จ!")
                 st.rerun()
 
@@ -959,12 +977,14 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                             now_time = get_now_str("%Y-%m-%d %H:%M:%S")
                             db.items.update_one({"id": req['item_id']}, {"$set": {"quantity": new_stock, "status": "ปกติ"}})
                             db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "อนุมัติ", "approval_date": now_time}})
+                            st.cache_data.clear()
                             st.success(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว (เพิ่มจำนวนในคลังเป็น {new_stock} ชิ้น)")
                             st.rerun()
                             
                         if col_app2.button(f"❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
                             now_time = get_now_str("%Y-%m-%d %H:%M:%S")
                             db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": now_time}})
+                            st.cache_data.clear()
                             st.warning(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว")
                             st.rerun()
                         st.markdown("---")
@@ -1047,6 +1067,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                         if not existing:
                             t_id = get_next_sequence("tech_users_id")
                             db.tech_users.insert_one({"id": t_id, "username": new_t_user, "password": new_t_pass})
+                            st.cache_data.clear()
                             st.success(f"สร้างบัญชีช่าง '{new_t_user}' สำเร็จ!")
                             st.rerun()
                         else:
@@ -1068,6 +1089,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                         col_tu1, col_tu2 = st.columns(2)
                         if col_tu1.form_submit_button("บันทึกการแก้ไข"):
                             db.tech_users.update_one({"id": t_id_int}, {"$set": {"username": edit_u, "password": edit_p}})
+                            st.cache_data.clear()
                             st.success("อัปเดตบัญชีช่างสำเร็จ!")
                             st.rerun()
                         if col_tu2.form_submit_button("ลบบัญชีนี้"):
@@ -1075,6 +1097,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                 st.error("ต้องเหลือบัญชีช่างไว้อย่างน้อย 1 บัญชี")
                             else:
                                 db.tech_users.delete_one({"id": t_id_int})
+                                st.cache_data.clear()
                                 st.success("ลบบัญชีช่างเรียบร้อยแล้ว!")
                                 st.rerun()
 
@@ -1104,6 +1127,7 @@ if st.session_state.role == "ผู้ออกแบบ/ดูแลระบ�
                                 success_count += 1
                             else:
                                 dup_count += 1
+                        st.cache_data.clear()
                         st.success(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ/มีอยู่แล้ว {dup_count} บัญชี)")
                         st.rerun()
 
@@ -1165,6 +1189,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                             "request_date": now_time,
                             "approval_date": None
                         })
+                        st.cache_data.clear()
                         st.success(f"ส่งคำขอเบิกของ '{req_item_info['name']}' จำนวน +{req_qty} ชิ้น ไปยังผู้ออกแบบ/ดูแลระบบเรียบร้อยแล้ว!")
                         st.rerun()
                     else:
@@ -1294,7 +1319,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                     for i in range(4):
                         up_file = st.file_uploader(f"รูปถ่ายรวมที่ {i+1} *", type=["jpg", "jpeg", "png"], key=f"tech_p_{i}")
                         if up_file is not None:
-                            b64_str = base64.b64encode(up_file.read()).decode("utf-8")
+                            b64_str = compress_image_to_base64(up_file)
                             uploaded_photos_b64.append(b64_str)
                             
                     st.progress(len(uploaded_photos_b64) / 4, text=f"📸 แนบรูปแล้ว {len(uploaded_photos_b64)}/4 รูป")
@@ -1359,6 +1384,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                                 "details": summary_note,
                                 "photos": photos_str
                             })
+                            st.cache_data.clear()
                             
                             st.success("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
                             st.rerun()
@@ -1394,7 +1420,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                 for i in range(4):
                     up_file = st.file_uploader(f"รูปถ่ายรวมสระที่ {i+1} *", type=["jpg", "jpeg", "png"], key=f"tech_pool_p_{i}")
                     if up_file is not None:
-                        b64_str = base64.b64encode(up_file.read()).decode("utf-8")
+                        b64_str = compress_image_to_base64(up_file)
                         uploaded_pool_photos_b64.append(b64_str)
                         
                 st.progress(len(uploaded_pool_photos_b64) / 4, text=f"📸 แนบรูปแล้ว {len(uploaded_pool_photos_b64)}/4 รูป")
@@ -1423,6 +1449,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                             "details": summary_note,
                             "photos": photos_str
                         })
+                        st.cache_data.clear()
                                   
                         st.success("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
                         st.rerun()
