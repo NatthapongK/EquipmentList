@@ -18,110 +18,177 @@ def get_now_str(fmt="%Y-%m-%d %H:%M:%S"):
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ", page_icon="🛠️", layout="wide")
 
-# --- PERSISTENT LOGIN FRONTEND BRIDGE (LOCALSTORAGE) ---
-st.markdown("""
-<script>
-window.addEventListener('DOMContentLoaded', () => {
-    const savedUser = localStorage.getItem('inv_username');
-    const savedRole = localStorage.getItem('inv_role');
-    const currentParams = new URLSearchParams(window.location.search);
-    
-    if (savedUser && savedRole && !currentParams.has('logged_in')) {
-        currentParams.set('logged_in', 'true');
-        currentParams.set('username', savedUser);
-        currentParams.set('role', savedRole);
-        window.location.replace(window.location.pathname + '?' + currentParams.toString());
-    }
-});
-</script>
-""", unsafe_allow_html=True)
-
 # รายการอุปกรณ์เริ่มต้นทั้งหมด (อัปเดตลำดับและรายการใหม่)
 DEFAULT_INITIAL_ITEMS = [
+# เครื่องมือช่าง
+
     ("ปลั๊กโรลElecton", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
+
     ("สว่านแบตMakita", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
+
     ("บันได3ขั้น", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("เครื่องตรวจเช็กเต้ารับไฟฟ้า (Socket Tester)", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("โบลเวอร์เป่าลม", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ประแจขันน๊อตใต้อ่างอเนกประสงค์ Cotora", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ปืนทะลวงท่ออัดแรงดัน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("แคมป์มิเตอร์", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ไขควงแฉก", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 4, "ปกติ", "-", None),
+
     ("ไขควงแบน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
+
     ("ตลับเมตร", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
+
     ("ปืนยิงซิลิโคน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ปืนยิงPU", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("แปลงทาสี", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
+
     ("ค้อน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ชุดประแจก๊อกแก๊กพร้อมลูกบล็อก 10-24", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ประแจชุดเบอร์ 8-24", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("คีมตัด", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("คีมปากแหลม", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("คีมรวม", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("อุปกรณ์เปิดฝาท่อFCO Cotora", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("อุปกรณ์ยกฝาท่อ", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
+
     ("เกียงโป้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
+
     ("ตะใบขัดไม้", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 3, "ปกติ", "-", None),
+
     ("คีมล็อคSOLO", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ถีมล็อคโซ่", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("คีมคอม้าเล็กขนาด30ซม.", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("คีมคอม้าใหญ่ขนาด2นิ้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ประแจเลื่อน 10นิ้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ประแจเลื่อน 12นิ้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ชุดประแจหกเหลี่ยมSolosหุน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ชุดประแจหกเหลี่ยมหัวบอลMasterToolหุน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("พวงประแจหกเหลี่ยมมิลดำ", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("พวงประแจหกเหลี่ยมมิลเงิน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("เกจวัดลม", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("เลื่อยตัดเหล็ก (Hacksaw)", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
+
     ("เลื่อยไม้20นิ้ว", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("เครื่องเป่าลมร้อน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
+
     ("เครื่องเจียร4นิ้ว(ลูกหมู)", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("สว่านกระแทก", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ชุดเครื่องมือช่างพื้นฐาน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("เครื่องวัดอุณภูมิหม้อแปลง", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     ("ฟิตเทป", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+
     
+
     # อุปกรณ์ช่างทั่วไป
+
     ("กาวร้อน", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+
     ("เทปพันสายไฟ", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+
     ("เทปพันเกลียว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 6, "ปกติ", "-", None),
+
     ("เต๋าต่อสายไฟ", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 20, "ปกติ", "-", None),
+
     ("สเปรย์หล่อลื่นโซแน็กซ์", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+
     ("หัวคิว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
+
     ("สเปรย์Contact Cleaner WD40", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+
     ("กระดาษทรายไม้เบอร์5", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 3, "ปกติ", "-", None),
+
     ("กระดาษทรายไม้เบอร์1", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 3, "ปกติ", "-", None),
+
     ("แปรงทองเหลือง", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+
     ("สเปย์ลู่วิ่งSilicone Oil", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
+
     ("สกรูเกลียวปล่อย6x1นิ้ว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 100, "ปกติ", "-", None),
+
     ("สกรูปลายสว่านTF", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 100, "ปกติ", "-", None),
+
     ("สกรูเกลียวปล่อย8x1-1/4นิ้ว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 20, "ปกติ", "-", None),
+
     ("สกรูเกลียวปล่อย12x1นิ้ว", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 20, "ปกติ", "-", None),
+
     ("จารบี", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+
     ("หัวสว่านแปรงทองเหลือง", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+
     ("ใบตัดเหล็ก", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 7, "ปกติ", "-", None),
+
     ("ใบเจียรเหล็ก", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 3, "ปกติ", "-", None),
+
     ("ใบขัดกระดาษทราย", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
+
     ("ใบตัดอลู", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 2, "ปกติ", "-", None),
+
     ("ใบตัดปูน", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+
     ("ใบเจียรปูน", "อุปกรณ์ช่าง", "อุปกรณ์ช่างทั่วไป", 1, "ปกติ", "-", None),
+
     
+
     # หมวดสระว่ายน้ำ
+
     ("คลอรีนผง 90%", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
+
     ("สารส้ม", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 4, "ปกติ", "-", None),
+
     ("โซดาแอช", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 1, "ปกติ", "-", None),
+
     ("กรดเกลือผง", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 4, "ปกติ", "-", None),
+
     ("กรดเกลือน้ำ", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 1, "ปกติ", "-", None),
+
     ("เกลือบริสุทธิ์", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 50, "ปกติ", "-", None),
+
     ("ตาข่ายตักขยะสระว่ายน้ำ", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
+
     ("แปรงขัดสระว่ายน้ำ", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
+
     ("ด้ามจับยาว", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
+
     ("ด้ามจับสั้น", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
+
     ("ชุดทดสอบคลอรีนและ PH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
+
     ("ขวดน้ำยาคลอรีน", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
+
     ("ขวดน้ำยาPH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
     ("สายดูดตะกอน สั้น+ยาว", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 1, "ปกติ", "-", None)
+    
 ]
 
 # --- DATABASE SETUP ---
@@ -234,29 +301,7 @@ def init_db():
 
 init_db()
 
-# --- DATABASE QUERY FUNCTION ---
-def run_query(query, params=(), is_select=True):
-    conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
-    c = conn.cursor()
-    c.execute(query, params)
-    
-    if not is_select:
-        conn.commit()
-        
-    if is_select:
-        res = c.fetchall()
-        cols = [d[0] for d in c.description]
-        conn.close()
-        df = pd.DataFrame(res, columns=cols)
-        if 'quantity' in df.columns:
-            df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype(int)
-        if 'alert_zero' in df.columns:
-            df['alert_zero'] = pd.to_numeric(df['alert_zero'], errors='coerce').fillna(0).astype(int)
-        return df
-    
-    conn.close()
-    return True
-
+# --- PARSER FOR TECH TXT FILE ---
 def parse_tech_txt_content(text_content):
     tech_list = []
     lines = text_content.splitlines()
@@ -279,25 +324,6 @@ def parse_tech_txt_content(text_content):
             u, p = None, None
     return tech_list
 
-def esc(text):
-    return _html.escape(str(text))
-
-def keyed_container(key, **kwargs):
-    try:
-        return st.container(key=key, **kwargs)
-    except TypeError:
-        return st.container(**kwargs)
-
-@st.cache_data(show_spinner=False, max_entries=256)
-def get_pil_image_from_base64(img_base64):
-    if not img_base64:
-        return None
-    try:
-        img_bytes = base64.b64decode(img_base64)
-        return Image.open(io.BytesIO(img_bytes))
-    except Exception:
-        return None
-
 # --- THEME & RESPONSIVE MOBILE CSS ---
 st.markdown("""
 <style>
@@ -317,6 +343,9 @@ footer {visibility: hidden !important; display: none !important;}
 #MainMenu {visibility: hidden !important; display: none !important;}
 .stDeployButton {display: none !important;}
 [data-testid="stStatusWidget"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
+div[class*="viewerBadge"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
+a[href*="streamlit.io"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
+.styles_viewerBadge__1yG5_ {display: none !important;}
 
 .block-container{padding-top:1.5rem; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
@@ -350,6 +379,7 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 [data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card);}
 [data-testid="stForm"]{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:1rem;}
 
+/* Mobile Table & Scroll Optimizations */
 [data-testid="stDataFrame"], .stTable {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -363,6 +393,26 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
 
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"]{
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 0.5rem !important;
+}
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div[data-testid="column"]{
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+.st-key-tech_check_list div[data-testid="stHorizontalBlock"] > div:last-child {
+  flex: 0 0 110px !important;
+}
+.st-key-tech_check_list div[data-testid="stCheckbox"] {
+  margin-top: 0 !important;
+  white-space: nowrap !important;
+}
+
 @media (max-width:768px){
   .block-container{padding-left:.6rem; padding-right:.6rem;}
   .kpi-grid{grid-template-columns:repeat(2,1fr);}
@@ -373,7 +423,49 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION & PERSISTENT LOGIN STATE MANAGEMENT ---
+def esc(text):
+    return _html.escape(str(text))
+
+def keyed_container(key, **kwargs):
+    try:
+        return st.container(key=key, **kwargs)
+    except TypeError:
+        return st.container(**kwargs)
+
+# --- DATABASE QUERY FUNCTION ---
+def run_query(query, params=(), is_select=True):
+    conn = sqlite3.connect("inventory_pro.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute(query, params)
+    
+    if not is_select:
+        conn.commit()
+        
+    if is_select:
+        res = c.fetchall()
+        cols = [d[0] for d in c.description]
+        conn.close()
+        df = pd.DataFrame(res, columns=cols)
+        if 'quantity' in df.columns:
+            df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype(int)
+        if 'alert_zero' in df.columns:
+            df['alert_zero'] = pd.to_numeric(df['alert_zero'], errors='coerce').fillna(0).astype(int)
+        return df
+    
+    conn.close()
+
+def get_pil_image_from_base64(img_base64):
+    if not img_base64:
+        return None
+    try:
+        import io
+        from PIL import Image
+        img_bytes = base64.b64decode(img_base64)
+        return Image.open(io.BytesIO(img_bytes))
+    except:
+        return None
+
+# --- SESSION STATE & 24-HOUR LOGIN PERSISTENCE ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
@@ -383,10 +475,14 @@ if "logged_in" not in st.session_state:
 qp = st.query_params
 if not st.session_state.logged_in and "logged_in" in qp and qp["logged_in"] == "true":
     try:
-        st.session_state.logged_in = True
-        st.session_state.role = qp.get("role", "")
-        st.session_state.username = qp.get("username", "")
-        st.session_state.original_role = qp.get("original_role", None)
+        login_time = float(qp.get("login_time", 0))
+        if get_now_th().timestamp() - login_time < 24 * 3600:
+            st.session_state.logged_in = True
+            st.session_state.role = qp.get("role", "")
+            st.session_state.username = qp.get("username", "")
+            st.session_state.original_role = qp.get("original_role", None)
+        else:
+            st.query_params.clear()
     except:
         st.query_params.clear()
 
@@ -412,12 +508,8 @@ if not st.session_state.logged_in:
             role_val = ""
             user_val = ""
             
-            try:
-                admin_user = st.secrets["admin"]["username"]
-                admin_pass = st.secrets["admin"]["password"]
-            except Exception:
-                admin_user = "admin"
-                admin_pass = "admin"
+            admin_user = st.secrets["admin"]["username"]
+            admin_pass = st.secrets["admin"]["password"]
             
             if username == admin_user and password == admin_pass:
                 role_val = "ผู้ออกแบบ/ดูแลระบบ"
@@ -435,21 +527,12 @@ if not st.session_state.logged_in:
                 orig_role = role_val if role_val == "ผู้ออกแบบ/ดูแลระบบ" else ""
                 st.session_state.original_role = orig_role if orig_role else None
                 
-                # บันทึกสถานะการ Login ลงใน URL Query Params และ Browser localStorage เพื่อจดจำข้ามแท็บ/ปิดเบราว์เซอร์
                 st.query_params["logged_in"] = "true"
                 st.query_params["role"] = role_val
                 st.query_params["username"] = user_val
+                st.query_params["login_time"] = str(get_now_th().timestamp())
                 if orig_role:
                     st.query_params["original_role"] = orig_role
-                
-                st.markdown(f"""
-                <script>
-                localStorage.setItem('inv_username', '{user_val}');
-                localStorage.setItem('inv_role', '{role_val}');
-                </script>
-                """, unsafe_allow_html=True)
-                
-                st.success("เข้าสู่ระบบสำเร็จ!")
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
@@ -488,12 +571,6 @@ with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & �
     
     st.markdown("---")
     if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
-        st.markdown("""
-        <script>
-        localStorage.removeItem('inv_username');
-        localStorage.removeItem('inv_role');
-        </script>
-        """, unsafe_allow_html=True)
         st.session_state.logged_in = False
         st.session_state.role = None
         st.session_state.username = ""
