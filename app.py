@@ -10,16 +10,8 @@ import io
 import secrets
 from PIL import Image, ImageOps
 
-# =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ  (เวอร์ชันปรับความเร็ว)
-#  ต้องใช้ Streamlit >= 1.37 (รองรับ st.fragment)
-#  ต้องตั้งค่า .streamlit/secrets.toml:
-#     [mongo]
-#     uri = "mongodb+srv://..."
-#     [admin]
-#     username = "..."
-#     password = "..."
-# =====================================================================
+# --- MONGODB ATLAS CONNECTION ---
+MONGO_URI = "mongodb+srv://mrnatthapongk_db_user:MyPassword123@equipmentlist627.44qcj3k.mongodb.net/?retryWrites=true&w=majority"
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
 TZ_TH = timezone(timedelta(hours=7))
