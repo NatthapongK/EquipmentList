@@ -25,7 +25,8 @@ st.set_page_config(
     layout="wide"
 )
 
- --- PWA CONFIGURATION FOR MOBILE & TABLET ---
+# --- PWA CONFIGURATION FOR MOBILE & TABLET ---
+ 
 st.markdown("""
 <link rel="manifest" href="app/static/manifest.json">
 <meta name="theme-color" content="#0E7C86">
