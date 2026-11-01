@@ -464,29 +464,13 @@ else:
             st.query_params.clear()
             st.rerun()
 
-# --- HEADER BAR & LOGOUT FOR TECH ---
+# --- HEADER BAR FOR TECH (WITHOUT LOGOUT BUTTON) ---
 if st.session_state.role in ["ช่างประจำอาคาร", "ช่างประจำอาคารพิเศษ"]:
-    col_t_head, col_t_out = st.columns([4, 1.2])
-    with col_t_head:
-        st.markdown(
-            f'<div class="app-hero" style="margin-bottom:0.5rem;"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
-            f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
-            f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
-            unsafe_allow_html=True)
-    with col_t_out:
-        if st.button("🚪 ออกจากระบบ", type="primary", use_container_width=True, key="tech_top_logout"):
-            st.markdown("""
-            <script>
-            localStorage.removeItem('inv_username');
-            localStorage.removeItem('inv_role');
-            </script>
-            """, unsafe_allow_html=True)
-            st.session_state.logged_in = False
-            st.session_state.role = None
-            st.session_state.username = ""
-            st.session_state.original_role = None
-            st.query_params.clear()
-            st.rerun()
+    st.markdown(
+        f'<div class="app-hero"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
+        f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
+        f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
+        unsafe_allow_html=True)
 else:
     st.markdown(
         f'<div class="app-hero"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
@@ -1419,6 +1403,11 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                             })
                             st.cache_data.clear()
                             
+                            # ล้างค่าไฟล์รูปถ่ายใน session_state เพื่อให้ช่องอัปโหลดว่างเปล่าหลังกดส่ง
+                            for i in range(4):
+                                if f"tech_p_{i}" in st.session_state:
+                                    del st.session_state[f"tech_p_{i}"]
+                            
                             st.success("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
                             st.rerun()
                 else:
@@ -1482,7 +1471,12 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                             "details": summary_note,
                             "photos": photos_str
                         })
-                        st.cache_data.clear()
+                        db.cache_data.clear() if hasattr(db, 'cache_data') else st.cache_data.clear()
+                        
+                        # ล้างค่าไฟล์รูปถ่ายสระว่ายน้ำใน session_state หลังกดส่ง
+                        for i in range(4):
+                            if f"tech_pool_p_{i}" in st.session_state:
+                                del st.session_state[f"tech_pool_p_{i}"]
                                   
                         st.success("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
                         st.rerun()
