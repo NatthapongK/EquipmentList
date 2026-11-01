@@ -371,6 +371,19 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
 
+/* รายการตรวจเช็คของช่าง: บังคับให้ "ชื่อ + ช่องควบคุม" อยู่แถวเดียวกันแม้บนมือถือ */
+.st-key-tech_check_list [data-testid="stHorizontalBlock"],
+.st-key-pool_check_list [data-testid="stHorizontalBlock"]{
+  flex-direction:row !important; flex-wrap:nowrap !important; align-items:flex-start !important; gap:.4rem !important;
+}
+.st-key-tech_check_list [data-testid="stColumn"],
+.st-key-pool_check_list [data-testid="stColumn"]{min-width:0 !important;}
+.st-key-tech_check_list [data-testid="stColumn"]:first-child,
+.st-key-pool_check_list [data-testid="stColumn"]:first-child{flex:1 1 0 !important; width:auto !important;}
+.st-key-tech_check_list [data-testid="stColumn"]:last-child{flex:0 0 auto !important; width:auto !important; min-width:6.5rem !important;}
+.st-key-pool_check_list [data-testid="stColumn"]:last-child{flex:0 0 8rem !important; width:8rem !important;}
+.st-key-tech_check_list [data-testid="stCheckbox"]{padding-top:.55rem;}
+
 @media (max-width:768px){
   .block-container{padding-left:.6rem; padding-right:.6rem;}
   .kpi-grid{grid-template-columns:repeat(2,1fr);}
@@ -715,16 +728,21 @@ def render_pool_list(pool_all_df):
     if tech_pool_search.strip():
         pool_df = pool_df[pool_df['name'].str.contains(tech_pool_search.strip(), case=False, na=False)]
 
-    with st.container(height=500):
+    with keyed_container("pool_check_list", height=500):
         for _, row in pool_df.iterrows():
-            with st.expander(f"📦 {row['name']} (คงเหลือปัจจุบัน: {row['quantity']} ชิ้น)"):
-                img_bytes = get_item_image(row['id'])
-                if img_bytes:
-                    st.image(img_bytes, width=220, caption=f"รูปภาพ: {row['name']}")
-                else:
-                    st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
-            st.number_input(f"จำนวนคงเหลือ: {row['name']}", min_value=0, value=int(row['quantity']), key=f"pool_q_{row['id']}")
-            st.markdown("---")
+            col_item, col_qty = st.columns([5, 1.6])
+            with col_item:
+                with st.expander(f"📦 {row['name']}"):
+                    img_bytes = get_item_image(row['id'])
+                    if img_bytes:
+                        st.image(img_bytes, width=220, caption=f"รูปภาพ: {row['name']}")
+                    else:
+                        st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
+            with col_qty:
+                # ช่องปรับจำนวนต่อท้ายชื่อ (ค่าเริ่มต้น = จำนวนคงเหลือปัจจุบัน)
+                st.number_input(f"จำนวนคงเหลือ: {row['name']}", min_value=0, value=int(row['quantity']),
+                                key=f"pool_q_{row['id']}", label_visibility="collapsed")
+            st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
 
 def clear_inspection_widget_state():
     """ล้างค่า widget ของหน้าตรวจเช็คหลังบันทึก เพื่อให้ค่าเริ่มต้นอิงจาก DB ล่าสุด"""
