@@ -25,7 +25,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- PWA & PERSISTENT LOGIN FRONTEND BRIDGE ---
+# --- PWA & PERSISTENT LOGIN FRONTEND BRIDGE (แก้ไขปัญหาตัวหนังสือหลุดและจดจำ Login) ---
 st.markdown("""
 <link rel="manifest" href="app/static/manifest.json">
 <meta name="theme-color" content="#0E7C86">
@@ -33,17 +33,16 @@ st.markdown("""
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="InventoryApp">
 <script>
-// ตรวจสอบ LocalStorage หากเคย Login ไว้แต่วิเคราะห์ว่า URL ยังไม่มี Param ให้ดึงค่ามาใส่และรีโหลดอัตโนมัติ
 window.addEventListener('DOMContentLoaded', () => {
-    const savedUser = localStorage.getItem('pwa_username');
-    const savedRole = localStorage.getItem('pwa_role');
+    const savedUser = localStorage.getItem('inv_username');
+    const savedRole = localStorage.getItem('inv_role');
     const currentParams = new URLSearchParams(window.location.search);
     
     if (savedUser && savedRole && !currentParams.has('logged_in')) {
         currentParams.set('logged_in', 'true');
         currentParams.set('username', savedUser);
         currentParams.set('role', savedRole);
-        window.location.replace(`${window.location.pathname}?${currentParams.toString()}`);
+        window.location.replace(window.location.pathname + '?' + currentParams.toString());
     }
 });
 </script>
@@ -395,18 +394,53 @@ if not st.session_state.logged_in:
 if st.session_state.logged_in and "original_role" in qp and qp["original_role"]:
     st.session_state.original_role = qp["original_role"]
 
-# --- LOGIN UI ---
+# --- LOGIN UI (พร้อมระบบบันทึกและปุ่ม Quick-Login ตามที่คุณขอ) ---
 if not st.session_state.logged_in:
     _, col_login, _ = st.columns([1, 1.6, 1])
     with col_login:
         st.markdown(
             '<div class="app-hero"><div><div class="t">🛠️ ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ</div>'
-            '<div class="s">เข้าสู่ระบบครั้งเดียวเพื่อจดจำการใช้งานบนอุปกรณ์นี้</div></div></div>',
+            '<div class="s">เข้าสู่ระบบเพื่อใช้งาน</div></div></div>',
             unsafe_allow_html=True)
+        
+        # ช่องทางกด Login ด่วนหากเบราว์เซอร์เคยจำค่าไว้
+        st.markdown("""
+        <div id="quick-login-container" style="margin-bottom:1rem; display:none;">
+            <p style="font-size:0.9rem; color:#38BDF8; margin-bottom:0.5rem;">✨ บัญชีที่เคยใช้งานบนอุปกรณ์นี้:</p>
+            <button onclick="fillAndSubmit()" id="quick-btn" style="background:#0E7C86; color:white; border:none; padding:0.5rem 1rem; border-radius:8px; font-weight:600; cursor:pointer; width:100%;">เข้าสู่ระบบด่วนด้วยบัญชีล่าสุด</button>
+        </div>
+        <script>
+        window.addEventListener('DOMContentLoaded', () => {
+            const lastUser = localStorage.getItem('saved_username');
+            const lastPass = localStorage.getItem('saved_password');
+            if (lastUser && lastPass) {
+                document.getElementById('quick-login-container').style.display = 'block';
+                document.getElementById('quick-btn').innerText = `เข้าสู่ระบบด่วน (${lastUser})`;
+            }
+        });
+        function fillAndSubmit() {
+            const lastUser = localStorage.getItem('saved_username');
+            const lastPass = localStorage.getItem('saved_password');
+            if (lastUser && lastPass) {
+                const url = new URL(window.location.href);
+                // ส่งค่าไปผ่าน Query หรือจำลอง Submit ผ่านฟอร์ม
+                // หรือสามารถพิมพ์ลงช่องอัตโนมัติ
+                const inputs = document.querySelectorAll('input');
+                if (inputs.length >= 2) {
+                    inputs[0].value = lastUser;
+                    inputs[1].value = lastPass;
+                    inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+                    inputs[1].dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            }
+        }
+        </script>
+        """, unsafe_allow_html=True)
+
         with st.form("login_form"):
             username = st.text_input("ชื่อผู้ใช้งาน (Username)")
             password = st.text_input("รหัสผ่าน (Password)", type="password")
-            submitted = st.form_submit_button("เข้าสู่ระบบ (จดจำอุปกรณ์)", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("เข้าสู่ระบบ", type="primary", use_container_width=True)
         
         tech_df = run_query("SELECT * FROM tech_users")
         
@@ -437,17 +471,19 @@ if not st.session_state.logged_in:
                 orig_role = role_val if role_val == "ผู้ออกแบบ/ดูแลระบบ" else ""
                 st.session_state.original_role = orig_role if orig_role else None
                 
-                # บันทึกสถานะลง Query Params ของ Streamlit และ LocalStorage โดยตรง
                 st.query_params["logged_in"] = "true"
                 st.query_params["username"] = user_val
                 st.query_params["role"] = role_val
                 if orig_role:
                     st.query_params["original_role"] = orig_role
                 
+                # บันทึก Username และ Password ลงใน LocalStorage ของเครื่องทันที เพื่อให้กดเข้าสู่ระบบง่ายในครั้งต่อไป
                 st.markdown(f"""
                 <script>
-                localStorage.setItem('pwa_username', '{user_val}');
-                localStorage.setItem('pwa_role', '{role_val}');
+                localStorage.setItem('inv_username', '{user_val}');
+                localStorage.setItem('inv_role', '{role_val}');
+                localStorage.setItem('saved_username', '{username}');
+                localStorage.setItem('saved_password', '{password}');
                 </script>
                 """, unsafe_allow_html=True)
                 
@@ -496,11 +532,11 @@ with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & �
                 st.rerun()
     
     st.markdown("---")
-    if st.button("🚪 ออกจากระบบ (ล้างค่าอุปกรณ์)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
+    if st.button("🚪 ออกจากระบบ", type="primary", use_container_width=True, key="sidebar_logout_btn"):
         st.markdown("""
         <script>
-        localStorage.removeItem('pwa_username');
-        localStorage.removeItem('pwa_role');
+        localStorage.removeItem('inv_username');
+        localStorage.removeItem('inv_role');
         </script>
         """, unsafe_allow_html=True)
         st.session_state.logged_in = False
