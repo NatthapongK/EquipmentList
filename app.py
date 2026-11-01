@@ -170,8 +170,8 @@ def init_db():
 
 init_db()
 
-# --- OPTIMIZED CACHED DATA FUNCTIONS ---
-@st.cache_data(ttl=300, show_spinner=False)
+# --- OPTIMIZED CACHED DATA FUNCTIONS (TTL ลดเหลือ 0 เพื่อดึงข้อมูลสดทันที) ---
+@st.cache_data(ttl=0, show_spinner=False)
 def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0})))
     if not df.empty:
@@ -181,11 +181,11 @@ def get_items_df():
             df['alert_zero'] = pd.to_numeric(df['alert_zero'], errors='coerce').fillna(0).astype(int)
     return df
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=0, show_spinner=False)
 def get_tech_users_df():
     return pd.DataFrame(list(db.tech_users.find({}, {"_id": 0})))
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=0, show_spinner=False)
 def get_settings_val(key, default="1"):
     res = db.settings.find_one({"key": key})
     return res["value"] if res else default
@@ -472,11 +472,18 @@ if st.session_state.role in ["ช่างประจำอาคาร", "ช�
         f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
         unsafe_allow_html=True)
 else:
-    st.markdown(
-        f'<div class="app-hero"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
-        f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
-        f'<span class="chip">{esc(st.session_state.role)}</span></div>',
-        unsafe_allow_html=True)
+    # เพิ่มปุ่มรีเฟรชข้อมูลด่วนสำหรับแอดมิน เพื่อดึงข้อมูลใหม่จากฐานข้อมูลทันทีโดยไม่ต้องกดรีเฟรชเบราว์เซอร์
+    col_h_title, col_h_btn = st.columns([4, 1])
+    with col_h_title:
+        st.markdown(
+            f'<div class="app-hero" style="margin-bottom:0.5rem;"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
+            f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
+            f'<span class="chip">{esc(st.session_state.role)}</span></div>',
+            unsafe_allow_html=True)
+    with col_h_btn:
+        if st.button("🔄 โหลดข้อมูลใหม่", type="secondary", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
 # --- ALERT SYSTEM & DATA FETCH ---
 low_stock_limit = int(get_settings_val('low_stock_threshold', '1'))
@@ -1401,6 +1408,7 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                                 "details": summary_note,
                                 "photos": photos_str
                             })
+                            # เคลียร์แคชทันทีเพื่อให้แอดมินเห็นข้อมูลใหม่ทันที
                             st.cache_data.clear()
                             
                             # ล้างค่าไฟล์รูปถ่ายใน session_state เพื่อให้ช่องอัปโหลดว่างเปล่าหลังกดส่ง
@@ -1471,7 +1479,8 @@ elif st.session_state.role in ["ช่างประจำอาคาร", "�
                             "details": summary_note,
                             "photos": photos_str
                         })
-                        db.cache_data.clear() if hasattr(db, 'cache_data') else st.cache_data.clear()
+                        # เคลียร์แคชทันทีเพื่อให้แอดมินเห็นข้อมูลใหม่ทันที
+                        st.cache_data.clear()
                         
                         # ล้างค่าไฟล์รูปถ่ายสระว่ายน้ำใน session_state หลังกดส่ง
                         for i in range(4):
