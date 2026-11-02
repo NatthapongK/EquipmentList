@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ซ่อนรูปภาพ เริ่มต้นด้วยความรวดเร็ว)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (อัปเดตข้อความแสดงผู้ยืม)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -610,10 +610,16 @@ else:
 
 active_borrows = get_active_borrows()
 borrowed_item_map = {}
+borrower_details_map = {}
 for t in active_borrows:
     it_id = t["item_id"]
     q_borrowed = t.get("quantity", 1)
+    b_name = t.get("borrower_name", "ไม่ระบุ")
     borrowed_item_map[it_id] = borrowed_item_map.get(it_id, 0) + q_borrowed
+    # เก็บข้อมูลผู้ยืมและจำนวนไว้แสดงผล
+    if it_id not in borrower_details_map:
+        borrower_details_map[it_id] = []
+    borrower_details_map[it_id].append(f"{b_name} ({q_borrowed} ชิ้น)")
 
 is_tech_view = st.session_state.role in TECH_ROLES
 abn_statuses = ['ชำรุด', 'อุปกรณ์หมด'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'อุปกรณ์หมด']
@@ -797,7 +803,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (ซ่อนรูปภาพเริ่มต้น มีปุ่มแสดงรูปด้านใน) ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (แสดงรายละเอียดผู้ยืมและจำนวนเต็มรูปแบบ) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -812,10 +818,12 @@ def render_tool_inspection_list(tools_all_df):
             rid = row['id']
             current_status = row['status']
             borrow_qty = borrowed_item_map.get(rid, 0)
+            borrower_info = ", ".join(borrower_details_map.get(rid, []))
 
+            # 5 สีสถานะ: 🟢 ปกติ | 🟡 กำลังใช้งาน | 🔵 ยืม | 🟠 หมด | 🔴 ชำรุด
             if borrow_qty > 0:
                 badge_color = "🔵"
-                status_text = f"[ยืม ({borrow_qty} ชิ้น)]"
+                status_text = f"[ถูกยืมโดย {borrower_info}]"
             elif current_status == "ปกติ":
                 badge_color = "🟢"
                 status_text = "[ปกติ]"
@@ -829,7 +837,6 @@ def render_tool_inspection_list(tools_all_df):
                 badge_color = "🔴"
                 status_text = f"[{current_status}]"
 
-            # ยุบรูปภาพไว้ข้างใน (ซ่อนไว้ก่อน) เพื่อความรวดเร็วในการเลื่อนดูและเลือกสถานะ
             with st.expander(f"{badge_color} {row['name']} (คงเหลือ: {row['quantity']})  {status_text}"):
                 base_st = current_status.split(" (")[0] if "(" in current_status else current_status
                 if borrow_qty > 0:
@@ -858,7 +865,6 @@ def render_tool_inspection_list(tools_all_df):
                         if int(row['orig_quantity']) > 1:
                             st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
 
-                # ปุ่มกดดูรูปภาพแยกออกมาด้านใน ไม่โหลดค้างไว้ให้เกะกะ
                 img_bytes = get_item_image(rid)
                 if img_bytes:
                     with st.popover("📷 ดูรูปภาพอุปกรณ์"):
@@ -866,7 +872,7 @@ def render_tool_inspection_list(tools_all_df):
                 else:
                     st.caption("*(ไม่มีรูปภาพประกอบ)*")
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ (ซ่อนรูปภาพเริ่มต้น มีปุ่มแสดงรูปข้างใน) ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ ---
 @fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
