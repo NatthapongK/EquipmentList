@@ -1335,13 +1335,13 @@ elif st.session_state.role in TECH_ROLES:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
                 switch_role(ROLE_ADMIN)
 
-    tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกของ", "🔄 ระบบยืม-คืน อุปกรณ์"])
+    tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 สต็อก", "🔄 ระบบยืม-คืน อุปกรณ์"])
 
     with tech_main_tab[2]:
         render_borrow_return_system()
 
     with tech_main_tab[1]:
-        st.markdown("### 📦 เบิกของ (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
+        st.markdown("### 📦 ขอเพิ่มจำนวน (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
         st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังผู้ออกแบบ/ดูแลระบบเพื่อรออนุมัติบวกสต็อก")
 
         tools_requisition_df = items_df[
@@ -1361,7 +1361,7 @@ elif st.session_state.role in TECH_ROLES:
                 req_qty = st.number_input("จำนวนที่ต้องการเพิ่มเข้าคลัง *", min_value=1, value=1)
                 req_note = st.text_area("หมายเหตุ / เหตุผลที่ขอเพิ่ม *")
 
-                if st.form_submit_button("📤 ส่งคำขอเบิกของ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
+                if st.form_submit_button("📤 ส่งคำขอเบิกอปุกรณ์ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
                     if req_note.strip():
                         req_selected_id = req_item_dict[sel_req_label]
                         db.requisition_requests.insert_one({
@@ -1371,14 +1371,14 @@ elif st.session_state.role in TECH_ROLES:
                             "request_date": get_now_str("%Y-%m-%d %H:%M"), "approval_date": None
                         })
                         clear_req_cache()
-                        done(f"ส่งคำขอเบิกของ '{item_name_map.get(req_selected_id, '')}' จำนวน +{req_qty} ชิ้น เรียบร้อยแล้ว!")
+                        done(f"ส่งคำขอเบิกอุปกรณ์ '{item_name_map.get(req_selected_id, '')}' จำนวน +{req_qty} ชิ้น เรียบร้อยแล้ว!")
                     else:
-                        st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเบิกของ")
+                        st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเบิกอุปกรณ์")
         else:
             st.info("ไม่พบรายการอุปกรณ์ตามค้นหา")
 
         st.markdown("---")
-        st.markdown("#### 📜 ประวัติคำขอเบิกของของคุณ")
+        st.markdown("#### 📜 ประวัติคำขอเบิกอุปกณ์ของคุณ")
         my_reqs_list = get_my_reqs(st.session_state.username)
         my_requests = pd.DataFrame([{
             "รหัส": r["id"], "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
@@ -1389,7 +1389,7 @@ elif st.session_state.role in TECH_ROLES:
         if not my_requests.empty:
             st.dataframe(my_requests, use_container_width=True, hide_index=True)
         else:
-            st.info("ยังไม่มีประวัติการส่งคำขอเบิกของ")
+            st.info("ยังไม่มีประวัติการส่งคำขอเบิกอุปกณ์")
 
     with tech_main_tab[0]:
         tech_category_choice = st.radio("เลือกหมวดหมู่การทำงาน", ["🔧 หมวดอุปกรณ์ช่าง", "🏊 หมวดอุปกรณ์สระว่ายน้ำ"], horizontal=True)
