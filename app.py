@@ -9,6 +9,7 @@ import re
 import io
 import secrets
 from PIL import Image, ImageOps
+from streamlit_local_storage import LocalStorage
 
 # =====================================================================
 #  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ  (เวอร์ชันปรับความเร็ว)
@@ -458,61 +459,42 @@ if "logged_in" not in st.session_state:
 if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0
 
-if not st.session_state.logged_in and "token" in st.query_params:
-    sess = db.sessions.find_one({"token": st.query_params["token"]})
-    if sess:
-        st.session_state.logged_in = True
-        st.session_state.role = sess["role"]
-        st.session_state.username = sess["username"]
-        st.session_state.original_role = sess.get("original_role")
-        st.session_state.token = sess["token"]
-    else:
-        st.query_params.clear()
+# [NEW] อ่าน token ที่จำไว้ในเครื่อง (localStorage)
+LS_KEY = "inv_token"
+local_store = LocalStorage()
+try:
+    saved_token = local_store.getItem(LS_KEY)
+except Exception:
+    saved_token = None
 
-# --- LOGIN UI ---
+# กู้คืน session จาก token ใน URL หรือที่จำไว้ในเครื่อง (ตรวจกับฐานข้อมูลเสมอ)
 if not st.session_state.logged_in:
-    _, col_login, _ = st.columns([1, 1.6, 1])
-    with col_login:
-        st.markdown(
-            '<div class="app-hero"><div><div class="t">🛠️ ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ</div>'
-            '<div class="s">เข้าสู่ระบบเพื่อตรวจเช็ค ยืม-คืน และจัดการคลังอุปกรณ์</div></div></div>',
-            unsafe_allow_html=True)
-        with st.form("login_form"):
-            username = st.text_input("ชื่อผู้ใช้งาน (Username)")
-            password = st.text_input("รหัสผ่าน (Password)", type="password")
-            submitted = st.form_submit_button("เข้าสู่ระบบ", type="primary", use_container_width=True)
+    cand_token = st.query_params.get("token") or saved_token
+    if cand_token:
+        sess = db.sessions.find_one({"token": cand_token})
+        if sess:
+            # ต่ออายุ session ทุกครั้งที่เปิดใช้งาน
+            db.sessions.update_one({"token": cand_token}, {"$set": {"created": datetime.now(timezone.utc)}})
+            st.session_state.logged_in = True
+            st.session_state.role = sess["role"]
+            st.session_state.username = sess["username"]
+            st.session_state.original_role = sess.get("original_role")
+            st.session_state.token = sess["token"]
+            st.query_params["token"] = sess["token"]
+        else:
+            # token หมดอายุหรือถูก logout ไปแล้ว -> ล้างออกจากเครื่อง
+            st.query_params.clear()
+            if saved_token:
+                local_store.deleteItem(LS_KEY, key="ls_del_token")
 
-        if submitted:
-            role_val, user_val = "", ""
-            try:
-                admin_user = st.secrets["admin"]["username"]
-                admin_pass = st.secrets["admin"]["password"]
-            except Exception:
-                admin_user, admin_pass = "admin", "admin"
-
-            if username == admin_user and password == admin_pass:
-                role_val, user_val = ROLE_ADMIN, admin_user
-            elif db.tech_users.find_one({"username": username, "password": password}, {"_id": 1}):
-                role_val, user_val = ROLE_TECH, username
-
-            if role_val:
-                orig_role = ROLE_ADMIN if role_val == ROLE_ADMIN else None
-                token = create_session(user_val, role_val, orig_role)
-                st.session_state.logged_in = True
-                st.session_state.role = role_val
-                st.session_state.username = user_val
-                st.session_state.original_role = orig_role
-                st.session_state.token = token
-                st.query_params["token"] = token
-                st.rerun()
-            else:
-                st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
-    st.stop()
 
 # [NEW] แสดง toast ที่ค้างไว้จากการบันทึกครั้งก่อน
 _flash = st.session_state.pop("_flash", None)
 if _flash:
     st.toast(_flash[0], icon=_flash[1])
+# [NEW] บันทึก token ลงเครื่อง (ทำเฉพาะเมื่อยังไม่ได้บันทึก หรือ token เปลี่ยน)
+if st.session_state.get("token") and saved_token != st.session_state.token:
+    local_store.setItem(LS_KEY, st.session_state.token, key="ls_set_token")
 
 # --- SIDEBAR ---
 if st.session_state.role in TECH_ROLES:
