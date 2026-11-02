@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับสมบูรณ์)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับปรับปรุง UI ช่าง)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -762,7 +762,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ดูรูปย้ายไปอยู่หลังชื่ออุปกรณ์) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ติ๊กหน้าชื่อเพื่อเลือกสถานะ + ดูรูปต่อจากชื่อ) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -775,8 +775,11 @@ def render_tool_inspection_list(tools_all_df):
             rid = row['id']
             current_status = row['status']
             
-            # จัดวางชื่ออุปกรณ์ และปุ่มดูรูปให้อยู่บรรทัดเดียวกัน
-            col_name_label, col_pop_btn = st.columns([5, 1])
+            # จัดวาง: ช่องติ๊กหน้าชื่อ + ชื่ออุปกรณ์ + ปุ่มดูรูป ให้อยู่บรรทัดเดียวกัน
+            col_chk, col_name_label, col_pop_btn = st.columns([0.6, 4.4, 1])
+            
+            with col_chk:
+                is_checked = st.checkbox("เลือก", key=f"flag_chk_{rid}", label_visibility="collapsed")
             with col_name_label:
                 st.markdown(f"**🛠️ #{rid} - {row['name']}** (คงเหลือ: {row['quantity']})")
             with col_pop_btn:
@@ -787,33 +790,35 @@ def render_tool_inspection_list(tools_all_df):
                 else:
                     st.caption("ไม่มีรูป")
 
-            status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
-            if row['subcategory'] == "เครื่องมือช่าง":
-                if "อุปกรณ์หมด" in status_options:
-                    status_options.remove("อุปกรณ์หมด")
+            # สถานะอุปกรณ์จะแสดงก็ต่อเมื่อติ๊กเลือกหน้าชื่อแล้วเท่านั้น
+            if is_checked:
+                status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
+                if row['subcategory'] == "เครื่องมือช่าง":
+                    if "อุปกรณ์หมด" in status_options:
+                        status_options.remove("อุปกรณ์หมด")
 
-            base_status = current_status.split(" (")[0] if "(" in current_status else current_status
-            if base_status == "กำลังใช้งาน":
-                def_idx = 0
-            else:
-                def_idx = status_options.index(base_status) if base_status in status_options else 0
+                base_status = current_status.split(" (")[0] if "(" in current_status else current_status
+                if base_status == "กำลังใช้งาน":
+                    def_idx = 0
+                else:
+                    def_idx = status_options.index(base_status) if base_status in status_options else 0
 
-            selected_status = st.selectbox(
-                f"สถานะ {rid}",
-                status_options,
-                index=def_idx,
-                key=f"status_sel_{rid}",
-                label_visibility="collapsed"
-            )
+                selected_status = st.selectbox(
+                    f"สถานะ {rid}",
+                    status_options,
+                    index=def_idx,
+                    key=f"status_sel_{rid}",
+                    label_visibility="collapsed"
+                )
 
-            if selected_status != "ปกติ":
-                if selected_status == "กำลังใช้งาน":
-                    st.text_input("ระบุรายละเอียดการใช้งาน *", value="", key=f"issue_detail_{rid}")
-                    if int(row['quantity']) > 1:
-                        st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
-                elif selected_status in ["ชำรุด", "สูญหาย"]:
-                    if int(row['quantity']) > 1:
-                        st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
+                if selected_status != "ปกติ":
+                    if selected_status == "กำลังใช้งาน":
+                        st.text_input("ระบุรายละเอียดการใช้งาน *", value="", key=f"issue_detail_{rid}")
+                        if int(row['quantity']) > 1:
+                            st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
+                    elif selected_status in ["ชำรุด", "สูญหาย"]:
+                        if int(row['quantity']) > 1:
+                            st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
 
             st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--line);'>", unsafe_allow_html=True)
 
@@ -828,7 +833,7 @@ def render_pool_list(pool_all_df):
     with keyed_container("pool_check_list", height=500):
         for _, row in pool_df.iterrows():
             rid = row['id']
-            # จัดวางชื่ออุปกรณ์ ปุ่มดูรูป และช่องกรอกจำนวน ให้อยู่บรรทัดเดียวกัน
+            # จัดวาง: ชื่ออุปกรณ์ + ปุ่มดูรูป + ช่องกรอกจำนวน ให้อยู่บรรทัดเดียวกัน
             col_item_l, col_item_r, col_qty = st.columns([3.5, 1.5, 1.6])
             with col_item_l:
                 st.markdown(f"📦 **{row['name']}**")
@@ -845,7 +850,7 @@ def render_pool_list(pool_all_df):
             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
 
 def clear_inspection_widget_state():
-    prefixes = ("flag_", "issue_type_", "issue_detail_", "issue_qty_", "pool_q_", "status_sel_")
+    prefixes = ("flag_", "issue_type_", "issue_detail_", "issue_qty_", "pool_q_", "status_sel_", "flag_chk_")
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and k.startswith(prefixes):
             del st.session_state[k]
@@ -1380,8 +1385,9 @@ elif st.session_state.role in TECH_ROLES:
                         item_reports = {}
                         for _, row in tools_all_df.iterrows():
                             rid = row['id']
-                            sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
-                            if sel_st != "ปกติ":
+                            is_checked = st.session_state.get(f"flag_chk_{rid}", False)
+                            if is_checked:
+                                sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
                                 item_reports[rid] = {
                                     "flagged": True,
                                     "status": sel_st,
