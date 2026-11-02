@@ -10,9 +10,10 @@ import io
 import secrets
 from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
+import time
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ตัดป้ายหมวดหมู่ออก)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (Auto-Sync & Clean UI)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -156,9 +157,19 @@ def init_mongo():
 
     database.settings.update_one({"key": "low_stock_threshold"}, {"$setOnInsert": {"value": "1"}}, upsert=True)
     database.settings.update_one({"key": "global_daily_quota"}, {"$setOnInsert": {"value": "3"}}, upsert=True)
+    database.settings.update_one({"key": "db_version"}, {"$setOnInsert": {"value": str(time.time())}}, upsert=True)
     return database
 
 db = init_mongo()
+
+def bump_db_version():
+    """อัปเดตเวอร์ชันฐานข้อมูลเพื่อให้ทุกหน้าจอทำการซิงค์อัตโนมัติ"""
+    db.settings.update_one({"key": "db_version"}, {"$set": {"value": str(time.time())}}, upsert=True)
+
+@st.cache_data(ttl=5, show_spinner=False)
+def get_db_version():
+    res = db.settings.find_one({"key": "db_version"})
+    return res["value"] if res else "0"
 
 def get_next_sequence(name):
     counter = db.counters.find_one_and_update(
@@ -203,7 +214,7 @@ def get_image_store():
 def get_item_image(item_id):
     return get_image_store().get(int(item_id))
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0, "image": 0})))
     if not df.empty:
@@ -213,11 +224,11 @@ def get_items_df():
         df['note'] = df['note'].fillna("") if 'note' in df.columns else ""
     return df
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_tech_users_df():
     return pd.DataFrame(list(db.tech_users.find({}, {"_id": 0})))
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_settings_val(key, default="1"):
     res = db.settings.find_one({"key": key})
     return res["value"] if res else default
@@ -225,12 +236,13 @@ def get_settings_val(key, default="1"):
 def set_settings_val(key, val):
     db.settings.update_one({"key": key}, {"$set": {"value": str(val)}}, upsert=True)
     get_settings_val.clear()
+    bump_db_version()
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def get_active_borrows():
     return list(db.transactions.find({"status": "กำลังยืม"}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1))
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def get_pending_reqs():
     return list(db.requisition_requests.find({"status": "รออนุมัติ"}, {"_id": 0}).sort("id", -1))
 
@@ -238,7 +250,7 @@ def get_pending_reqs():
 def get_inspection_count(category, today_str):
     return db.inspections.count_documents({"category": category, "inspection_date": {"$regex": f"^{today_str}"}})
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_tx_history(limit=300):
     return list(db.transactions.find({}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1).limit(limit))
 
@@ -247,7 +259,7 @@ def get_tx_image(tx_id):
     d = db.transactions.find_one({"id": tx_id}, {"_id": 0, "borrower_image": 1})
     return b64_to_bytes(d.get("borrower_image")) if d else None
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_inspections_list(limit=1000):
     return list(db.inspections.find({}, {"_id": 0, "photos": 0}).sort("id", -1).limit(limit))
 
@@ -259,27 +271,30 @@ def get_inspection_photos(insp_id):
         return []
     return [b for b in (b64_to_bytes(p) for p in str(raw).split("|||")) if b]
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_req_history(limit=300):
     return list(db.requisition_requests.find({"status": {"$ne": "รออนุมัติ"}}, {"_id": 0}).sort("id", -1).limit(limit))
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_my_reqs(username):
     return list(db.requisition_requests.find({"tech_name": username}, {"_id": 0}).sort("id", -1).limit(200))
 
 def clear_tx_cache():
     get_active_borrows.clear()
     get_tx_history.clear()
+    bump_db_version()
 
 def clear_req_cache():
     get_pending_reqs.clear()
     get_req_history.clear()
     get_my_reqs.clear()
+    bump_db_version()
 
 def refresh_items(images=False):
     get_items_df.clear()
     if images:
         get_image_store.clear()
+    bump_db_version()
 
 def done(msg, icon="✅"):
     st.session_state["_flash"] = (msg, icon)
@@ -324,12 +339,23 @@ def keyed_container(key, **kwargs):
 
 fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None) or (lambda f: f)
 
+# --- AUTO-SYNC BACKGROUND WATCHER (Real-time update) ---
+@fragment(run_every="3s")
+def background_sync_watcher():
+    current_remote_ver = get_db_version()
+    if "last_seen_ver" not in st.session_state:
+        st.session_state.last_seen_ver = current_remote_ver
+    elif st.session_state.last_seen_ver != current_remote_ver:
+        st.session_state.last_seen_ver = current_remote_ver
+        st.rerun(scope="app")
+
 def switch_role(new_role):
     st.session_state.role = new_role
     st.session_state.original_role = ROLE_ADMIN
     tk = st.session_state.get("token")
     if tk:
         db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
+    bump_db_version()
     st.rerun()
 
 # --- THEME & CSS ---
@@ -555,49 +581,31 @@ if not st.session_state.logged_in or not st.session_state.role or st.session_sta
                     local_store.setItem(LS_KEY, token, key="ls_set_token")
                 except:
                     pass
+                bump_db_version()
                 st.success("เข้าสู่ระบบสำเร็จ!")
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
+# --- RUN BACKGROUND AUTO-SYNC WATCHER ---
+background_sync_watcher()
+
 # --- HEADER (LOGGED IN) ---
 if st.session_state.role in TECH_ROLES:
-    col_th_title, col_th_logout = st.columns([3, 1])
-    with col_th_title:
-        st.markdown(
-            f'<div class="app-hero"><div><div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์</div>'
-            f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
-            f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
-            unsafe_allow_html=True)
-    with col_th_logout:
-        if st.button("🚪 ออกจากระบบ", type="secondary", use_container_width=True, key="tech_top_logout"):
-            if st.session_state.get("token"):
-                db.sessions.delete_one({"token": st.session_state.token})
-            try:
-                local_store.deleteItem(LS_KEY, key="ls_del_token")
-            except:
-                pass
-            st.session_state.logged_in = False
-            st.session_state.role = None
-            st.session_state.username = ""
-            st.session_state.original_role = None
-            st.session_state.token = None
-            st.query_params.clear()
-            st.rerun()
+    # หน้าช่าง: เอาปุ่มออกจากระบบออกตามข้อ 1
+    st.markdown(
+        f'<div class="app-hero"><div><div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์</div>'
+        f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
+        f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
+        unsafe_allow_html=True)
 else:
-    col_h_title, col_h_btn = st.columns([4, 1])
-    with col_h_title:
-        st.markdown(
-            f'<div class="app-hero" style="margin-bottom:0.5rem;"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
-            f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
-            f'<span class="chip">{esc(st.session_state.role)}</span></div>',
-            unsafe_allow_html=True)
-    with col_h_btn:
-        if st.button("🔄 โหลดข้อมูลใหม่", type="secondary", use_container_width=True):
-            st.cache_data.clear()
-            get_image_store.clear()
-            st.rerun()
+    # หน้าแอดมิน: ตัดปุ่มโหลดข้อมูลใหม่ออกตามข้อ 3 (เพราะมีระบบ Auto-Sync แล้ว)
+    st.markdown(
+        f'<div class="app-hero" style="margin-bottom:0.5rem;"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
+        f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
+        f'<span class="chip">{esc(st.session_state.role)}</span></div>',
+        unsafe_allow_html=True)
 
 # --- ALERT SYSTEM & DATA FETCH ---
 low_stock_limit = int(get_settings_val('low_stock_threshold', '1'))
@@ -701,7 +709,7 @@ else:
     st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
 st.markdown("")
 
-# --- SHARED BORROW / RETURN COMPONENT (ตัดหมวดหมู่ออก) ---
+# --- SHARED BORROW / RETURN COMPONENT ---
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
@@ -710,7 +718,6 @@ def render_borrow_return_system():
         available_items = items_df[items_df['quantity'] > 0] if not items_df.empty else pd.DataFrame()
         if not available_items.empty:
             with st.form("borrow_form_shared", clear_on_submit=True):
-                # ตัดข้อความหมวดหมู่ออกจากชื่ออุปกรณ์ใน Selectbox ยืม
                 item_dict = {f"{row['name']} (คงเหลือ: {row['quantity']} ชิ้น)": row['id']
                              for _, row in available_items.iterrows()}
                 sel_item_label = st.selectbox("เลือกเครื่องมือ/อุปกรณ์ที่ต้องการยืม *", list(item_dict.keys()))
@@ -1354,7 +1361,7 @@ elif st.session_state.role in TECH_ROLES:
 
         if not tools_requisition_df.empty:
             with st.form("requisition_request_form", clear_on_submit=True):
-                # ตัดข้อความหมวดหมู่ออกจากหน้าเบิกของ
+                # ตัดข้อความ [อุปกรณ์ช่าง] และ [อุปกรณ์สระว่ายน้ำ] ออกจากหน้าเบิกของ
                 req_item_dict = {f"{row['name']} (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id']
                                  for _, row in tools_requisition_df.iterrows()}
                 sel_req_label = st.selectbox("เลือกอุปกรณ์ที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
