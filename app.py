@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (อัปเดตข้อความแสดงผู้ยืม)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ตัดป้ายหมวดหมู่ออก)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -616,7 +616,6 @@ for t in active_borrows:
     q_borrowed = t.get("quantity", 1)
     b_name = t.get("borrower_name", "ไม่ระบุ")
     borrowed_item_map[it_id] = borrowed_item_map.get(it_id, 0) + q_borrowed
-    # เก็บข้อมูลผู้ยืมและจำนวนไว้แสดงผล
     if it_id not in borrower_details_map:
         borrower_details_map[it_id] = []
     borrower_details_map[it_id].append(f"{b_name} ({q_borrowed} ชิ้น)")
@@ -702,7 +701,7 @@ else:
     st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
 st.markdown("")
 
-# --- SHARED BORROW / RETURN COMPONENT ---
+# --- SHARED BORROW / RETURN COMPONENT (ตัดหมวดหมู่ออก) ---
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
@@ -711,7 +710,8 @@ def render_borrow_return_system():
         available_items = items_df[items_df['quantity'] > 0] if not items_df.empty else pd.DataFrame()
         if not available_items.empty:
             with st.form("borrow_form_shared", clear_on_submit=True):
-                item_dict = {f"{row['name']} (คงเหลือ: {row['quantity']} ชิ้น) [{row['category']}]": row['id']
+                # ตัดข้อความหมวดหมู่ออกจากชื่ออุปกรณ์ใน Selectbox ยืม
+                item_dict = {f"{row['name']} (คงเหลือ: {row['quantity']} ชิ้น)": row['id']
                              for _, row in available_items.iterrows()}
                 sel_item_label = st.selectbox("เลือกเครื่องมือ/อุปกรณ์ที่ต้องการยืม *", list(item_dict.keys()))
                 borrow_qty = st.number_input("จำนวนที่ต้องการยืม *", min_value=1,
@@ -803,7 +803,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (แสดงรายละเอียดผู้ยืมและจำนวนเต็มรูปแบบ) ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -820,7 +820,6 @@ def render_tool_inspection_list(tools_all_df):
             borrow_qty = borrowed_item_map.get(rid, 0)
             borrower_info = ", ".join(borrower_details_map.get(rid, []))
 
-            # 5 สีสถานะ: 🟢 ปกติ | 🟡 กำลังใช้งาน | 🔵 ยืม | 🟠 หมด | 🔴 ชำรุด
             if borrow_qty > 0:
                 badge_color = "🔵"
                 status_text = f"[ถูกยืมโดย {borrower_info}]"
@@ -1335,13 +1334,13 @@ elif st.session_state.role in TECH_ROLES:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
                 switch_role(ROLE_ADMIN)
 
-    tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 สต็อก", "🔄 ระบบยืม-คืน อุปกรณ์"])
+    tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกของ", "🔄 ระบบยืม-คืน อุปกรณ์"])
 
     with tech_main_tab[2]:
         render_borrow_return_system()
 
     with tech_main_tab[1]:
-        st.markdown("### 📦 ขอเพิ่มจำนวน (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
+        st.markdown("### 📦 เบิกของ (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
         st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังผู้ออกแบบ/ดูแลระบบเพื่อรออนุมัติบวกสต็อก")
 
         tools_requisition_df = items_df[
@@ -1355,13 +1354,14 @@ elif st.session_state.role in TECH_ROLES:
 
         if not tools_requisition_df.empty:
             with st.form("requisition_request_form", clear_on_submit=True):
-                req_item_dict = {f"{row['name']} [{row['category']}] (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id']
+                # ตัดข้อความหมวดหมู่ออกจากหน้าเบิกของ
+                req_item_dict = {f"{row['name']} (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id']
                                  for _, row in tools_requisition_df.iterrows()}
                 sel_req_label = st.selectbox("เลือกอุปกรณ์ที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
                 req_qty = st.number_input("จำนวนที่ต้องการเพิ่มเข้าคลัง *", min_value=1, value=1)
                 req_note = st.text_area("หมายเหตุ / เหตุผลที่ขอเพิ่ม *")
 
-                if st.form_submit_button("📤 ส่งคำขอเบิกอปุกรณ์ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
+                if st.form_submit_button("📤 ส่งคำขอเบิกของ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
                     if req_note.strip():
                         req_selected_id = req_item_dict[sel_req_label]
                         db.requisition_requests.insert_one({
@@ -1371,14 +1371,14 @@ elif st.session_state.role in TECH_ROLES:
                             "request_date": get_now_str("%Y-%m-%d %H:%M"), "approval_date": None
                         })
                         clear_req_cache()
-                        done(f"ส่งคำขอเบิกอุปกรณ์ '{item_name_map.get(req_selected_id, '')}' จำนวน +{req_qty} ชิ้น เรียบร้อยแล้ว!")
+                        done(f"ส่งคำขอเบิกของ '{item_name_map.get(req_selected_id, '')}' จำนวน +{req_qty} ชิ้น เรียบร้อยแล้ว!")
                     else:
-                        st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเบิกอุปกรณ์")
+                        st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเบิกของ")
         else:
             st.info("ไม่พบรายการอุปกรณ์ตามค้นหา")
 
         st.markdown("---")
-        st.markdown("#### 📜 ประวัติคำขอเบิกอุปกณ์ของคุณ")
+        st.markdown("#### 📜 ประวัติคำขอเบิกของของคุณ")
         my_reqs_list = get_my_reqs(st.session_state.username)
         my_requests = pd.DataFrame([{
             "รหัส": r["id"], "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
@@ -1389,7 +1389,7 @@ elif st.session_state.role in TECH_ROLES:
         if not my_requests.empty:
             st.dataframe(my_requests, use_container_width=True, hide_index=True)
         else:
-            st.info("ยังไม่มีประวัติการส่งคำขอเบิกอุปกณ์")
+            st.info("ยังไม่มีประวัติการส่งคำขอเบิกของ")
 
     with tech_main_tab[0]:
         tech_category_choice = st.radio("เลือกหมวดหมู่การทำงาน", ["🔧 หมวดอุปกรณ์ช่าง", "🏊 หมวดอุปกรณ์สระว่ายน้ำ"], horizontal=True)
