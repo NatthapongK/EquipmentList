@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับสมบูรณ์ครบทุกฟังก์ชัน)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับสมบูรณ์)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -226,6 +226,10 @@ def get_active_borrows():
 @st.cache_data(ttl=15, show_spinner=False)
 def get_pending_reqs():
     return list(db.requisition_requests.find({"status": "รออนุมัติ"}, {"_id": 0}).sort("id", -1))
+
+@st.cache_data(ttl=15, show_spinner=False)
+def get_inspection_count(category, today_str):
+    return db.inspections.count_documents({"category": category, "inspection_date": {"$regex": f"^{today_str}"}})
 
 @st.cache_data(ttl=30, show_spinner=False)
 def get_tx_history(limit=300):
