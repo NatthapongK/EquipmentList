@@ -762,7 +762,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ย้ายปุ่มดูรูปไปไว้หลังชื่ออุปกรณ์) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ดูรูปย้ายไปอยู่หลังชื่ออุปกรณ์) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -775,7 +775,7 @@ def render_tool_inspection_list(tools_all_df):
             rid = row['id']
             current_status = row['status']
             
-            # จัดวางชื่ออุปกรณ์และปุ่มดูรูปให้อยู่บรรทัดเดียวกัน
+            # จัดวางชื่ออุปกรณ์ และปุ่มดูรูปให้อยู่บรรทัดเดียวกัน
             col_name_label, col_pop_btn = st.columns([5, 1])
             with col_name_label:
                 st.markdown(f"**🛠️ #{rid} - {row['name']}** (คงเหลือ: {row['quantity']})")
@@ -817,7 +817,7 @@ def render_tool_inspection_list(tools_all_df):
 
             st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--line);'>", unsafe_allow_html=True)
 
-# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (ย้ายจำนวนไปอยู่หลังชื่ออุปกรณ์) ---
+# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (จำนวนย้ายไปอยู่หลังชื่ออุปกรณ์) ---
 @fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
@@ -828,7 +828,7 @@ def render_pool_list(pool_all_df):
     with keyed_container("pool_check_list", height=500):
         for _, row in pool_df.iterrows():
             rid = row['id']
-            # จัดวางชื่ออุปกรณ์ (พร้อมปุ่มดูรูป) และช่องกรอกจำนวน ให้อยู่บรรทัดเดียวกัน
+            # จัดวางชื่ออุปกรณ์ ปุ่มดูรูป และช่องกรอกจำนวน ให้อยู่บรรทัดเดียวกัน
             col_item_l, col_item_r, col_qty = st.columns([3.5, 1.5, 1.6])
             with col_item_l:
                 st.markdown(f"📦 **{row['name']}**")
