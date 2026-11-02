@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ตัดเลข # ออกจากมุมมองช่าง)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับแก้ไข KPI, คืนสต็อก, และ UI มือถือ)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -116,15 +116,18 @@ DEFAULT_INITIAL_ITEMS = [
     ("ด้ามจับสั้น", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
     ("ชุดทดสอบคลอรีนและ PH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 2, "ปกติ", "-", None),
     ("ขวดน้ำยาคลอรีน", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
-    ("ขวดน้ำยาPH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
+    ("ขวดน้ำยาpH", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 3, "ปกติ", "-", None),
     ("สายดูดตะกอน สั้น+ยาว", "อุปกรณ์สระว่ายน้ำ", "เคมีภัณฑ์", 1, "ปกติ", "-", None),
 ]
 
 def build_default_docs():
-    return [{
-        "id": idx, "name": i[0], "category": i[1], "subcategory": i[2],
-        "quantity": i[3], "status": i[4], "alert_zero": 0, "note": i[5], "image": i[6]
-    } for idx, i in enumerate(DEFAULT_INITIAL_ITEMS, start=1)]
+    docs = []
+    for idx, i in enumerate(DEFAULT_INITIAL_ITEMS, start=1):
+        docs.append({
+            "id": idx, "name": i[0], "category": i[1], "subcategory": i[2],
+            "quantity": i[3], "orig_quantity": i[3], "status": i[4], "alert_zero": 0, "note": i[5], "image": i[6]
+        })
+    return docs
 
 @st.cache_resource
 def init_mongo():
@@ -148,6 +151,10 @@ def init_mongo():
     if database.items.count_documents({}, limit=1) == 0:
         database.items.insert_many(build_default_docs())
         database.counters.update_one({"_id": "items_id"}, {"$set": {"seq": len(DEFAULT_INITIAL_ITEMS)}}, upsert=True)
+    else:
+        # อัปเดตข้อมูลเก่าให้มี orig_quantity หากยังไม่มี
+        database.items.update_many({"orig_quantity": {"$exists": False}}, [{"$set": {"orig_quantity": "$quantity"}}])
+
     database.settings.update_one({"key": "low_stock_threshold"}, {"$setOnInsert": {"value": "1"}}, upsert=True)
     database.settings.update_one({"key": "global_daily_quota"}, {"$setOnInsert": {"value": "3"}}, upsert=True)
     return database
@@ -202,6 +209,7 @@ def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0, "image": 0})))
     if not df.empty:
         df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype(int)
+        df['orig_quantity'] = pd.to_numeric(df.get('orig_quantity', df['quantity']), errors='coerce').fillna(0).astype(int)
         df['alert_zero'] = pd.to_numeric(df.get('alert_zero', 0), errors='coerce').fillna(0).astype(int)
         df['note'] = df['note'].fillna("") if 'note' in df.columns else ""
     return df
@@ -325,7 +333,7 @@ def switch_role(new_role):
         db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
     st.rerun()
 
-# --- THEME & CSS ---
+# --- THEME & CSS (แก้การแสดงผล KPI และมือถือให้สวยงาม ไม่ยืดเยื้อ) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
@@ -345,21 +353,22 @@ footer {visibility: hidden !important; display: none !important;}
 .stDeployButton {display: none !important;}
 [data-testid="stStatusWidget"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
 
-.block-container{padding-top:1.5rem; padding-bottom:3rem; max-width:1200px;}
+.block-container{padding-top:1.2rem; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
 
-.app-hero{background:#111827; color:#fff; border-radius:14px; padding:1rem 1.25rem; border:1px solid var(--line);
-  display:flex; justify-content:space-between; align-items:center; gap:.75rem 1rem; flex-wrap:wrap; margin-bottom:1rem;}
-.app-hero .t{font-size:1.3rem; font-weight:700; line-height:1.3; color:#F8FAFC;}
-.app-hero .s{font-size:.85rem; color:#94A3B8; margin-top:.15rem;}
-.chip{display:inline-block; padding:.2rem .7rem; border-radius:999px; font-size:.8rem; font-weight:600;
+.app-hero{background:#111827; color:#fff; border-radius:12px; padding:0.85rem 1rem; border:1px solid var(--line);
+  display:flex; justify-content:space-between; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:0.8rem;}
+.app-hero .t{font-size:1.15rem; font-weight:700; line-height:1.2; color:#F8FAFC;}
+.app-hero .s{font-size:0.78rem; color:#94A3B8; margin-top:.1rem;}
+.chip{display:inline-block; padding:.15rem .55rem; border-radius:999px; font-size:.75rem; font-weight:600;
   background:var(--teal); color:#fff;}
 
-.kpi-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:.75rem; margin-bottom:1rem;}
-.kpi{background:var(--card); border:1px solid var(--line); border-left:4px solid var(--c,var(--teal));
-  border-radius:10px; padding:.7rem .9rem;}
-.kpi .n{font-size:1.7rem; font-weight:700; line-height:1.15; color:#F8FAFC;}
-.kpi .l{font-size:.82rem; color:var(--muted);}
+/* แก้ไข KPI Grid ไม่ให้ตัวหนังสือตกบรรทัดยืดเยื้อบนมือถือ */
+.kpi-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:0.5rem; margin-bottom:0.8rem;}
+.kpi{background:var(--card); border:1px solid var(--line); border-left:3px solid var(--c,var(--teal));
+  border-radius:8px; padding:0.5rem 0.6rem;}
+.kpi .n{font-size:1.35rem; font-weight:700; line-height:1.1; color:#F8FAFC;}
+.kpi .l{font-size:0.72rem; color:var(--muted); line-height:1.2; margin-top:0.15rem;}
 
 section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(--line);}
 .user-card{display:flex; align-items:center; gap:.7rem; padding:.7rem; border:1px solid var(--line);
@@ -370,12 +379,12 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .u-role{font-size:.8rem; color:var(--muted);}
 
 .stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto; flex-wrap:nowrap;}
-.stTabs [data-baseweb="tab"]{height:auto; padding:.6rem .9rem; font-weight:500; color:var(--muted); white-space:nowrap;}
+.stTabs [data-baseweb="tab"]{height:auto; padding:.5rem .8rem; font-weight:500; color:var(--muted); white-space:nowrap;}
 .stTabs [aria-selected="true"]{color:#38BDF8; font-weight:600;}
 .stTabs [data-baseweb="tab-highlight"]{background:#38BDF8; height:3px;}
 
-[data-testid="stExpander"]{border:1px solid var(--line); border-radius:12px; background:var(--card); margin-bottom: 0.5rem;}
-[data-testid="stForm"]{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:1rem;}
+[data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card); margin-bottom: 0.4rem;}
+[data-testid="stForm"]{border:1px solid var(--line); border-radius:10px; background:var(--card); padding:0.8rem;}
 
 [data-testid="stDataFrame"], .stTable {
   border: 1px solid var(--line);
@@ -390,13 +399,22 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
 
-.req-banner{display:flex; align-items:center; gap:.9rem; padding:.9rem 1.1rem; margin-bottom:1rem;
-  border-radius:12px; border:2px solid var(--warn); background:linear-gradient(90deg,#78350F,#92400E);
+.req-banner{display:flex; align-items:center; gap:.9rem; padding:.8rem 1rem; margin-bottom:0.8rem;
+  border-radius:10px; border:2px solid var(--warn); background:linear-gradient(90deg,#78350F,#92400E);
   animation:reqpulse 1.8s ease-in-out infinite;}
-.req-banner .ic{font-size:1.9rem; line-height:1;}
-.req-banner .t{font-size:1.1rem; font-weight:700; color:#FEF3C7;}
-.req-banner .s{font-size:.85rem; color:#FDE68A; margin-top:.1rem;}
+.req-banner .ic{font-size:1.7rem; line-height:1;}
+.req-banner .t{font-size:1.0rem; font-weight:700; color:#FEF3C7;}
+.req-banner .s{font-size:0.8rem; color:#FDE68A; margin-top:.1rem;}
 @keyframes reqpulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.55);} 50%{box-shadow:0 0 0 8px rgba(245,158,11,0);}}
+
+@media (max-width:768px){
+  .block-container{padding-left:.4rem; padding-right:.4rem;}
+  .kpi-grid{grid-template-columns:repeat(2,1fr); gap:0.4rem;}
+  .kpi .n{font-size:1.25rem;}
+  .kpi .l{font-size:0.7rem;}
+  .app-hero .t{font-size:1.0rem;}
+  .stApp .stButton > button, .stApp [data-testid="stBaseButton-primary"] > button{width:100%;}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -593,9 +611,9 @@ else:
     item_name_map = {}
 
 is_tech_view = st.session_state.role in TECH_ROLES
-abn_statuses = ['ชำรุด', 'อุปกรณ์หมด'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด']
+abn_statuses = ['ชำรุด', 'อุปกรณ์หมด'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'อุปกรณ์หมด']
 abn_label = "ชำรุด / กำลังใช้งาน / หมด" if is_tech_view else "ผิดปกติ / กำลังใช้งาน / หมด"
-abn_title = "อุปกรณ์ชำรุด/กำลังใช้งาน/หมด" if is_tech_view else "อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด/ถูกยืม"
+abn_title = "อุปกรณ์ชำรุด/กำลังใช้งาน/หมด" if is_tech_view else "อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด"
 
 if not items_df.empty:
     abnormal_items = items_df[
@@ -674,7 +692,7 @@ else:
     st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
 st.markdown("")
 
-# --- SHARED BORROW / RETURN COMPONENT (ตัดเลข # ออก) ---
+# --- SHARED BORROW / RETURN COMPONENT ---
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
@@ -683,7 +701,6 @@ def render_borrow_return_system():
         available_items = items_df[items_df['quantity'] > 0] if not items_df.empty else pd.DataFrame()
         if not available_items.empty:
             with st.form("borrow_form_shared", clear_on_submit=True):
-                # ตัดเลข # ออกจากชื่ออุปกรณ์ใน Selectbox
                 item_dict = {f"{row['name']} (คงเหลือ: {row['quantity']} ชิ้น) [{row['category']}]": row['id']
                              for _, row in available_items.iterrows()}
                 sel_item_label = st.selectbox("เลือกเครื่องมือ/อุปกรณ์ที่ต้องการยืม *", list(item_dict.keys()))
@@ -776,7 +793,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (ตัดเลข # ออกจากหน้าจอช่าง) ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (ทำงานต่อเนื่อง & คืนสต็อกอัตโนมัติเมื่อสถานะกลับเป็นปกติ) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -795,7 +812,6 @@ def render_tool_inspection_list(tools_all_df):
             badge_color = "🟢" if not is_abnormal else "🔴"
             status_text = f"[{current_status}]" if is_abnormal else "[ปกติ]"
 
-            # ตัดเลข # ออก แสดงเฉพาะชื่ออุปกรณ์และสถานะ
             with st.expander(f"{badge_color} {row['name']} (คงเหลือ: {row['quantity']})  {status_text}"):
                 col_img, col_form = st.columns([1, 2.2])
                 with col_img:
@@ -823,13 +839,13 @@ def render_tool_inspection_list(tools_all_df):
                         if selected_status == "กำลังใช้งาน":
                             detail_def = current_status.split("(")[1].replace(")", "") if "กำลังใช้งาน (" in current_status else ""
                             st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_def, key=f"issue_detail_{rid}")
-                            if int(row['quantity']) > 1:
-                                st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
+                            if int(row['orig_quantity']) > 1:
+                                st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
                         elif selected_status in ["ชำรุด", "สูญหาย"]:
-                            if int(row['quantity']) > 1:
-                                st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
+                            if int(row['orig_quantity']) > 1:
+                                st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ (ตัดเลข # ออก) ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ ---
 @fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
@@ -842,7 +858,6 @@ def render_pool_list(pool_all_df):
     with keyed_container("pool_check_list", height=520):
         for _, row in pool_df.iterrows():
             rid = row['id']
-            # ตัดเลข # ออกจากหัวข้อ Expander
             with st.expander(f"🏊 {row['name']} (ปัจจุบัน: {row['quantity']} ชิ้น)"):
                 col_img, col_num = st.columns([1, 2])
                 with col_img:
@@ -951,7 +966,7 @@ if st.session_state.role == ROLE_ADMIN:
                             col_qe1, col_qe2, col_qe3 = st.columns([1, 1, 2])
                             if col_qe1.form_submit_button("💾 บันทึกการแก้ไข", type="primary"):
                                 upd = {"name": qe_name, "category": qe_category, "subcategory": qe_subcat,
-                                       "quantity": qe_quantity, "status": qe_status,
+                                       "quantity": qe_quantity, "orig_quantity": qe_quantity, "status": qe_status,
                                        "alert_zero": 1 if qe_alert_zero else 0, "note": qe_note}
                                 if qe_file is not None:
                                     upd["image"] = compress_image_to_base64(qe_file)
@@ -991,7 +1006,7 @@ if st.session_state.role == ROLE_ADMIN:
                             new_id = get_next_sequence("items_id")
                             db.items.insert_one({
                                 "id": new_id, "name": name, "category": category, "subcategory": subcategory,
-                                "quantity": quantity, "status": status, "alert_zero": 1 if alert_zero else 0,
+                                "quantity": quantity, "orig_quantity": quantity, "status": status, "alert_zero": 1 if alert_zero else 0,
                                 "note": note, "image": compress_image_to_base64(uploaded_file)
                             })
                             refresh_items(images=uploaded_file is not None)
@@ -1031,7 +1046,7 @@ if st.session_state.role == ROLE_ADMIN:
                             col_e1, col_e2 = st.columns(2)
                             if col_e1.form_submit_button("บันทึกการแก้ไข", type="primary"):
                                 upd = {"name": e_name, "category": e_category, "subcategory": e_subcat,
-                                       "quantity": e_quantity, "status": e_status,
+                                       "quantity": e_quantity, "orig_quantity": e_quantity, "status": e_status,
                                        "alert_zero": 1 if e_alert_zero else 0, "note": e_note}
                                 if e_file is not None:
                                     upd["image"] = compress_image_to_base64(e_file)
@@ -1150,7 +1165,7 @@ if st.session_state.role == ROLE_ADMIN:
                                 {"id": req['id'], "status": "รออนุมัติ"},
                                 {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}})
                             if res.modified_count:
-                                db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
+                                db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity']), "orig_quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
                             refresh_items()
                             clear_req_cache()
                             done(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
@@ -1314,7 +1329,6 @@ elif st.session_state.role in TECH_ROLES:
 
         if not tools_requisition_df.empty:
             with st.form("requisition_request_form", clear_on_submit=True):
-                # ตัดเลข # ออกจากชื่ออุปกรณ์ในหน้าเบิกของ
                 req_item_dict = {f"{row['name']} [{row['category']}] (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id']
                                  for _, row in tools_requisition_df.iterrows()}
                 sel_req_label = st.selectbox("เลือกอุปกรณ์ที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
@@ -1367,7 +1381,7 @@ elif st.session_state.role in TECH_ROLES:
             if global_count >= total_allowed:
                 st.error("⚠️ ครบโควตารอบการตรวจสำหรับวันนี้แล้ว (กรุณาติดต่อผู้ออกแบบ/ดูแลระบบเพื่อเพิ่มรอบตรวจพิเศษ)")
             else:
-                tools_all_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['quantity'] > 0)] if not items_df.empty else pd.DataFrame()
+                tools_all_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['orig_quantity'] > 0)] if not items_df.empty else pd.DataFrame()
 
                 if not tools_all_df.empty:
                     render_tool_inspection_list(tools_all_df)
@@ -1425,7 +1439,7 @@ elif st.session_state.role in TECH_ROLES:
                                 row_map = tools_all_df.set_index('id')
 
                                 for item_id, data in item_reports.items():
-                                    curr_q = int(row_map.loc[item_id, 'quantity'])
+                                    orig_q = int(row_map.loc[item_id, 'orig_quantity'])
                                     item_name = row_map.loc[item_id, 'name']
 
                                     if data["flagged"]:
@@ -1435,13 +1449,15 @@ elif st.session_state.role in TECH_ROLES:
                                         if data["status"] == "อุปกรณ์หมด":
                                             new_q = 0
                                         else:
-                                            new_q = max(0, curr_q - data["qty"])
+                                            new_q = max(0, orig_q - data["qty"])
                                         bulk_operations.append(pymongo.operations.UpdateOne(
                                             {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
                                         detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
                                         flagged_summaries.append(detail_txt)
                                     else:
-                                        bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": "ปกติ"}}))
+                                        # หากรอบนี้กลับมาปกติ คืนค่าจำนวนคงเหลือเท่ากับ orig_quantity เดิม
+                                        bulk_operations.append(pymongo.operations.UpdateOne(
+                                            {"id": item_id}, {"$set": {"status": "ปกติ", "quantity": orig_q}}))
 
                                 if bulk_operations:
                                     db.items.bulk_write(bulk_operations, ordered=False)
@@ -1509,7 +1525,7 @@ elif st.session_state.role in TECH_ROLES:
                                 q_val = int(st.session_state[key])
                                 old_q = int(row_map.loc[item_id, 'quantity'])
                                 if q_val != old_q:
-                                    bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"quantity": q_val}}))
+                                    bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"quantity": q_val, "orig_quantity": q_val}}))
                                     pool_summaries.append(f"{row_map.loc[item_id, 'name']}: ปรับจาก {old_q} เหลือ {q_val}")
 
                             if bulk_pool_ops:
