@@ -12,8 +12,8 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ  (เวอร์ชันปรับความเร็ว)
-#  ต้องใช้ Streamlit >= 1.37 (รองรับ st.fragment)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ  (เวอร์ชันปรับปรุงเสถียรภาพ)
+#  ต้องใช้ Streamlit >= 1.37
 #  ต้องตั้งค่า .streamlit/secrets.toml:
 #     [mongo]
 #     uri = "mongodb+srv://..."
@@ -320,14 +320,6 @@ def parse_tech_txt_content(text_content):
 def esc(text):
     return _html.escape(str(text))
 
-def keyed_container(key, **kwargs):
-    try:
-        return st.container(key=key, **kwargs)
-    except TypeError:
-        return st.container(**kwargs)
-
-fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None) or (lambda f: f)
-
 def switch_role(new_role):
     st.session_state.role = new_role
     st.session_state.original_role = ROLE_ADMIN
@@ -407,18 +399,6 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .req-banner .t{font-size:1.1rem; font-weight:700; color:#FEF3C7;}
 .req-banner .s{font-size:.85rem; color:#FDE68A; margin-top:.1rem;}
 @keyframes reqpulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.55);} 50%{box-shadow:0 0 0 8px rgba(245,158,11,0);}}
-
-.st-key-tech_check_list [data-testid="stHorizontalBlock"],
-.st-key-pool_check_list [data-testid="stHorizontalBlock"]{
-  flex-direction:row !important; flex-wrap:nowrap !important; align-items:flex-start !important; gap:.4rem !important;
-}
-.st-key-tech_check_list [data-testid="stColumn"],
-.st-key-pool_check_list [data-testid="stColumn"]{min-width:0 !important;}
-.st-key-tech_check_list [data-testid="stColumn"]:first-child,
-.st-key-pool_check_list [data-testid="stColumn"]:first-child{flex:1 1 0 !important; width:auto !important;}
-.st-key-tech_check_list [data-testid="stColumn"]:last-child{flex:0 0 auto !important; width:auto !important; min-width:6.5rem !important;}
-.st-key-pool_check_list [data-testid="stColumn"]:last-child{flex:0 0 8rem !important; width:8rem !important;}
-.st-key-tech_check_list [data-testid="stCheckbox"]{padding-top:.55rem;}
 
 @media (max-width:768px){
   .block-container{padding-left:.6rem; padding-right:.6rem;}
@@ -539,9 +519,11 @@ abn_label = "ชำรุด / กำลังใช้งาน / หมด" if
 abn_title = "อุปกรณ์ชำรุด/กำลังใช้งาน/หมด" if is_tech_view else "อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด/ถูกยืม"
 
 if not items_df.empty:
+    # แก้ไขเงื่อนไขการตรวจจับสถานะ "กำลังใช้งาน" ให้ครอบคลุมและแม่นยำยิ่งขึ้น
     abnormal_items = items_df[
         items_df['status'].isin(abn_statuses) |
-        items_df['status'].str.startswith('กำลังใช้งาน', na=False)
+        items_df['status'].str.startswith('กำลังใช้งาน', na=False) |
+        items_df['status'].str.contains('กำลังใช้งาน', na=False)
     ]
     thr = pd.Series(low_stock_limit, index=items_df.index).where(items_df['alert_zero'] != 1, 0)
     low_stock_items = items_df[(items_df['subcategory'] != 'เครื่องมือช่าง') & (items_df['quantity'] <= thr)]
@@ -714,15 +696,14 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (คืนรูปแบบเดิมตามโค้ด.txt) ---
-@fragment
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (คืนรูปแบบเดิมที่คลิกได้ปกติ พร้อมจัดกลุ่มตาราง) ---
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
     tools_df = tools_all_df
     if tech_search.strip():
         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
 
-    with keyed_container("tech_check_list", height=500):
+    with st.container():
         for _, row in tools_df.iterrows():
             rid = row['id']
             current_status = row['status']
@@ -746,7 +727,7 @@ def render_tool_inspection_list(tools_all_df):
                     options_list.remove("อุปกรณ์หมด")
                 default_idx = 0
                 detail_default = ""
-                if current_status.startswith("กำลังใช้งาน"):
+                if current_status.startswith("กำลังใช้งาน") or "กำลังใช้งาน" in current_status:
                     default_idx = 1
                     m_detail = re.search(r'\((.*?)\)', current_status)
                     if m_detail:
@@ -754,27 +735,28 @@ def render_tool_inspection_list(tools_all_df):
                 elif current_status in options_list:
                     default_idx = options_list.index(current_status)
 
-                issue_type = st.selectbox("ประเภทปัญหา *", options_list, index=default_idx, key=f"issue_type_{rid}")
-                item_total_q = int(row['quantity'])
-
-                if issue_type == "กำลังใช้งาน":
-                    st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{rid}")
-                    if item_total_q > 1:
-                        st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
-                elif issue_type in ["ชำรุด", "สูญหาย"]:
-                    if item_total_q > 1:
-                        st.number_input(f"จำนวนชิ้นที่{issue_type} *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
+                col_sub1, col_sub2 = st.columns(2)
+                with col_sub1:
+                    issue_type = st.selectbox("ประเภทปัญหา *", options_list, index=default_idx, key=f"issue_type_{rid}")
+                with col_sub2:
+                    item_total_q = int(row['quantity'])
+                    if issue_type == "กำลังใช้งาน":
+                        st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{rid}")
+                        if item_total_q > 1:
+                            st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
+                    elif issue_type in ["ชำรุด", "สูญหาย"]:
+                        if item_total_q > 1:
+                            st.number_input(f"จำนวนชิ้นที่{issue_type} *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
 
-# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (fragment) ---
-@fragment
+# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ ---
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
     pool_df = pool_all_df
     if tech_pool_search.strip():
         pool_df = pool_df[pool_df['name'].str.contains(tech_pool_search.strip(), case=False, na=False)]
 
-    with keyed_container("pool_check_list", height=500):
+    with st.container():
         for _, row in pool_df.iterrows():
             col_item, col_qty = st.columns([5, 1.6])
             with col_item:
@@ -1303,7 +1285,6 @@ elif st.session_state.role in TECH_ROLES:
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
 
-                    # คืนรูปแบบอัปโหลดรูป 4 ช่องเดิมตามโค้ด.txt
                     photo_files = []
                     tool_photo_labels = ["รูปถ่ายแผงไม้เครื่องมือ", "รูปถ่ายชั้นเครื่องมือชั้นบน",
                                          "รูปถ่ายชั้นเครื่องมือชั้นกลาง", "รูปถ่ายชั้นเครื่องมือชั้นล่าง"]
