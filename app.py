@@ -761,7 +761,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ปรับปรุงให้รองรับมือถือและแท็บเล็ตด้วย Selectbox) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ใส่กรอบกลุ่มความสูง 500 เลื่อนดูง่าย) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -769,9 +769,7 @@ def render_tool_inspection_list(tools_all_df):
     if tech_search.strip():
         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
 
-    st.info("💡 วิธีใช้งานบนมือถือ: หากอุปกรณ์ปกติไม่ต้องแก้ไข หากมีปัญหาให้กดเลือกสถานะจากเมนูด้านล่าง")
-
-    with keyed_container("tech_check_list"):
+    with keyed_container("tech_check_list", height=500):
         for _, row in tools_df.iterrows():
             rid = row['id']
             current_status = row['status']
@@ -1356,18 +1354,21 @@ elif st.session_state.role in TECH_ROLES:
                     render_tool_inspection_list(tools_all_df)
 
                     st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
+                    st.info("💡 บนมือถือ/แท็บเล็ต: สามารถกดเลือกรูปภาพจากแกลเลอรีหรือถ่ายรูปพร้อมกันให้ครบ 4 รูปในช่องด้านล่างนี้ได้เลยครับ")
 
-                    photo_files = []
-                    tool_photo_labels = ["รูปถ่ายแผงไม้เครื่องมือ", "รูปถ่ายชั้นเครื่องมือชั้นบน",
-                                         "รูปถ่ายชั้นเครื่องมือชั้นกลาง", "รูปถ่ายชั้นเครื่องมือชั้นล่าง"]
-                    for i in range(4):
-                        up_file = st.file_uploader(tool_photo_labels[i], type=["jpg", "jpeg", "png"],
-                                                   key=f"tech_p_{i}_{st.session_state.uploader_version}")
-                        if up_file is not None:
-                            photo_files.append(up_file)
+                    # ใช้ multi-file uploader เพื่อให้มือถือและแท็บเล็ตเลือกรูปหลายรูปได้ในครั้งเดียวอย่างเสถียร
+                    photo_files = st.file_uploader(
+                        "อัปโหลดรูปถ่ายรวมหน้างาน (เลือกหรือถ่ายให้ครบ 4 รูป)",
+                        type=["jpg", "jpeg", "png"],
+                        accept_multiple_files=True,
+                        key=f"tech_multi_uploader_{st.session_state.uploader_version}"
+                    )
 
-                    st.progress(len(photo_files) / 4, text=f"📸 แนบรูปแล้ว {len(photo_files)}/4 รูป")
+                    num_photos = len(photo_files) if photo_files else 0
+                    st.progress(min(num_photos / 4.0, 1.0), text=f"📸 แนบรูปแล้ว {num_photos}/4 รูป")
+
                     if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
                         item_reports = {}
                         for _, row in tools_all_df.iterrows():
@@ -1396,8 +1397,8 @@ elif st.session_state.role in TECH_ROLES:
                                     error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
                                     break
 
-                        if not error_msg and len(photo_files) < 4:
-                            error_msg = "❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบทั้ง 4 รูป จึงจะสามารถยืนยันผลตรวจได้"
+                        if not error_msg and num_photos < 4:
+                            error_msg = f"❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบ 4 รูป (ปัจจุบันเลือกแล้ว {num_photos} รูป)"
 
                         if error_msg:
                             st.error(error_msg)
@@ -1458,17 +1459,21 @@ elif st.session_state.role in TECH_ROLES:
                 render_pool_list(pool_all_df)
 
                 st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
-                pool_photo_files = []
-                for i in range(4):
-                    up_file = st.file_uploader(f"รูปถ่ายอุปกรณ์ที่ {i+1}", type=["jpg", "jpeg", "png"],
-                                               key=f"tech_pool_p_{i}_{st.session_state.uploader_version}")
-                    if up_file is not None:
-                        pool_photo_files.append(up_file)
+                st.info("💡 บนมือถือ/แท็บเล็ต: สามารถกดเลือกรูปภาพจากแกลเลอรีหรือถ่ายรูปพร้อมกันให้ครบ 4 รูปในช่องด้านล่างนี้ได้เลยครับ")
 
-                st.progress(len(pool_photo_files) / 4, text=f"📸 แนบรูปแล้ว {len(pool_photo_files)}/4 รูป")
+                pool_photo_files = st.file_uploader(
+                    "อัปโหลดรูปถ่ายสระว่ายน้ำรวม 4 รูป",
+                    type=["jpg", "jpeg", "png"],
+                    accept_multiple_files=True,
+                    key=f"tech_pool_multi_{st.session_state.uploader_version}"
+                )
+
+                num_pool_photos = len(pool_photo_files) if pool_photo_files else 0
+                st.progress(min(num_pool_photos / 4.0, 1.0), text=f"📸 แนบรูปแล้ว {num_pool_photos}/4 รูป")
+
                 if st.button("💾 บันทึกจำนวนอุปกรณ์สระว่ายน้ำ", type="primary", use_container_width=True):
-                    if len(pool_photo_files) < 4:
-                        st.error("❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานสระว่ายน้ำให้ครบทั้ง 4 รูป")
+                    if num_pool_photos < 4:
+                        st.error(f"❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานสระว่ายน้ำให้ครบ 4 รูป (ปัจจุบันเลือกแล้ว {num_pool_photos} รูป)")
                     else:
                         with st.spinner("กำลังบันทึกข้อมูล..."):
                             photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in pool_photo_files]
