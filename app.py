@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับปรับปรุง UI ช่าง)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับปรับปรุง UI ช่างล่าสุด)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -37,7 +37,7 @@ DEFAULT_INITIAL_ITEMS = [
     ("ปลั๊กโรลElecton", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
     ("สว่านแบตMakita", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
     ("บันได3ขั้น", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
-    ("เครื่องตรวจเช็กเต้ารับไฟฟ้า (Socket Tester)", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
+    ("เครื่องตรวจเช็กเต้ารับไฟฟ้า", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("โบลเวอร์เป่าลม", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("ประแจขันน๊อตใต้อ่างอเนกประสงค์ Cotora", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
     ("ปืนทะลวงท่ออัดแรงดัน", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 1, "ปกติ", "-", None),
@@ -762,7 +762,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ติ๊กหน้าชื่อเพื่อเลือกสถานะ + ดูรูปต่อจากชื่อ) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ติ๊กทันสมัยแทน 🛠️ + ปุ่มดูรูปอยู่บรรทัดเดียวกันด้านหลัง) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -775,14 +775,15 @@ def render_tool_inspection_list(tools_all_df):
             rid = row['id']
             current_status = row['status']
             
-            # จัดวาง: ช่องติ๊กหน้าชื่อ + ชื่ออุปกรณ์ + ปุ่มดูรูป ให้อยู่บรรทัดเดียวกัน
-            col_chk, col_name_label, col_pop_btn = st.columns([0.6, 4.4, 1])
-            
+            # ย่อชื่อที่ยาวเกินไปให้พอดีบรรทัด
+            display_name = row['name']
+            if "เครื่องตรวจเช็กเต้ารับไฟฟ้า" in display_name:
+                display_name = "เครื่องตรวจเช็กเต้ารับไฟฟ้า"
+
+            col_chk, col_pop = st.columns([4.2, 1.8])
             with col_chk:
-                is_checked = st.checkbox("เลือก", key=f"flag_chk_{rid}", label_visibility="collapsed")
-            with col_name_label:
-                st.markdown(f"**🛠️ #{rid} - {row['name']}** (คงเหลือ: {row['quantity']})")
-            with col_pop_btn:
+                is_checked = st.checkbox(f"#{rid} - {display_name} ({row['quantity']})", key=f"flag_chk_{rid}")
+            with col_pop:
                 img_bytes = get_item_image(rid)
                 if img_bytes:
                     with st.popover("📷 ดูรูป"):
@@ -790,7 +791,7 @@ def render_tool_inspection_list(tools_all_df):
                 else:
                     st.caption("ไม่มีรูป")
 
-            # สถานะอุปกรณ์จะแสดงก็ต่อเมื่อติ๊กเลือกหน้าชื่อแล้วเท่านั้น
+            # สถานะอุปกรณ์จะแสดงก็ต่อเมื่อติ๊กเลือก Checkbox แล้วเท่านั้น
             if is_checked:
                 status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
                 if row['subcategory'] == "เครื่องมือช่าง":
@@ -807,8 +808,7 @@ def render_tool_inspection_list(tools_all_df):
                     f"สถานะ {rid}",
                     status_options,
                     index=def_idx,
-                    key=f"status_sel_{rid}",
-                    label_visibility="collapsed"
+                    key=f"status_sel_{rid}"
                 )
 
                 if selected_status != "ปกติ":
@@ -822,7 +822,7 @@ def render_tool_inspection_list(tools_all_df):
 
             st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--line);'>", unsafe_allow_html=True)
 
-# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (จำนวนย้ายไปอยู่หลังชื่ออุปกรณ์) ---
+# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (คลิกชื่อเพื่อดูรูป + จำนวนต่อท้ายในบรรทัดเดียวกัน) ---
 @fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
@@ -833,19 +833,16 @@ def render_pool_list(pool_all_df):
     with keyed_container("pool_check_list", height=500):
         for _, row in pool_df.iterrows():
             rid = row['id']
-            # จัดวาง: ชื่ออุปกรณ์ + ปุ่มดูรูป + ช่องกรอกจำนวน ให้อยู่บรรทัดเดียวกัน
-            col_item_l, col_item_r, col_qty = st.columns([3.5, 1.5, 1.6])
-            with col_item_l:
-                st.markdown(f"📦 **{row['name']}**")
-            with col_item_r:
+            col_name, col_qty = st.columns([4, 2])
+            with col_name:
                 img_bytes = get_item_image(rid)
                 if img_bytes:
-                    with st.popover("📷 ดูรูป"):
-                        st.image(img_bytes, width=180, caption=row['name'])
+                    with st.popover(f"📦 #{rid} - {row['name']}"):
+                        st.image(img_bytes, width=220, caption=row['name'])
                 else:
-                    st.caption("ไม่มีรูป")
+                    st.markdown(f"📦 #{rid} - {row['name']}")
             with col_qty:
-                st.number_input(f"คงเหลือ: {row['name']}", min_value=0, value=int(row['quantity']),
+                st.number_input(f"คงเหลือ {rid}", min_value=0, value=int(row['quantity']),
                                 key=f"pool_q_{rid}", label_visibility="collapsed")
             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
 
