@@ -761,7 +761,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (รองรับการใช้งานบนมือถือ) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (รองรับการใช้งานและสัมผัสบนมือถือ) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -769,29 +769,29 @@ def render_tool_inspection_list(tools_all_df):
     if tech_search.strip():
         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
 
-    with keyed_container("tech_check_list", height=520):
+    # เอา height ออกเพื่อให้หน้าจอมือถือไม่บล็อกการทัชสกรีน
+    with keyed_container("tech_check_list"):
         for _, row in tools_df.iterrows():
             rid = row['id']
             current_status = row['status']
             is_currently_flagged = current_status != "ปกติ"
 
-            # ปรับปรุงโครงสร้างคอลัมน์ให้เหมาะกับหน้าจอมือถือ
             status_badge = f" ⚠️ ({current_status})" if is_currently_flagged else ""
             
-            # สวิตช์สลับการแจ้งปัญหา (ใช้ st.toggle เพื่อความสะดวกในการแตะบนมือถือ)
+            # ใช้ st.toggle เพื่อให้กดเปิด-ปิดบนมือถือได้ง่าย
             is_flagged = st.toggle(
-                f"🛠️ {row['name']}{status_badge} (คงเหลือ: {row['quantity']})", 
+                f"🛠️ #{rid} {row['name']}{status_badge} (คงเหลือ: {row['quantity']})", 
                 value=is_currently_flagged, 
                 key=f"flag_{rid}"
             )
 
-            # แสดงรายละเอียด/รูปภาพอุปกรณ์
-            with st.expander(f"📷 ดูรูปภาพ / ข้อมูลอุปกรณ์: {row['name']}"):
+            # แสดงรูปขนาดกะทัดรัดเท่าหมวดสระว่ายน้ำ
+            with st.expander(f"📷 ดูรูปภาพประกอบ: {row['name']}"):
                 img_bytes = get_item_image(rid)
                 if img_bytes:
-                    st.image(img_bytes, use_container_width=True, caption=f"รูปภาพ: {row['name']}")
+                    st.image(img_bytes, width=150, caption=f"{row['name']}")
                 else:
-                    st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
+                    st.info("*(ไม่มีรูปภาพประกอบ)*")
 
             # เมื่อเปิดสวิตช์แจ้งปัญหา
             if is_flagged:
