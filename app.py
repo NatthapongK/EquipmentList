@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับอัปเดตสถานะ & ตัดเมนูยืมออกจากการตรวจ)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ซ่อนรูปภาพ เริ่มต้นด้วยความรวดเร็ว)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -797,7 +797,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (ซ่อนรูปภาพเริ่มต้น มีปุ่มแสดงรูปด้านใน) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -805,7 +805,7 @@ def render_tool_inspection_list(tools_all_df):
     if tech_search.strip():
         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
 
-    st.caption("💡 คลิกที่ชื่ออุปกรณ์เพื่อดูรายละเอียดหรือตรวจสอบสถานะ · สามารถเลือกสถานะความผิดปกติเพื่อบันทึกต่อเนื่องได้ทันที")
+    st.caption("💡 คลิกที่ชื่ออุปกรณ์เพื่อแก้ไขสถานะความผิดปกติได้อย่างรวดเร็ว · สามารถกดปุ่มดูรูปภาพประกอบได้ภายใน")
 
     with keyed_container("tech_check_list", height=520):
         for _, row in tools_df.iterrows():
@@ -813,7 +813,6 @@ def render_tool_inspection_list(tools_all_df):
             current_status = row['status']
             borrow_qty = borrowed_item_map.get(rid, 0)
 
-            # 5 สีสถานะ: 🟢 ปกติ | 🟡 กำลังใช้งาน | 🔵 ยืม | 🟠 หมด | 🔴 ชำรุด
             if borrow_qty > 0:
                 badge_color = "🔵"
                 status_text = f"[ยืม ({borrow_qty} ชิ้น)]"
@@ -830,48 +829,44 @@ def render_tool_inspection_list(tools_all_df):
                 badge_color = "🔴"
                 status_text = f"[{current_status}]"
 
+            # ยุบรูปภาพไว้ข้างใน (ซ่อนไว้ก่อน) เพื่อความรวดเร็วในการเลื่อนดูและเลือกสถานะ
             with st.expander(f"{badge_color} {row['name']} (คงเหลือ: {row['quantity']})  {status_text}"):
-                col_img, col_form = st.columns([1, 2.2])
-                with col_img:
-                    img_bytes = get_item_image(rid)
-                    if img_bytes:
+                base_st = current_status.split(" (")[0] if "(" in current_status else current_status
+                if borrow_qty > 0:
+                    base_st = "ยืม"
+
+                status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
+                if row['subcategory'] == "เครื่องมือช่าง" and "อุปกรณ์หมด" in status_options:
+                    status_options.remove("อุปกรณ์หมด")
+
+                def_idx = status_options.index(base_st) if base_st in status_options else 0
+
+                selected_status = st.selectbox(
+                    "สถานะการตรวจสอบ *",
+                    status_options,
+                    index=def_idx,
+                    key=f"status_sel_{rid}"
+                )
+
+                if selected_status != "ปกติ":
+                    if selected_status == "กำลังใช้งาน":
+                        detail_def = current_status.split("(")[1].replace(")", "") if "กำลังใช้งาน (" in current_status else ""
+                        st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_def, key=f"issue_detail_{rid}")
+                        if int(row['orig_quantity']) > 1:
+                            st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
+                    elif selected_status in ["ชำรุด", "สูญหาย"]:
+                        if int(row['orig_quantity']) > 1:
+                            st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
+
+                # ปุ่มกดดูรูปภาพแยกออกมาด้านใน ไม่โหลดค้างไว้ให้เกะกะ
+                img_bytes = get_item_image(rid)
+                if img_bytes:
+                    with st.popover("📷 ดูรูปภาพอุปกรณ์"):
                         st.image(img_bytes, caption=row['name'], use_container_width=True)
-                    else:
-                        st.info("ไม่มีรูปภาพ")
-                with col_form:
-                    # กำหนดค่าเริ่มต้นใน Selectbox ตามสถานะจริงของอุปกรณ์
-                    base_st = current_status.split(" (")[0] if "(" in current_status else current_status
-                    if borrow_qty > 0:
-                        base_st = "ยืม"
+                else:
+                    st.caption("*(ไม่มีรูปภาพประกอบ)*")
 
-                    # ตัดตัวเลือก "ยืม" ออกจากการตรวจสอบหน้างานทั่วไป
-                    status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
-                    if row['subcategory'] == "เครื่องมือช่าง" and "อุปกรณ์หมด" in status_options:
-                        status_options.remove("อุปกรณ์หมด")
-
-                    if base_st in status_options:
-                        def_idx = status_options.index(base_st)
-                    else:
-                        def_idx = 0  # ถ้าสถานะเดิมถูกยืมอยู่หรือนอกเหนือจากนี้ ให้เริ่มต้นที่ "ปกติ"
-
-                    selected_status = st.selectbox(
-                        "สถานะการตรวจสอบ *",
-                        status_options,
-                        index=def_idx,
-                        key=f"status_sel_{rid}"
-                    )
-
-                    if selected_status != "ปกติ":
-                        if selected_status == "กำลังใช้งาน":
-                            detail_def = current_status.split("(")[1].replace(")", "") if "กำลังใช้งาน (" in current_status else ""
-                            st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_def, key=f"issue_detail_{rid}")
-                            if int(row['orig_quantity']) > 1:
-                                st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
-                        elif selected_status in ["ชำรุด", "สูญหาย"]:
-                            if int(row['orig_quantity']) > 1:
-                                st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
-
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ (ซ่อนรูปภาพเริ่มต้น มีปุ่มแสดงรูปข้างใน) ---
 @fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
@@ -879,26 +874,25 @@ def render_pool_list(pool_all_df):
     if tech_pool_search.strip():
         pool_df = pool_df[pool_df['name'].str.contains(tech_pool_search.strip(), case=False, na=False)]
 
-    st.caption("💡 ตรวจสอบจำนวนคงเหลือปัจจุบันของเคมีภัณฑ์และอุปกรณ์สระว่ายน้ำ สามารถกดดูรูปภาพและปรับแก้ตัวเลขได้ทันที")
+    st.caption("💡 ตรวจสอบจำนวนคงเหลือปัจจุบันของเคมีภัณฑ์และอุปกรณ์สระว่ายน้ำ สามารถกดปรับแก้ตัวเลขและดูรูปภาพได้รวดเร็ว")
 
     with keyed_container("pool_check_list", height=520):
         for _, row in pool_df.iterrows():
             rid = row['id']
             with st.expander(f"🏊 {row['name']} (ปัจจุบัน: {row['quantity']} ชิ้น)"):
-                col_img, col_num = st.columns([1, 2])
-                with col_img:
-                    img_bytes = get_item_image(rid)
-                    if img_bytes:
+                st.number_input(
+                    "ปรับจำนวนคงเหลือจริง *",
+                    min_value=0,
+                    value=int(row['quantity']),
+                    key=f"pool_q_{rid}"
+                )
+
+                img_bytes = get_item_image(rid)
+                if img_bytes:
+                    with st.popover("📷 ดูรูปภาพอุปกรณ์"):
                         st.image(img_bytes, caption=row['name'], use_container_width=True)
-                    else:
-                        st.info("ไม่มีรูปภาพ")
-                with col_num:
-                    st.number_input(
-                        "ปรับจำนวนคงเหลือจริง *",
-                        min_value=0,
-                        value=int(row['quantity']),
-                        key=f"pool_q_{rid}"
-                    )
+                else:
+                    st.caption("*(ไม่มีรูปภาพประกอบ)*")
 
 def clear_inspection_widget_state():
     prefixes = ("issue_type_", "issue_detail_", "issue_qty_", "pool_q_", "status_sel_")
