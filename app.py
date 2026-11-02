@@ -144,7 +144,6 @@ def init_mongo():
     client = pymongo.MongoClient(uri, maxPoolSize=20, serverSelectionTimeoutMS=8000)
     database = client["inventory_pro"]
 
-    # Index ช่วยให้ query ตาม id / status เร็วขึ้น
     database.items.create_index("id", unique=True)
     database.transactions.create_index("id")
     database.transactions.create_index([("status", 1), ("id", -1)])
@@ -158,7 +157,6 @@ def init_mongo():
     database.sessions.create_index("token", unique=True)
     database.sessions.create_index("created", expireAfterSeconds=60 * 60 * 24 * 30)  # session หมดอายุ 30 วัน
 
-    # Seed ข้อมูลเริ่มต้น (ครั้งแรกเท่านั้น)
     if database.items.count_documents({}, limit=1) == 0:
         database.items.insert_many(build_default_docs())
         database.counters.update_one({"_id": "items_id"}, {"$set": {"seq": len(DEFAULT_INITIAL_ITEMS)}}, upsert=True)
@@ -168,7 +166,6 @@ def init_mongo():
 
 db = init_mongo()
 
-# Helper สำหรับ Auto-increment ID
 def get_next_sequence(name):
     counter = db.counters.find_one_and_update(
         {"_id": name}, {"$inc": {"seq": 1}}, upsert=True, return_document=pymongo.ReturnDocument.AFTER)
@@ -182,8 +179,8 @@ def compress_image_to_base64(uploaded_file, max_size=(800, 800), quality=80):
     try:
         uploaded_file.seek(0)
         img = Image.open(uploaded_file)
-        img.draft("RGB", (max_size[0] * 2, max_size[1] * 2))  # JPEG: decode แบบย่อขนาดตั้งแต่ต้น เร็วขึ้นมาก
-        img = ImageOps.exif_transpose(img)                    # แก้รูปหมุนจากมือถือ
+        img.draft("RGB", (max_size[0] * 2, max_size[1] * 2))
+        img = ImageOps.exif_transpose(img)
         if img.mode != "RGB":
             img = img.convert("RGB")
         img.thumbnail(max_size, Image.Resampling.BILINEAR)
@@ -195,7 +192,6 @@ def compress_image_to_base64(uploaded_file, max_size=(800, 800), quality=80):
         return base64.b64encode(uploaded_file.read()).decode("utf-8")
 
 def b64_to_bytes(img_base64):
-    """แปลง base64 -> bytes ให้ st.image ใช้ได้โดยตรง"""
     if not img_base64:
         return None
     try:
@@ -203,7 +199,6 @@ def b64_to_bytes(img_base64):
     except Exception:
         return None
 
-# เก็บรูปอุปกรณ์ทั้งหมดไว้ในหน่วยความจำ (query ครั้งเดียว) ไม่ดึงรูปร่วมกับ items_df
 @st.cache_resource(ttl=600, show_spinner=False)
 def get_image_store():
     store = {}
@@ -216,7 +211,7 @@ def get_image_store():
 def get_item_image(item_id):
     return get_image_store().get(int(item_id))
 
-# --- CACHED DATA FUNCTIONS (ไม่ดึงรูปมาด้วย -> เบามาก) ---
+# --- CACHED DATA FUNCTIONS ---
 @st.cache_data(ttl=30, show_spinner=False)
 def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0, "image": 0})))
@@ -241,23 +236,69 @@ def set_settings_val(key, val):
 
 @st.cache_data(ttl=15, show_spinner=False)
 def get_active_borrows():
-    """รายการที่กำลังถูกยืมอยู่ (ไม่ดึงรูป)"""
     return list(db.transactions.find({"status": "กำลังยืม"}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1))
 
 @st.cache_data(ttl=15, show_spinner=False)
 def get_pending_reqs():
-    """คำขอเบิกของที่รอ admin อนุมัติ"""
     return list(db.requisition_requests.find({"status": "รออนุมัติ"}, {"_id": 0}).sort("id", -1))
 
 @st.cache_data(ttl=15, show_spinner=False)
 def get_inspection_count(category, today_str):
     return db.inspections.count_documents({"category": category, "inspection_date": {"$regex": f"^{today_str}"}})
 
+# [NEW] แคชข้อมูลที่เคย query ใหม่ทุก rerun (ทุกแท็บถูกรันพร้อมกันเสมอ)
+@st.cache_data(ttl=30, show_spinner=False)
+def get_tx_history(limit=300):
+    return list(db.transactions.find({}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1).limit(limit))
+
+@st.cache_data(ttl=600, max_entries=300, show_spinner=False)
+def get_tx_image(tx_id):
+    d = db.transactions.find_one({"id": tx_id}, {"_id": 0, "borrower_image": 1})
+    return b64_to_bytes(d.get("borrower_image")) if d else None
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_inspections_list(limit=1000):
+    return list(db.inspections.find({}, {"_id": 0, "photos": 0}).sort("id", -1).limit(limit))
+
+@st.cache_data(ttl=600, max_entries=100, show_spinner=False)
+def get_inspection_photos(insp_id):
+    doc = db.inspections.find_one({"id": insp_id}, {"_id": 0, "photos": 1})
+    raw = doc.get("photos") if doc else None
+    if not raw or not str(raw).strip():
+        return []
+    return [b for b in (b64_to_bytes(p) for p in str(raw).split("|||")) if b]
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_req_history(limit=300):
+    return list(db.requisition_requests.find({"status": {"$ne": "รออนุมัติ"}}, {"_id": 0}).sort("id", -1).limit(limit))
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_my_reqs(username):
+    return list(db.requisition_requests.find({"tech_name": username}, {"_id": 0}).sort("id", -1).limit(200))
+
+def clear_tx_cache():
+    get_active_borrows.clear()
+    get_tx_history.clear()
+
+def clear_req_cache():
+    get_pending_reqs.clear()
+    get_req_history.clear()
+    get_my_reqs.clear()
+
 def refresh_items(images=False):
-    """ล้างแคชเฉพาะที่เกี่ยวข้อง (แทน st.cache_data.clear() ที่ล้างหมด)"""
     get_items_df.clear()
     if images:
         get_image_store.clear()
+
+# [NEW] แจ้งผลสำเร็จแบบ toast ที่ยังแสดงหลัง rerun
+def done(msg, icon="✅"):
+    st.session_state["_flash"] = (msg, icon)
+    st.rerun()
+
+# [NEW] ปิดหน้าต่างแก้ไขด่วน + รีเซ็ตการเลือกแถว (กันหน้าต่างเด้งกลับมา)
+def close_quick_edit():
+    st.session_state.pop("quick_edit_id", None)
+    st.session_state.items_tbl_ver = st.session_state.get("items_tbl_ver", 0) + 1
 
 def nz(v):
     return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
@@ -292,10 +333,9 @@ def keyed_container(key, **kwargs):
     except TypeError:
         return st.container(**kwargs)
 
-# st.fragment: rerun เฉพาะส่วน (รองรับชื่อเก่า experimental_fragment)
 fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None) or (lambda f: f)
 
-# --- SESSION TOKEN (แทนการส่ง role ผ่าน URL ที่ใครก็แก้ได้) ---
+# --- SESSION TOKEN ---
 def create_session(username, role, original_role):
     token = secrets.token_urlsafe(24)
     db.sessions.insert_one({
@@ -377,7 +417,6 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
 
-/* แบนเนอร์แจ้งเตือนคำขอเบิกของ (หน้าแรกของแอดมิน) */
 .req-banner{display:flex; align-items:center; gap:.9rem; padding:.9rem 1.1rem; margin-bottom:1rem;
   border-radius:12px; border:2px solid var(--warn); background:linear-gradient(90deg,#78350F,#92400E);
   animation:reqpulse 1.8s ease-in-out infinite;}
@@ -386,7 +425,6 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .req-banner .s{font-size:.85rem; color:#FDE68A; margin-top:.1rem;}
 @keyframes reqpulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.55);} 50%{box-shadow:0 0 0 8px rgba(245,158,11,0);}}
 
-/* รายการตรวจเช็คของช่าง: บังคับให้ "ชื่อ + ช่องควบคุม" อยู่แถวเดียวกันแม้บนมือถือ */
 .st-key-tech_check_list [data-testid="stHorizontalBlock"],
 .st-key-pool_check_list [data-testid="stHorizontalBlock"]{
   flex-direction:row !important; flex-wrap:nowrap !important; align-items:flex-start !important; gap:.4rem !important;
@@ -420,7 +458,6 @@ if "logged_in" not in st.session_state:
 if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0
 
-# กู้คืน session จาก token ใน URL (ตรวจกับฐานข้อมูล ไม่เชื่อค่า role จาก URL)
 if not st.session_state.logged_in and "token" in st.query_params:
     sess = db.sessions.find_one({"token": st.query_params["token"]})
     if sess:
@@ -471,6 +508,11 @@ if not st.session_state.logged_in:
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
+
+# [NEW] แสดง toast ที่ค้างไว้จากการบันทึกครั้งก่อน
+_flash = st.session_state.pop("_flash", None)
+if _flash:
+    st.toast(_flash[0], icon=_flash[1])
 
 # --- SIDEBAR ---
 if st.session_state.role in TECH_ROLES:
@@ -533,13 +575,11 @@ else:
 low_stock_limit = int(get_settings_val('low_stock_threshold', '1'))
 items_df = get_items_df()
 
-# lookup dict แทนการ query ทีละรายการในลูป
 if not items_df.empty:
     item_name_map = dict(zip(items_df['id'], items_df['name']))
 else:
     item_name_map = {}
 
-# หน้าช่างแสดงเฉพาะ ชำรุด / กำลังใช้งาน / หมด (รายการยืมแสดงแยกอีกกล่อง)
 is_tech_view = st.session_state.role in TECH_ROLES
 abn_statuses = ['ชำรุด', 'อุปกรณ์หมด'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'ยืม', 'อุปกรณ์หมด']
 abn_label = "ชำรุด / กำลังใช้งาน / หมด" if is_tech_view else "ผิดปกติ / กำลังใช้งาน / หมด / ยืม"
@@ -578,7 +618,6 @@ def _pending_req_banner():
 
 if st.session_state.role == ROLE_ADMIN:
     try:
-        # รีเฟรชแบนเนอร์อัตโนมัติทุก 30 วินาที ไม่ต้องกดโหลดใหม่
         st.fragment(run_every="30s")(_pending_req_banner)()
     except TypeError:
         _pending_req_banner()
@@ -609,7 +648,6 @@ with col_a2:
     else:
         st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 
-# รายการที่กำลังถูกยืม (แสดงทุกกรณี แม้อุปกรณ์ยังเหลือในคลัง)
 if borrowed_cnt:
     with st.expander(f"📤 อุปกรณ์ที่กำลังถูกยืม ({borrowed_cnt} รายการ)"):
         st.dataframe(pd.DataFrame([{
@@ -620,7 +658,7 @@ if borrowed_cnt:
             "วันที่ยืม": t.get("borrow_date"),
         } for t in active_borrows]), hide_index=True, use_container_width=True)
 else:
-    st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)  # ไม่มีรายการยืม: เว้นระยะแทนข้อความ
+    st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
 st.markdown("")
 
 # --- SHARED BORROW / RETURN COMPONENT ---
@@ -643,7 +681,6 @@ def render_borrow_return_system():
 
                 if st.form_submit_button("ยืนยันการยืมอุปกรณ์"):
                     selected_id = item_dict[sel_item_label]
-                    # อ่านจำนวนล่าสุดจาก DB ตอนกดยืนยัน (กันข้อมูลเก่า)
                     cur = db.items.find_one({"id": selected_id}, {"_id": 0, "quantity": 1, "status": 1, "name": 1})
                     if not borrower_name.strip():
                         st.error("❌ กรุณากรอกชื่อผู้ยืมให้เรียบร้อย")
@@ -662,15 +699,14 @@ def render_borrow_return_system():
                         new_status = 'ยืม' if new_qty == 0 else cur["status"]
                         db.items.update_one({"id": selected_id}, {"$set": {"quantity": new_qty, "status": new_status}})
                         refresh_items()
-                        get_active_borrows.clear()
-                        st.success(f"บันทึกการยืม {cur['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
-                        st.rerun()
+                        clear_tx_cache()
+                        done(f"บันทึกการยืม {cur['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
         else:
             st.info("ไม่มีอุปกรณ์ที่มีจำนวนคงเหลือให้ยืมในขณะนี้")
 
     with sub_return:
         st.markdown("#### รายการที่กำลังถูกยืมอยู่")
-        active_txs = list(db.transactions.find({"status": "กำลังยืม"}, {"_id": 0, "return_image": 0}).sort("id", -1))
+        active_txs = get_active_borrows()   # ใช้แคช ไม่ดึงรูปทั้งหมดทุก rerun
 
         if active_txs:
             for t in active_txs:
@@ -679,7 +715,7 @@ def render_borrow_return_system():
                 with st.expander(f"📦 อุปกรณ์: {item_name} (จำนวนยืม: {t.get('quantity', 1)} ชิ้น) | ผู้ยืม: {t.get('borrower_name')}{giver_str}"):
                     col_r1, col_r2 = st.columns([1, 2])
                     with col_r1:
-                        p_img = b64_to_bytes(t.get('borrower_image'))
+                        p_img = get_tx_image(t['id'])   # ดึงรูปทีละรายการ + แคช
                         if p_img:
                             st.image(p_img, caption=f"ผู้ยืม: {t.get('borrower_name')}", width=200)
                         else:
@@ -703,18 +739,16 @@ def render_borrow_return_system():
                                     {"$set": {"return_date": get_now_str("%Y-%m-%d %H:%M"), "status": "คืนแล้ว",
                                               "receiver_name": st.session_state.username, "return_image": r_img_b64}})
                                 tx_qty = int(t.get('quantity', 1))
-                                # $inc แบบ atomic ไม่ต้องอ่านค่าเดิมก่อน
                                 db.items.update_one({"id": t['item_id']}, {"$inc": {"quantity": tx_qty}, "$set": {"status": "ปกติ"}})
                                 refresh_items()
-                                get_active_borrows.clear()
-                                st.success(f"รับคืน {item_name} จำนวน {tx_qty} ชิ้น เรียบร้อยแล้ว")
-                                st.rerun()
+                                clear_tx_cache()
+                                done(f"รับคืน {item_name} จำนวน {tx_qty} ชิ้น เรียบร้อยแล้ว")
         else:
             st.info("ไม่มีรายการอุปกรณ์ที่กำลังถูกยืมในขณะนี้")
 
     with sub_history:
         st.markdown("#### ประวัติการยืม-คืนทั้งหมด (แสดง 300 รายการล่าสุด)")
-        all_txs = list(db.transactions.find({}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1).limit(300))
+        all_txs = get_tx_history()
         tx_history = pd.DataFrame([{
             "รหัส": t["id"],
             "ชื่ออุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
@@ -728,7 +762,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (fragment: ติ๊ก/เลือกแล้ว rerun เฉพาะส่วนนี้) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (fragment) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -757,7 +791,7 @@ def render_tool_inspection_list(tools_all_df):
             if is_flagged:
                 options_list = ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"]
                 if row['subcategory'] == "เครื่องมือช่าง":
-                    options_list.remove("อุปกรณ์หมด")   # เครื่องมือช่างไม่มีตัวเลือก "อุปกรณ์หมด"
+                    options_list.remove("อุปกรณ์หมด")
                 default_idx = 0
                 detail_default = ""
                 if current_status.startswith("กำลังใช้งาน"):
@@ -775,7 +809,7 @@ def render_tool_inspection_list(tools_all_df):
                     st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{rid}")
                     if item_total_q > 1:
                         st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
-                elif issue_type in ["ชำรุด", "สูญหาย"]:   # "อุปกรณ์หมด" ไม่ต้องเลือกจำนวน (ตัดเป็น 0 ทั้งหมด)
+                elif issue_type in ["ชำรุด", "สูญหาย"]:
                     if item_total_q > 1:
                         st.number_input(f"จำนวนชิ้นที่{issue_type} *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
@@ -799,13 +833,11 @@ def render_pool_list(pool_all_df):
                     else:
                         st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
             with col_qty:
-                # ช่องปรับจำนวนต่อท้ายชื่อ (ค่าเริ่มต้น = จำนวนคงเหลือปัจจุบัน)
                 st.number_input(f"จำนวนคงเหลือ: {row['name']}", min_value=0, value=int(row['quantity']),
                                 key=f"pool_q_{row['id']}", label_visibility="collapsed")
             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
 
 def clear_inspection_widget_state():
-    """ล้างค่า widget ของหน้าตรวจเช็คหลังบันทึก เพื่อให้ค่าเริ่มต้นอิงจาก DB ล่าสุด"""
     prefixes = ("flag_", "issue_type_", "issue_detail_", "issue_qty_", "pool_q_")
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and k.startswith(prefixes):
@@ -850,6 +882,7 @@ if st.session_state.role == ROLE_ADMIN:
             table_event = st.dataframe(
                 show_df, use_container_width=True, hide_index=True, height=350,
                 on_select="rerun", selection_mode="single-row",
+                key=f"items_tbl_{st.session_state.get('items_tbl_ver', 0)}",
                 column_config={
                     "id": st.column_config.NumberColumn("รหัส", width="small"),
                     "name": st.column_config.TextColumn("ชื่ออุปกรณ์", width="large"),
@@ -862,7 +895,7 @@ if st.session_state.role == ROLE_ADMIN:
             )
 
             selected_rows = table_event.get("selection", {}).get("rows", [])
-            if selected_rows:
+            if selected_rows and selected_rows[0] < len(filtered_df):
                 st.session_state.quick_edit_id = int(filtered_df.iloc[selected_rows[0]]['id'])
 
             if st.session_state.get("quick_edit_id"):
@@ -898,21 +931,19 @@ if st.session_state.role == ROLE_ADMIN:
                                 upd = {"name": qe_name, "category": qe_category, "subcategory": qe_subcat,
                                        "quantity": qe_quantity, "status": qe_status,
                                        "alert_zero": 1 if qe_alert_zero else 0, "note": qe_note}
-                                if qe_file is not None:   # อัปเดตรูปเฉพาะตอนมีการเปลี่ยนจริง
+                                if qe_file is not None:
                                     upd["image"] = compress_image_to_base64(qe_file)
                                 db.items.update_one({"id": qe_id}, {"$set": upd})
                                 refresh_items(images=qe_file is not None)
-                                st.success("อัปเดตข้อมูลสำเร็จ!")
-                                del st.session_state.quick_edit_id
-                                st.rerun()
+                                close_quick_edit()
+                                done("อัปเดตข้อมูลสำเร็จ!")
                             if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
                                 db.items.delete_one({"id": qe_id})
                                 refresh_items(images=True)
-                                st.success("ลบเรียบร้อยแล้ว!")
-                                del st.session_state.quick_edit_id
-                                st.rerun()
+                                close_quick_edit()
+                                done("ลบเรียบร้อยแล้ว!")
                             if col_qe3.form_submit_button("❌ ปิดหน้าต่าง"):
-                                del st.session_state.quick_edit_id
+                                close_quick_edit()
                                 st.rerun()
 
         with tab_add_edit:
@@ -942,8 +973,7 @@ if st.session_state.role == ROLE_ADMIN:
                                 "note": note, "image": compress_image_to_base64(uploaded_file)
                             })
                             refresh_items(images=uploaded_file is not None)
-                            st.success("เพิ่มอุปกรณ์สำเร็จ!")
-                            st.rerun()
+                            done("เพิ่มอุปกรณ์สำเร็จ!")
                         else:
                             st.error("กรุณากรอกชื่ออุปกรณ์")
 
@@ -985,13 +1015,11 @@ if st.session_state.role == ROLE_ADMIN:
                                     upd["image"] = compress_image_to_base64(e_file)
                                 db.items.update_one({"id": item_id_int}, {"$set": upd})
                                 refresh_items(images=e_file is not None)
-                                st.success("อัปเดตข้อมูลสำเร็จ!")
-                                st.rerun()
+                                done("อัปเดตข้อมูลสำเร็จ!")
                             if col_e2.form_submit_button("ลบอุปกรณ์นี้", type="secondary"):
                                 db.items.delete_one({"id": item_id_int})
                                 refresh_items(images=True)
-                                st.success("ลบเรียบร้อยแล้ว!")
-                                st.rerun()
+                                done("ลบเรียบร้อยแล้ว!")
 
             with sub_bulk:
                 st.markdown("### 📁 อัปโหลดรูปภาพอุปกรณ์แบบกลุ่ม (ตามชื่อไฟล์รหัสอุปกรณ์)")
@@ -1010,10 +1038,9 @@ if st.session_state.role == ROLE_ADMIN:
                                     ops.append(pymongo.operations.UpdateOne(
                                         {"id": int(pure_name)}, {"$set": {"image": compress_image_to_base64(img_f)}}))
                             if ops:
-                                db.items.bulk_write(ops, ordered=False)   # เขียนทีเดียวทั้งหมด
+                                db.items.bulk_write(ops, ordered=False)
                         refresh_items(images=True)
-                        st.success(f"อัปเดตรูปภาพตามชื่อไฟล์สำเร็จทั้งหมด {len(ops)} รายการ!")
-                        st.rerun()
+                        done(f"อัปเดตรูปภาพตามชื่อไฟล์สำเร็จทั้งหมด {len(ops)} รายการ!")
 
         with tab_excel_import:
             st.markdown("### ⚡ โหลดชุดข้อมูลตั้งต้นทั้งหมด (ลำดับใหม่)")
@@ -1023,14 +1050,12 @@ if st.session_state.role == ROLE_ADMIN:
                 db.items.insert_many(build_default_docs())
                 db.counters.update_one({"_id": "items_id"}, {"$set": {"seq": len(DEFAULT_INITIAL_ITEMS)}}, upsert=True)
                 refresh_items(images=True)
-                st.success("นำเข้าอุปกรณ์และลำดับใหม่สำเร็จ!")
-                st.rerun()
+                done("นำเข้าอุปกรณ์และลำดับใหม่สำเร็จ!")
 
     with admin_menu[1]:
         st.subheader("📊 รายการตรวจเช็คสภาพอุปกรณ์")
         report_type = st.radio("เลือกมุมมองรายงาน", ["รายวัน (Daily)", "รายเดือน (Monthly)", "รายปี (Yearly)", "ประวัติทั้งหมด"], horizontal=True)
-        # ไม่ดึงฟิลด์ photos มาในตาราง (หนักมาก) และจำกัดจำนวน
-        inspections_df = pd.DataFrame(list(db.inspections.find({}, {"_id": 0, "photos": 0}).sort("id", -1).limit(1000)))
+        inspections_df = pd.DataFrame(get_inspections_list())
 
         if not inspections_df.empty:
             inspections_df['inspection_date'] = pd.to_datetime(inspections_df['inspection_date'])
@@ -1068,16 +1093,12 @@ if st.session_state.role == ROLE_ADMIN:
                 with st.expander(f"📌 {date_str_show} | ผู้ตรวจ: {row['tech_name']} | หมวด: {row['category']} (รอบที่ {row['session_num']})"):
                     st.write(f"📝 **รายละเอียดการตรวจ:** {row['details']}")
                     if st.checkbox("🖼️ โหลดรูปถ่าย", key=f"load_photos_{row['id']}"):
-                        doc = db.inspections.find_one({"id": int(row['id'])}, {"_id": 0, "photos": 1})
-                        photos_raw = doc.get("photos") if doc else None
-                        if photos_raw and str(photos_raw).strip():
-                            photo_list = str(photos_raw).split("|||")
-                            st.write(f"จำนวนรูปถ่ายทั้งหมด: **{len(photo_list)} รูป**")
-                            cols_p = st.columns(min(len(photo_list), 4))
-                            for idx, p_b64 in enumerate(photo_list):
-                                p_img = b64_to_bytes(p_b64)
-                                if p_img:
-                                    cols_p[idx % 4].image(p_img, caption=f"รูปที่ {idx + 1}", use_container_width=True)
+                        photo_imgs = get_inspection_photos(int(row['id']))
+                        if photo_imgs:
+                            st.write(f"จำนวนรูปถ่ายทั้งหมด: **{len(photo_imgs)} รูป**")
+                            cols_p = st.columns(min(len(photo_imgs), 4))
+                            for idx, p_img in enumerate(photo_imgs):
+                                cols_p[idx % 4].image(p_img, caption=f"รูปที่ {idx + 1}", use_container_width=True)
                         else:
                             st.info("*(การตรวจเช็ครอบนี้ไม่ได้อัปโหลดรูปถ่ายรวม)*")
         else:
@@ -1088,7 +1109,7 @@ if st.session_state.role == ROLE_ADMIN:
         sub_req_pending, sub_req_history = st.tabs(["📥 คำขอที่รออนุมัติ", "📜 ประวัติการอนุมัติคำขอ"])
 
         with sub_req_pending:
-            pending_reqs = list(db.requisition_requests.find({"status": "รออนุมัติ"}, {"_id": 0}).sort("id", -1))
+            pending_reqs = get_pending_reqs()
             current_qty_map = dict(zip(items_df['id'], items_df['quantity'])) if not items_df.empty else {}
 
             if pending_reqs:
@@ -1103,25 +1124,27 @@ if st.session_state.role == ROLE_ADMIN:
 
                         col_app1, col_app2 = st.columns(2)
                         if col_app1.button("✅ อนุมัติ (เพิ่มจำนวนเข้าคลัง)", key=f"approve_{req['id']}"):
-                            db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
-                            db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}})
+                            # กันกดซ้ำ: อัปเดตเฉพาะคำขอที่ยังรออนุมัติอยู่จริง
+                            res = db.requisition_requests.update_one(
+                                {"id": req['id'], "status": "รออนุมัติ"},
+                                {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}})
+                            if res.modified_count:
+                                db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
                             refresh_items()
-                            get_pending_reqs.clear()
-                            st.success(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
-                            st.rerun()
+                            clear_req_cache()
+                            done(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
 
                         if col_app2.button("❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
-                            db.requisition_requests.update_one({"id": req['id']}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": get_now_str()}})
-                            get_pending_reqs.clear()
-                            st.warning(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว")
-                            st.rerun()
+                            db.requisition_requests.update_one({"id": req['id'], "status": "รออนุมัติ"}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": get_now_str()}})
+                            clear_req_cache()
+                            done(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว", icon="⚠️")
                         st.markdown("---")
             else:
                 st.info("ไม่มีคำขอเพิ่มอุปกรณ์ที่รอการอนุมัติในขณะนี้")
 
         with sub_req_history:
             st.markdown("#### 📜 ประวัติการอนุมัติคำขอเพิ่มอุปกรณ์")
-            req_history_list = list(db.requisition_requests.find({"status": {"$ne": "รออนุมัติ"}}, {"_id": 0}).sort("id", -1).limit(300))
+            req_history_list = get_req_history()
             req_history_df = pd.DataFrame([{
                 "รหัส": r["id"], "ผู้ขอ": r.get("tech_name"),
                 "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
@@ -1145,8 +1168,7 @@ if st.session_state.role == ROLE_ADMIN:
             new_threshold = st.number_input("แจ้งเตือนเมื่อจำนวนน้อยกว่าหรือเท่ากับ (ชิ้น)", min_value=0, value=low_stock_limit)
             if st.form_submit_button("บันทึกค่าเกณฑ์การแจ้งเตือน"):
                 set_settings_val('low_stock_threshold', new_threshold)
-                st.success("บันทึกค่าการแจ้งเตือนสำเร็จ!")
-                st.rerun()
+                done("บันทึกค่าการแจ้งเตือนสำเร็จ!")
 
         st.markdown("---")
         st.markdown("#### 🔄 ตั้งค่าและเพิ่มโควต้าการตรวจเช็คประจำวัน (นับรวมทุกคน)")
@@ -1162,8 +1184,7 @@ if st.session_state.role == ROLE_ADMIN:
             if st.form_submit_button("บันทึกการตั้งค่าโควต้า"):
                 set_settings_val('global_daily_quota', new_base_quota)
                 set_settings_val(f"extra_quota_{date_str}", add_more_quota)
-                st.success("บันทึกการตั้งค่าโควต้าเรียบร้อยแล้ว!")
-                st.rerun()
+                done("บันทึกการตั้งค่าโควต้าเรียบร้อยแล้ว!")
 
         st.markdown("---")
         st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / นำเข้าจากไฟล์ .txt / ลบ)")
@@ -1185,8 +1206,7 @@ if st.session_state.role == ROLE_ADMIN:
                             t_id = get_next_sequence("tech_users_id")
                             db.tech_users.insert_one({"id": t_id, "username": new_t_user, "password": new_t_pass})
                             get_tech_users_df.clear()
-                            st.success(f"สร้างบัญชีช่าง '{new_t_user}' สำเร็จ!")
-                            st.rerun()
+                            done(f"สร้างบัญชีช่าง '{new_t_user}' สำเร็จ!")
                         else:
                             st.error("Username นี้มีอยู่ในระบบแล้ว")
                     else:
@@ -1207,16 +1227,14 @@ if st.session_state.role == ROLE_ADMIN:
                         if col_tu1.form_submit_button("บันทึกการแก้ไข"):
                             db.tech_users.update_one({"id": t_id_int}, {"$set": {"username": edit_u, "password": edit_p}})
                             get_tech_users_df.clear()
-                            st.success("อัปเดตบัญชีช่างสำเร็จ!")
-                            st.rerun()
+                            done("อัปเดตบัญชีช่างสำเร็จ!")
                         if col_tu2.form_submit_button("ลบบัญชีนี้"):
                             if db.tech_users.count_documents({}) <= 1:
                                 st.error("ต้องเหลือบัญชีช่างไว้อย่างน้อย 1 บัญชี")
                             else:
                                 db.tech_users.delete_one({"id": t_id_int})
                                 get_tech_users_df.clear()
-                                st.success("ลบบัญชีช่างเรียบร้อยแล้ว!")
-                                st.rerun()
+                                done("ลบบัญชีช่างเรียบร้อยแล้ว!")
 
         with col_t2:
             st.markdown("**📁 นำเข้ารายชื่อช่างจากไฟล์ .txt**")
@@ -1244,8 +1262,7 @@ if st.session_state.role == ROLE_ADMIN:
                                 existing_users.add(u)
                                 success_count += 1
                         get_tech_users_df.clear()
-                        st.success(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ/มีอยู่แล้ว {dup_count} บัญชี)")
-                        st.rerun()
+                        done(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ/มีอยู่แล้ว {dup_count} บัญชี)")
 
 elif st.session_state.role in TECH_ROLES:
     if st.session_state.role == ROLE_TECH_SP:
@@ -1291,9 +1308,8 @@ elif st.session_state.role in TECH_ROLES:
                             "quantity": req_qty, "note": req_note, "status": "รออนุมัติ",
                             "request_date": get_now_str("%Y-%m-%d %H:%M"), "approval_date": None
                         })
-                        get_pending_reqs.clear()
-                        st.success(f"ส่งคำขอเบิกของ '{item_name_map.get(req_selected_id, '')}' จำนวน +{req_qty} ชิ้น ไปยังผู้ออกแบบ/ดูแลระบบเรียบร้อยแล้ว!")
-                        st.rerun()
+                        clear_req_cache()
+                        done(f"ส่งคำขอเบิกของ '{item_name_map.get(req_selected_id, '')}' จำนวน +{req_qty} ชิ้น เรียบร้อยแล้ว!")
                     else:
                         st.error("กรุณาระบุหมายเหตุหรือเหตุผลที่ขอเบิกของ")
         else:
@@ -1301,7 +1317,7 @@ elif st.session_state.role in TECH_ROLES:
 
         st.markdown("---")
         st.markdown("#### 📜 ประวัติคำขอเบิกของของคุณ")
-        my_reqs_list = list(db.requisition_requests.find({"tech_name": st.session_state.username}, {"_id": 0}).sort("id", -1).limit(200))
+        my_reqs_list = get_my_reqs(st.session_state.username)
         my_requests = pd.DataFrame([{
             "รหัส": r["id"], "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
             "จำนวนที่ขอ": r.get("quantity"), "หมายเหตุ": r.get("note"),
@@ -1337,7 +1353,6 @@ elif st.session_state.role in TECH_ROLES:
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
 
-                    # เก็บแค่ไฟล์ไว้ก่อน ยังไม่บีบอัด (บีบอัดตอนกดยืนยันเท่านั้น)
                     photo_files = []
                     tool_photo_labels = ["รูปถ่ายแผงไม้เครื่องมือ", "รูปถ่ายชั้นเครื่องมือชั้นบน",
                                          "รูปถ่ายชั้นเครื่องมือชั้นกลาง", "รูปถ่ายชั้นเครื่องมือชั้นล่าง"]
@@ -1349,7 +1364,6 @@ elif st.session_state.role in TECH_ROLES:
 
                     st.progress(len(photo_files) / 4, text=f"📸 แนบรูปแล้ว {len(photo_files)}/4 รูป")
                     if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
-                        # อ่านค่าที่ช่างกรอกจาก session_state (เฉพาะรายการที่แสดงอยู่)
                         item_reports = {}
                         for _, row in tools_all_df.iterrows():
                             rid = row['id']
@@ -1392,7 +1406,7 @@ elif st.session_state.role in TECH_ROLES:
                                         if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
                                             final_st = f"กำลังใช้งาน ({data['detail']})"
                                         if data["status"] == "อุปกรณ์หมด":
-                                            new_q = 0   # อุปกรณ์หมด = ตัดจำนวนคงเหลือทั้งหมดเป็น 0
+                                            new_q = 0
                                         else:
                                             new_q = max(0, curr_q - data["qty"])
                                         bulk_operations.append(pymongo.operations.UpdateOne(
@@ -1418,10 +1432,10 @@ elif st.session_state.role in TECH_ROLES:
 
                             refresh_items()
                             get_inspection_count.clear()
+                            get_inspections_list.clear()
                             clear_inspection_widget_state()
                             st.session_state.uploader_version += 1
-                            st.success("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
-                            st.rerun()
+                            done("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
                 else:
                     st.info("ไม่มีอุปกรณ์ช่างให้ตรวจสอบในขณะนี้")
 
@@ -1457,7 +1471,7 @@ elif st.session_state.role in TECH_ROLES:
                                     continue
                                 q_val = int(st.session_state[key])
                                 old_q = int(row_map.loc[item_id, 'quantity'])
-                                if q_val != old_q:   # อัปเดตเฉพาะรายการที่เปลี่ยนจริง
+                                if q_val != old_q:
                                     bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"quantity": q_val}}))
                                     pool_summaries.append(f"{row_map.loc[item_id, 'name']}: ปรับจาก {old_q} เหลือ {q_val}")
 
@@ -1477,9 +1491,9 @@ elif st.session_state.role in TECH_ROLES:
 
                         refresh_items()
                         get_inspection_count.clear()
+                        get_inspections_list.clear()
                         clear_inspection_widget_state()
                         st.session_state.uploader_version += 1
-                        st.success("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
-                        st.rerun()
+                        done("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
             else:
                 st.info("ไม่มีอุปกรณ์สระว่ายน้ำในระบบ")
