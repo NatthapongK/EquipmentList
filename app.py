@@ -12,14 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ  (เวอร์ชันปรับความเร็ว)
-#  ต้องใช้ Streamlit >= 1.37 (รองรับ st.fragment)
-#  ต้องตั้งค่า .streamlit/secrets.toml:
-#     [mongo]
-#     uri = "mongodb+srv://..."
-#     [admin]
-#     username = "..."
-#     password = "..."
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับสมบูรณ์)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -128,13 +121,11 @@ DEFAULT_INITIAL_ITEMS = [
 ]
 
 def build_default_docs():
-    """สร้างเอกสารอุปกรณ์เริ่มต้นพร้อม id ลำดับ 1..N (ใช้ insert_many ครั้งเดียว)"""
     return [{
         "id": idx, "name": i[0], "category": i[1], "subcategory": i[2],
         "quantity": i[3], "status": i[4], "alert_zero": 0, "note": i[5], "image": i[6]
     } for idx, i in enumerate(DEFAULT_INITIAL_ITEMS, start=1)]
 
-# --- MONGODB CONNECTION ---
 @st.cache_resource
 def init_mongo():
     try:
@@ -147,12 +138,8 @@ def init_mongo():
 
     database.items.create_index("id", unique=True)
     database.transactions.create_index("id")
-    database.transactions.create_index([("status", 1), ("id", -1)])
     database.inspections.create_index("id")
-    database.inspections.create_index([("category", 1), ("inspection_date", 1)])
     database.requisition_requests.create_index("id")
-    database.requisition_requests.create_index([("status", 1), ("id", -1)])
-    database.requisition_requests.create_index("tech_name")
     database.tech_users.create_index("username")
     database.settings.create_index("key")
     database.sessions.create_index("token", unique=True)
@@ -172,7 +159,6 @@ def get_next_sequence(name):
         {"_id": name}, {"$inc": {"seq": 1}}, upsert=True, return_document=pymongo.ReturnDocument.AFTER)
     return counter["seq"]
 
-# --- IMAGE HELPERS ---
 def compress_image_to_base64(uploaded_file, max_size=(800, 800), quality=80):
     if uploaded_file is None:
         return None
@@ -211,7 +197,6 @@ def get_image_store():
 def get_item_image(item_id):
     return get_image_store().get(int(item_id))
 
-# --- CACHED DATA FUNCTIONS ---
 @st.cache_data(ttl=30, show_spinner=False)
 def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0, "image": 0})))
@@ -340,7 +325,7 @@ def switch_role(new_role):
         db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
     st.rerun()
 
-# --- THEME & RESPONSIVE MOBILE CSS ---
+# --- THEME & CSS ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
@@ -412,18 +397,10 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .req-banner .t{font-size:1.1rem; font-weight:700; color:#FEF3C7;}
 .req-banner .s{font-size:.85rem; color:#FDE68A; margin-top:.1rem;}
 @keyframes reqpulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.55);} 50%{box-shadow:0 0 0 8px rgba(245,158,11,0);}}
-
-@media (max-width:768px){
-  .block-container{padding-left:.6rem; padding-right:.6rem;}
-  .kpi-grid{grid-template-columns:repeat(2,1fr);}
-  .app-hero .t{font-size:1.1rem;}
-  .stApp .stButton > button, .stApp [data-testid="stFormSubmitButton"] > button{width:100%;}
-  .stTabs [data-baseweb="tab"]{padding:.5rem .6rem; font-size:0.85rem;}
-}
 </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION & LOGIN STATE ---
+# --- LOGIN STATE & SESSION RESTORATION ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
@@ -445,7 +422,7 @@ if not st.session_state.logged_in:
     cand_token = st.query_params.get("token") or saved_token
     if cand_token:
         sess = db.sessions.find_one({"token": cand_token})
-        if sess:
+        if sess and sess.get("role") and sess.get("role") not in ["None", "null", ""]:
             db.sessions.update_one({"token": cand_token}, {"$set": {"created": datetime.now(timezone.utc)}})
             st.session_state.logged_in = True
             st.session_state.role = sess["role"]
@@ -456,21 +433,27 @@ if not st.session_state.logged_in:
         else:
             st.query_params.clear()
             if saved_token:
-                local_store.deleteItem(LS_KEY, key="ls_del_token")
+                try:
+                    local_store.deleteItem(LS_KEY, key="ls_del_token")
+                except:
+                    pass
 
 _flash = st.session_state.pop("_flash", None)
 if _flash:
     st.toast(_flash[0], icon=_flash[1])
 
 if st.session_state.get("token") and saved_token != st.session_state.token:
-    local_store.setItem(LS_KEY, st.session_state.token, key="ls_set_token")
+    try:
+        local_store.setItem(LS_KEY, st.session_state.token, key="ls_set_token")
+    except:
+        pass
 
-# --- SIDEBAR ---
+# --- SIDEBAR & LOGOUT FIX ---
 if st.session_state.role in TECH_ROLES:
     st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
 else:
     st.sidebar.markdown(
-        f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper())}</div>'
+        f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper() if st.session_state.username else "U")}</div>'
         f'<div><div class="u-name">{esc(st.session_state.username)}</div>'
         f'<div class="u-role">สิทธิ์: {esc(st.session_state.role)}</div></div></div>',
         unsafe_allow_html=True)
@@ -493,6 +476,10 @@ else:
         if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
             if st.session_state.get("token"):
                 db.sessions.delete_one({"token": st.session_state.token})
+            try:
+                local_store.deleteItem(LS_KEY, key="ls_del_token")
+            except:
+                pass
             st.session_state.logged_in = False
             st.session_state.role = None
             st.session_state.username = ""
@@ -501,7 +488,68 @@ else:
             st.query_params.clear()
             st.rerun()
 
-# --- HEADER ---
+# --- LOGIN FORM IF NOT LOGGED IN OR ROLE IS NONE ---
+if not st.session_state.logged_in or not st.session_state.role or st.session_state.role == "None":
+    _, col_login, _ = st.columns([1, 1.6, 1])
+    with col_login:
+        st.markdown(
+            '<div class="app-hero"><div><div class="t">🛠️ ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ</div>'
+            '<div class="s">เข้าสู่ระบบเพื่อตรวจเช็ค ยืม-คืน และจัดการคลังอุปกรณ์</div></div></div>',
+            unsafe_allow_html=True)
+        with st.form("login_form"):
+            username = st.text_input("ชื่อผู้ใช้งาน (Username)")
+            password = st.text_input("รหัสผ่าน (Password)", type="password")
+            submitted = st.form_submit_button("เข้าสู่ระบบ", type="primary", use_container_width=True)
+        
+        tech_df = get_tech_users_df()
+        
+        if submitted:
+            role_val = ""
+            user_val = ""
+            
+            try:
+                admin_user = st.secrets["admin"]["username"]
+                admin_pass = st.secrets["admin"]["password"]
+            except Exception:
+                admin_user = "admin"
+                admin_pass = "admin"
+            
+            if username == admin_user and password == admin_pass:
+                role_val = ROLE_ADMIN
+                user_val = admin_user
+            else:
+                matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)] if not tech_df.empty else pd.DataFrame()
+                if not matched_tech.empty:
+                    role_val = ROLE_TECH
+                    user_val = username
+            
+            if role_val:
+                orig_role = role_val if role_val == ROLE_ADMIN else None
+                token = secrets.token_urlsafe(24)
+                db.sessions.insert_one({
+                    "token": token, "username": user_val, "role": role_val,
+                    "original_role": orig_role, "created": datetime.now(timezone.utc)
+                })
+                
+                st.session_state.logged_in = True
+                st.session_state.role = role_val
+                st.session_state.username = user_val
+                st.session_state.original_role = orig_role
+                st.session_state.token = token
+                
+                st.query_params["token"] = token
+                try:
+                    local_store.setItem(LS_KEY, token, key="ls_set_token")
+                except:
+                    pass
+                
+                st.success("เข้าสู่ระบบสำเร็จ!")
+                st.rerun()
+            else:
+                st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
+    st.stop()
+
+# --- HEADER (ถ้า Login ผ่านแล้ว) ---
 if st.session_state.role in TECH_ROLES:
     st.markdown(
         f'<div class="app-hero"><div><div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์</div>'
@@ -539,7 +587,8 @@ abn_title = "อุปกรณ์ชำรุด/กำลังใช้งา
 if not items_df.empty:
     abnormal_items = items_df[
         items_df['status'].isin(abn_statuses) |
-        items_df['status'].str.startswith('กำลังใช้งาน', na=False)
+        items_df['status'].str.startswith('กำลังใช้งาน', na=False) |
+        items_df['status'].str.contains('กำลังใช้งาน', na=False)
     ]
     thr = pd.Series(low_stock_limit, index=items_df.index).where(items_df['alert_zero'] != 1, 0)
     low_stock_items = items_df[(items_df['subcategory'] != 'เครื่องมือช่าง') & (items_df['quantity'] <= thr)]
@@ -713,7 +762,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ปรับเฉพาะรูปแบบการเลือกสถานะเหมือน New Text Document.txt) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ย้ายปุ่มดูรูปไปไว้หลังชื่ออุปกรณ์) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -726,36 +775,36 @@ def render_tool_inspection_list(tools_all_df):
             rid = row['id']
             current_status = row['status']
             
-            st.markdown(f"**🛠️ #{rid} - {row['name']}** (คงเหลือ: {row['quantity']})")
-
-            status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
-            if row['subcategory'] == "เครื่องมือช่าง":
-                if "อุปกรณ์หมด" in status_options:
-                    status_options.remove("อุปกรณ์หมด")
-
-            # หากการตรวจรอบที่แล้วอยู่ในสถานะ "กำลังใช้งาน (...)" ให้ตั้งค่าเริ่มต้นสำหรับรอบปัจจุบันกลับมาเป็น "ปกติ"
-            base_status = current_status.split(" (")[0] if "(" in current_status else current_status
-            if base_status == "กำลังใช้งาน":
-                def_idx = 0
-            else:
-                def_idx = status_options.index(base_status) if base_status in status_options else 0
-
-            col_sel, col_img = st.columns([3, 1])
-            with col_sel:
-                selected_status = st.selectbox(
-                    f"สถานะ {rid}",
-                    status_options,
-                    index=def_idx,
-                    key=f"status_sel_{rid}",
-                    label_visibility="collapsed"
-                )
-            with col_img:
+            # จัดวางชื่ออุปกรณ์และปุ่มดูรูปให้อยู่บรรทัดเดียวกัน
+            col_name_label, col_pop_btn = st.columns([5, 1])
+            with col_name_label:
+                st.markdown(f"**🛠️ #{rid} - {row['name']}** (คงเหลือ: {row['quantity']})")
+            with col_pop_btn:
                 img_bytes = get_item_image(rid)
                 if img_bytes:
                     with st.popover("📷 ดูรูป"):
                         st.image(img_bytes, width=180, caption=row['name'])
                 else:
                     st.caption("ไม่มีรูป")
+
+            status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
+            if row['subcategory'] == "เครื่องมือช่าง":
+                if "อุปกรณ์หมด" in status_options:
+                    status_options.remove("อุปกรณ์หมด")
+
+            base_status = current_status.split(" (")[0] if "(" in current_status else current_status
+            if base_status == "กำลังใช้งาน":
+                def_idx = 0
+            else:
+                def_idx = status_options.index(base_status) if base_status in status_options else 0
+
+            selected_status = st.selectbox(
+                f"สถานะ {rid}",
+                status_options,
+                index=def_idx,
+                key=f"status_sel_{rid}",
+                label_visibility="collapsed"
+            )
 
             if selected_status != "ปกติ":
                 if selected_status == "กำลังใช้งาน":
@@ -768,7 +817,7 @@ def render_tool_inspection_list(tools_all_df):
 
             st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--line);'>", unsafe_allow_html=True)
 
-# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (fragment) ---
+# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (ย้ายจำนวนไปอยู่หลังชื่ออุปกรณ์) ---
 @fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
@@ -778,17 +827,21 @@ def render_pool_list(pool_all_df):
 
     with keyed_container("pool_check_list", height=500):
         for _, row in pool_df.iterrows():
-            col_item, col_qty = st.columns([5, 1.6])
-            with col_item:
-                with st.expander(f"📦 {row['name']}"):
-                    img_bytes = get_item_image(row['id'])
-                    if img_bytes:
-                        st.image(img_bytes, width=220, caption=f"รูปภาพ: {row['name']}")
-                    else:
-                        st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
+            rid = row['id']
+            # จัดวางชื่ออุปกรณ์ (พร้อมปุ่มดูรูป) และช่องกรอกจำนวน ให้อยู่บรรทัดเดียวกัน
+            col_item_l, col_item_r, col_qty = st.columns([3.5, 1.5, 1.6])
+            with col_item_l:
+                st.markdown(f"📦 **{row['name']}**")
+            with col_item_r:
+                img_bytes = get_item_image(rid)
+                if img_bytes:
+                    with st.popover("📷 ดูรูป"):
+                        st.image(img_bytes, width=180, caption=row['name'])
+                else:
+                    st.caption("ไม่มีรูป")
             with col_qty:
-                st.number_input(f"จำนวนคงเหลือ: {row['name']}", min_value=0, value=int(row['quantity']),
-                                key=f"pool_q_{row['id']}", label_visibility="collapsed")
+                st.number_input(f"คงเหลือ: {row['name']}", min_value=0, value=int(row['quantity']),
+                                key=f"pool_q_{rid}", label_visibility="collapsed")
             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
 
 def clear_inspection_widget_state():
@@ -1305,17 +1358,24 @@ elif st.session_state.role in TECH_ROLES:
 
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
+                    st.info("💡 สามารถกดเลือกหรือถ่ายรูปให้ครบทั้ง 4 รูปพร้อมกันในช่องอัปโหลดด้านล่างนี้ได้เลยครับ")
 
-                    photo_files = []
-                    tool_photo_labels = ["รูปถ่ายแผงไม้เครื่องมือ", "รูปถ่ายชั้นเครื่องมือชั้นบน",
-                                         "รูปถ่ายชั้นเครื่องมือชั้นกลาง", "รูปถ่ายชั้นเครื่องมือชั้นล่าง"]
-                    for i in range(4):
-                        up_file = st.file_uploader(tool_photo_labels[i], type=["jpg", "jpeg", "png"],
-                                                   key=f"tech_p_{i}_{st.session_state.uploader_version}")
-                        if up_file is not None:
-                            photo_files.append(up_file)
+                    photo_files = st.file_uploader(
+                        "เลือก / ถ่ายรูปภาพรวมหน้างาน (ครบ 4 รูป)",
+                        type=["jpg", "jpeg", "png"],
+                        accept_multiple_files=True,
+                        key=f"tech_multi_uploader_{st.session_state.uploader_version}"
+                    )
 
-                    st.progress(len(photo_files) / 4, text=f"📸 แนบรูปแล้ว {len(photo_files)}/4 รูป")
+                    num_photos = len(photo_files) if photo_files else 0
+                    st.progress(min(num_photos / 4.0, 1.0), text=f"📸 แนบรูปแล้ว {num_photos}/4 รูป")
+
+                    if photo_files:
+                        cols_prev = st.columns(min(num_photos, 4))
+                        for p_idx, p_file in enumerate(photo_files):
+                            with cols_prev[p_idx % 4]:
+                                st.image(p_file, caption=f"รูปที่ {p_idx + 1}", use_container_width=True)
+
                     if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
                         item_reports = {}
                         for _, row in tools_all_df.iterrows():
@@ -1337,16 +1397,14 @@ elif st.session_state.role in TECH_ROLES:
                                 }
 
                         error_msg = ""
-                        for data in item_reports.values():
+                        for item_id, data in item_reports.items():
                             if data["flagged"]:
-                                if data["status"] in ("-- เลือกประเภท --", "ปกติ"):
-                                    error_msg = "❌ กรุณาเลือกประเภทปัญหาให้ครบถ้วนสำหรับรายการที่แจ้งปัญหา"
-                                    break
                                 if data["status"] == "กำลังใช้งาน" and not data["detail"].strip():
                                     error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
                                     break
-                        if not error_msg and len(photo_files) < 4:
-                            error_msg = "❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบทั้ง 4 รูป จึงจะสามารถยืนยันผลตรวจได้"
+
+                        if not error_msg and num_photos < 4:
+                            error_msg = f"❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบ 4 รูป (ปัจจุบันเลือกแล้ว {num_photos} รูป)"
 
                         if error_msg:
                             st.error(error_msg)
@@ -1407,17 +1465,27 @@ elif st.session_state.role in TECH_ROLES:
                 render_pool_list(pool_all_df)
 
                 st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
-                pool_photo_files = []
-                for i in range(4):
-                    up_file = st.file_uploader(f"รูปถ่ายอุปกรณ์ที่ {i+1}", type=["jpg", "jpeg", "png"],
-                                               key=f"tech_pool_p_{i}_{st.session_state.uploader_version}")
-                    if up_file is not None:
-                        pool_photo_files.append(up_file)
+                st.info("💡 สามารถกดเลือกหรือถ่ายรูปให้ครบทั้ง 4 รูปพร้อมกันในช่องอัปโหลดด้านล่างนี้ได้เลยครับ")
 
-                st.progress(len(pool_photo_files) / 4, text=f"📸 แนบรูปแล้ว {len(pool_photo_files)}/4 รูป")
+                pool_photo_files = st.file_uploader(
+                    "เลือก / ถ่ายรูปภาพสระว่ายน้ำรวม (ครบ 4 รูป)",
+                    type=["jpg", "jpeg", "png"],
+                    accept_multiple_files=True,
+                    key=f"tech_pool_multi_{st.session_state.uploader_version}"
+                )
+
+                num_pool_photos = len(pool_photo_files) if pool_photo_files else 0
+                st.progress(min(num_pool_photos / 4.0, 1.0), text=f"📸 แนบรูปแล้ว {num_pool_photos}/4 รูป")
+
+                if pool_photo_files:
+                    cols_pool_prev = st.columns(min(num_pool_photos, 4))
+                    for p_idx, p_file in enumerate(pool_photo_files):
+                        with cols_pool_prev[p_idx % 4]:
+                            st.image(p_file, caption=f"รูปที่ {p_idx + 1}", use_container_width=True)
+
                 if st.button("💾 บันทึกจำนวนอุปกรณ์สระว่ายน้ำ", type="primary", use_container_width=True):
-                    if len(pool_photo_files) < 4:
-                        st.error("❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานสระว่ายน้ำให้ครบทั้ง 4 รูป")
+                    if num_pool_photos < 4:
+                        st.error(f"❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานสระว่ายน้ำให้ครบ 4 รูป (ปัจจุบันเลือกแล้ว {num_pool_photos} รูป)")
                     else:
                         with st.spinner("กำลังบันทึกข้อมูล..."):
                             photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in pool_photo_files]
