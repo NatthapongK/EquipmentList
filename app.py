@@ -761,7 +761,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (รองรับการใช้งานและสัมผัสบนมือถือ) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ปรับปรุงให้รองรับมือถือและแท็บเล็ตด้วย Selectbox) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -769,56 +769,54 @@ def render_tool_inspection_list(tools_all_df):
     if tech_search.strip():
         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
 
-    # เอา height ออกเพื่อให้หน้าจอมือถือไม่บล็อกการทัชสกรีน
+    st.info("💡 วิธีใช้งานบนมือถือ: หากอุปกรณ์ปกติไม่ต้องแก้ไข หากมีปัญหาให้กดเลือกสถานะจากเมนูด้านล่าง")
+
     with keyed_container("tech_check_list"):
         for _, row in tools_df.iterrows():
             rid = row['id']
             current_status = row['status']
-            is_currently_flagged = current_status != "ปกติ"
-
-            status_badge = f" ⚠️ ({current_status})" if is_currently_flagged else ""
             
-            # ใช้ st.toggle เพื่อให้กดเปิด-ปิดบนมือถือได้ง่าย
-            is_flagged = st.toggle(
-                f"🛠️ #{rid} {row['name']}{status_badge} (คงเหลือ: {row['quantity']})", 
-                value=is_currently_flagged, 
-                key=f"flag_{rid}"
-            )
+            st.markdown(f"**🛠️ #{rid} - {row['name']}** (คงเหลือ: {row['quantity']})")
 
-            # แสดงรูปขนาดกะทัดรัดเท่าหมวดสระว่ายน้ำ
-            with st.expander(f"📷 ดูรูปภาพประกอบ: {row['name']}"):
+            status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
+            if row['subcategory'] == "เครื่องมือช่าง":
+                if "อุปกรณ์หมด" in status_options:
+                    status_options.remove("อุปกรณ์หมด")
+
+            base_status = current_status.split(" (")[0] if "(" in current_status else current_status
+            def_idx = status_options.index(base_status) if base_status in status_options else 0
+
+            col_sel, col_img = st.columns([3, 1])
+            with col_sel:
+                selected_status = st.selectbox(
+                    f"สถานะ {rid}",
+                    status_options,
+                    index=def_idx,
+                    key=f"status_sel_{rid}",
+                    label_visibility="collapsed"
+                )
+            with col_img:
                 img_bytes = get_item_image(rid)
                 if img_bytes:
-                    st.image(img_bytes, width=150, caption=f"{row['name']}")
+                    with st.popover("📷 ดูรูป"):
+                        st.image(img_bytes, use_container_width=True, caption=row['name'])
                 else:
-                    st.info("*(ไม่มีรูปภาพประกอบ)*")
+                    st.caption("ไม่มีรูป")
 
-            # เมื่อเปิดสวิตช์แจ้งปัญหา
-            if is_flagged:
-                options_list = ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"]
-                if row['subcategory'] == "เครื่องมือช่าง":
-                    options_list.remove("อุปกรณ์หมด")
-                
-                default_idx = 0
-                detail_default = ""
-                if current_status.startswith("กำลังใช้งาน"):
-                    default_idx = 1
-                    m_detail = re.search(r'\((.*?)\)', current_status)
-                    if m_detail:
-                        detail_default = m_detail.group(1)
-                elif current_status in options_list:
-                    default_idx = options_list.index(current_status)
-
-                issue_type = st.selectbox("ประเภทปัญหา *", options_list, index=default_idx, key=f"issue_type_{rid}")
-                item_total_q = int(row['quantity'])
-
-                if issue_type == "กำลังใช้งาน":
+            # หากเลือกสถานะผิดปกติ ให้แสดงช่องกรอกรายละเอียดเพิ่มเติม
+            if selected_status != "ปกติ":
+                if selected_status == "กำลังใช้งาน":
+                    detail_default = ""
+                    if current_status.startswith("กำลังใช้งาน"):
+                        m_detail = re.search(r'\((.*?)\)', current_status)
+                        if m_detail:
+                            detail_default = m_detail.group(1)
                     st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{rid}")
-                    if item_total_q > 1:
-                        st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
-                elif issue_type in ["ชำรุด", "สูญหาย"]:
-                    if item_total_q > 1:
-                        st.number_input(f"จำนวนชิ้นที่{issue_type} *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
+                    if int(row['quantity']) > 1:
+                        st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
+                elif selected_status in ["ชำรุด", "สูญหาย"]:
+                    if int(row['quantity']) > 1:
+                        st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
 
             st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--line);'>", unsafe_allow_html=True)
 
@@ -1371,78 +1369,84 @@ elif st.session_state.role in TECH_ROLES:
 
                     st.progress(len(photo_files) / 4, text=f"📸 แนบรูปแล้ว {len(photo_files)}/4 รูป")
                     if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
-                        item_reports = {}
-                        for _, row in tools_all_df.iterrows():
-                            rid = row['id']
-                            if f"flag_{rid}" not in st.session_state:
-                                continue
-                            item_reports[rid] = {
-                                "flagged": bool(st.session_state.get(f"flag_{rid}")),
-                                "status": st.session_state.get(f"issue_type_{rid}", "ปกติ"),
-                                "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
-                                "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
-                            }
+    item_reports = {}
+    for _, row in tools_all_df.iterrows():
+        rid = row['id']
+        sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
+        if sel_st != "ปกติ":
+            item_reports[rid] = {
+                "flagged": True,
+                "status": sel_st,
+                "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
+                "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
+            }
+        else:
+            item_reports[rid] = {
+                "flagged": False,
+                "status": "ปกติ",
+                "detail": "",
+                "qty": 1
+            }
 
-                        error_msg = ""
-                        for data in item_reports.values():
-                            if data["flagged"]:
-                                if data["status"] in ("-- เลือกประเภท --", "ปกติ"):
-                                    error_msg = "❌ กรุณาเลือกประเภทปัญหาให้ครบถ้วนสำหรับรายการที่ติ๊ก"
-                                    break
-                                if data["status"] == "กำลังใช้งาน" and not data["detail"].strip():
-                                    error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
-                                    break
-                        if not error_msg and len(photo_files) < 4:
-                            error_msg = "❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบทั้ง 4 รูป จึงจะสามารถยืนยันผลตรวจได้"
+    # ตรวจสอบความถูกต้องก่อนบันทึก
+    error_msg = ""
+    for item_id, data in item_reports.items():
+        if data["flagged"]:
+            if data["status"] == "กำลังใช้งาน" and not data["detail"].strip():
+                error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
+                break
 
-                        if error_msg:
-                            st.error(error_msg)
-                        else:
-                            with st.spinner("กำลังบันทึกผลการตรวจ..."):
-                                photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in photo_files]
-                                flagged_summaries = []
-                                bulk_operations = []
-                                row_map = tools_all_df.set_index('id')
+    if not error_msg and len(photo_files) < 4:
+        error_msg = "❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบทั้ง 4 รูป จึงจะสามารถยืนยันผลตรวจได้"
 
-                                for item_id, data in item_reports.items():
-                                    curr_q = int(row_map.loc[item_id, 'quantity'])
-                                    item_name = row_map.loc[item_id, 'name']
+    if error_msg:
+        st.error(error_msg)
+    else:
+        with st.spinner("กำลังบันทึกผลการตรวจ..."):
+            photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in photo_files]
+            flagged_summaries = []
+            bulk_operations = []
+            row_map = tools_all_df.set_index('id')
 
-                                    if data["flagged"]:
-                                        final_st = data["status"]
-                                        if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
-                                            final_st = f"กำลังใช้งาน ({data['detail']})"
-                                        if data["status"] == "อุปกรณ์หมด":
-                                            new_q = 0
-                                        else:
-                                            new_q = max(0, curr_q - data["qty"])
-                                        bulk_operations.append(pymongo.operations.UpdateOne(
-                                            {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
-                                        detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
-                                        flagged_summaries.append(detail_txt)
-                                    else:
-                                        bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": "ปกติ"}}))
+            for item_id, data in item_reports.items():
+                curr_q = int(row_map.loc[item_id, 'quantity'])
+                item_name = row_map.loc[item_id, 'name']
 
-                                if bulk_operations:
-                                    db.items.bulk_write(bulk_operations, ordered=False)
+                if data["flagged"]:
+                    final_st = data["status"]
+                    if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
+                        final_st = f"กำลังใช้งาน ({data['detail']})"
+                    if data["status"] == "อุปกรณ์หมด":
+                        new_q = 0
+                    else:
+                        new_q = max(0, curr_q - data["qty"])
+                    bulk_operations.append(pymongo.operations.UpdateOne(
+                        {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
+                    detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
+                    flagged_summaries.append(detail_txt)
+                else:
+                    bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": "ปกติ"}}))
 
-                                summary_details = ", ".join(flagged_summaries) if flagged_summaries else "ปกติทุกรายการ"
-                                db.inspections.insert_one({
-                                    "id": get_next_sequence("inspections_id"),
-                                    "tech_name": st.session_state.username,
-                                    "category": "อุปกรณ์ช่าง",
-                                    "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
-                                    "session_num": global_count + 1,
-                                    "details": f"รอบที่ {global_count + 1} | รายการผิดปกติ: {summary_details}",
-                                    "photos": "|||".join(photos_b64)
-                                })
+            if bulk_operations:
+                db.items.bulk_write(bulk_operations, ordered=False)
 
-                            refresh_items()
-                            get_inspection_count.clear()
-                            get_inspections_list.clear()
-                            clear_inspection_widget_state()
-                            st.session_state.uploader_version += 1
-                            done("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
+            summary_details = ", ".join(flagged_summaries) if flagged_summaries else "ปกติทุกรายการ"
+            db.inspections.insert_one({
+                "id": get_next_sequence("inspections_id"),
+                "tech_name": st.session_state.username,
+                "category": "อุปกรณ์ช่าง",
+                "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
+                "session_num": global_count + 1,
+                "details": f"รอบที่ {global_count + 1} | รายการผิดปกติ: {summary_details}",
+                "photos": "|||".join(photos_b64)
+            })
+
+        refresh_items()
+        get_inspection_count.clear()
+        get_inspections_list.clear()
+        clear_inspection_widget_state()
+        st.session_state.uploader_version += 1
+        done("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
                 else:
                     st.info("ไม่มีอุปกรณ์ช่างให้ตรวจสอบในขณะนี้")
 
