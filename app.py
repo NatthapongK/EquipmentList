@@ -761,7 +761,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (fragment) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (รองรับการใช้งานบนมือถือ) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -769,28 +769,36 @@ def render_tool_inspection_list(tools_all_df):
     if tech_search.strip():
         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
 
-    with keyed_container("tech_check_list", height=500):
+    with keyed_container("tech_check_list", height=520):
         for _, row in tools_df.iterrows():
             rid = row['id']
             current_status = row['status']
             is_currently_flagged = current_status != "ปกติ"
 
-            col_item, col_flag = st.columns([5, 1.4])
-            with col_item:
-                status_badge = f" (สถานะเดิม: {current_status})" if is_currently_flagged else ""
-                with st.expander(f"🛠️ {row['name']}{status_badge} (คงเหลือ: {row['quantity']})"):
-                    img_bytes = get_item_image(rid)
-                    if img_bytes:
-                        st.image(img_bytes, width=220, caption=f"รูปภาพ: {row['name']}")
-                    else:
-                        st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
-            with col_flag:
-                is_flagged = st.checkbox("แจ้งปัญหา", value=is_currently_flagged, key=f"flag_{rid}")
+            # ปรับปรุงโครงสร้างคอลัมน์ให้เหมาะกับหน้าจอมือถือ
+            status_badge = f" ⚠️ ({current_status})" if is_currently_flagged else ""
+            
+            # สวิตช์สลับการแจ้งปัญหา (ใช้ st.toggle เพื่อความสะดวกในการแตะบนมือถือ)
+            is_flagged = st.toggle(
+                f"🛠️ {row['name']}{status_badge} (คงเหลือ: {row['quantity']})", 
+                value=is_currently_flagged, 
+                key=f"flag_{rid}"
+            )
 
+            # แสดงรายละเอียด/รูปภาพอุปกรณ์
+            with st.expander(f"📷 ดูรูปภาพ / ข้อมูลอุปกรณ์: {row['name']}"):
+                img_bytes = get_item_image(rid)
+                if img_bytes:
+                    st.image(img_bytes, use_container_width=True, caption=f"รูปภาพ: {row['name']}")
+                else:
+                    st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
+
+            # เมื่อเปิดสวิตช์แจ้งปัญหา
             if is_flagged:
                 options_list = ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"]
                 if row['subcategory'] == "เครื่องมือช่าง":
                     options_list.remove("อุปกรณ์หมด")
+                
                 default_idx = 0
                 detail_default = ""
                 if current_status.startswith("กำลังใช้งาน"):
@@ -811,7 +819,8 @@ def render_tool_inspection_list(tools_all_df):
                 elif issue_type in ["ชำรุด", "สูญหาย"]:
                     if item_total_q > 1:
                         st.number_input(f"จำนวนชิ้นที่{issue_type} *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
-            st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
+
+            st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--line);'>", unsafe_allow_html=True)
 
 # --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (fragment) ---
 @fragment
