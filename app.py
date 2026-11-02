@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับปรับปรุง UI ช่างล่าสุด 2026)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ตัดเลข # ออกจากมุมมองช่าง)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -325,7 +325,7 @@ def switch_role(new_role):
         db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
     st.rerun()
 
-# --- THEME & CSS (Modern 2026 UI) ---
+# --- THEME & CSS ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
@@ -674,7 +674,7 @@ else:
     st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
 st.markdown("")
 
-# --- SHARED BORROW / RETURN COMPONENT ---
+# --- SHARED BORROW / RETURN COMPONENT (ตัดเลข # ออก) ---
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
@@ -683,7 +683,8 @@ def render_borrow_return_system():
         available_items = items_df[items_df['quantity'] > 0] if not items_df.empty else pd.DataFrame()
         if not available_items.empty:
             with st.form("borrow_form_shared", clear_on_submit=True):
-                item_dict = {f"#{row['id']} {row['name']} (คงเหลือ: {row['quantity']} ชิ้น) [{row['category']}]": row['id']
+                # ตัดเลข # ออกจากชื่ออุปกรณ์ใน Selectbox
+                item_dict = {f"{row['name']} (คงเหลือ: {row['quantity']} ชิ้น) [{row['category']}]": row['id']
                              for _, row in available_items.iterrows()}
                 sel_item_label = st.selectbox("เลือกเครื่องมือ/อุปกรณ์ที่ต้องการยืม *", list(item_dict.keys()))
                 borrow_qty = st.number_input("จำนวนที่ต้องการยืม *", min_value=1,
@@ -775,7 +776,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- NEW 2026 MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (จำค่าสถานะเดิม & ทำงานต่อเนื่อง) ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (ตัดเลข # ออกจากหน้าจอช่าง) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -791,11 +792,11 @@ def render_tool_inspection_list(tools_all_df):
             current_status = row['status']
             is_abnormal = current_status != "ปกติ"
 
-            # กำหนดไอคอนและสีตามสถานะปัจจุบัน
             badge_color = "🟢" if not is_abnormal else "🔴"
             status_text = f"[{current_status}]" if is_abnormal else "[ปกติ]"
 
-            with st.expander(f"{badge_color} #{rid} - {row['name']} (คงเหลือ: {row['quantity']})  {status_text}"):
+            # ตัดเลข # ออก แสดงเฉพาะชื่ออุปกรณ์และสถานะ
+            with st.expander(f"{badge_color} {row['name']} (คงเหลือ: {row['quantity']})  {status_text}"):
                 col_img, col_form = st.columns([1, 2.2])
                 with col_img:
                     img_bytes = get_item_image(rid)
@@ -804,7 +805,6 @@ def render_tool_inspection_list(tools_all_df):
                     else:
                         st.info("ไม่มีรูปภาพ")
                 with col_form:
-                    # ดึงสถานะเดิมมาเป็น Default ในพรีเซ็ต
                     base_st = current_status.split(" (")[0] if "(" in current_status else current_status
                     status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
                     if row['subcategory'] == "เครื่องมือช่าง" and "อุปกรณ์หมด" in status_options:
@@ -829,7 +829,7 @@ def render_tool_inspection_list(tools_all_df):
                             if int(row['quantity']) > 1:
                                 st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
 
-# --- NEW 2026 MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ (ทำงานต่อเนื่อง & ปรับจำนวนง่าย) ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ (ตัดเลข # ออก) ---
 @fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
@@ -842,7 +842,8 @@ def render_pool_list(pool_all_df):
     with keyed_container("pool_check_list", height=520):
         for _, row in pool_df.iterrows():
             rid = row['id']
-            with st.expander(f"🏊 #{rid} - {row['name']} (ปัจจุบัน: {row['quantity']} ชิ้น)"):
+            # ตัดเลข # ออกจากหัวข้อ Expander
+            with st.expander(f"🏊 {row['name']} (ปัจจุบัน: {row['quantity']} ชิ้น)"):
                 col_img, col_num = st.columns([1, 2])
                 with col_img:
                     img_bytes = get_item_image(rid)
@@ -1313,7 +1314,8 @@ elif st.session_state.role in TECH_ROLES:
 
         if not tools_requisition_df.empty:
             with st.form("requisition_request_form", clear_on_submit=True):
-                req_item_dict = {f"#{row['id']} {row['name']} [{row['category']}] (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id']
+                # ตัดเลข # ออกจากชื่ออุปกรณ์ในหน้าเบิกของ
+                req_item_dict = {f"{row['name']} [{row['category']}] (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id']
                                  for _, row in tools_requisition_df.iterrows()}
                 sel_req_label = st.selectbox("เลือกอุปกรณ์ที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
                 req_qty = st.number_input("จำนวนที่ต้องการเพิ่มเข้าคลัง *", min_value=1, value=1)
