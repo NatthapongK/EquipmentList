@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับอัปเดตวงกลม 5 สี & สถานะยืม)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับอัปเดตสถานะ & ตัดเมนูยืมออกจากการตรวจ)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -608,7 +608,6 @@ if not items_df.empty:
 else:
     item_name_map = {}
 
-# ดึงรายการอุปกรณ์ที่กำลังถูกยืมเพื่อนำมาอัปเดตสถานะอัตโนมัติ
 active_borrows = get_active_borrows()
 borrowed_item_map = {}
 for t in active_borrows:
@@ -617,16 +616,15 @@ for t in active_borrows:
     borrowed_item_map[it_id] = borrowed_item_map.get(it_id, 0) + q_borrowed
 
 is_tech_view = st.session_state.role in TECH_ROLES
-abn_statuses = ['ชำรุด', 'อุปกรณ์หมด', 'ยืม'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'อุปกรณ์หมด', 'ยืม']
-abn_label = "ชำรุด / กำลังใช้งาน / หมด / ยืม" if is_tech_view else "ผิดปกติ / กำลังใช้งาน / หมด"
-abn_title = "อุปกรณ์ชำรุด/กำลังใช้งาน/หมด/ยืม" if is_tech_view else "อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด"
+abn_statuses = ['ชำรุด', 'อุปกรณ์หมด'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'อุปกรณ์หมด']
+abn_label = "ชำรุด / กำลังใช้งาน / หมด"
+abn_title = "อุปกรณ์ชำรุด/กำลังใช้งาน/หมด"
 
 if not items_df.empty:
     abnormal_items = items_df[
         items_df['status'].isin(abn_statuses) |
         items_df['status'].str.startswith('กำลังใช้งาน', na=False) |
-        items_df['status'].str.contains('กำลังใช้งาน', na=False) |
-        items_df['id'].isin(borrowed_item_map.keys())
+        items_df['status'].str.contains('กำลังใช้งาน', na=False)
     ]
     thr = pd.Series(low_stock_limit, index=items_df.index).where(items_df['alert_zero'] != 1, 0)
     low_stock_items = items_df[(items_df['subcategory'] != 'เครื่องมือช่าง') & (items_df['quantity'] <= thr)]
@@ -799,7 +797,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (แสดง 5 สีสถานะ และซิงค์สถานะถูกยืมอัตโนมัติ) ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -815,7 +813,7 @@ def render_tool_inspection_list(tools_all_df):
             current_status = row['status']
             borrow_qty = borrowed_item_map.get(rid, 0)
 
-            # กำหนดไอคอน 5 สีสถานะ: 🟢 ปกติ | 🟡 กำลังใช้งาน | 🔵 ยืม | 🟠 หมด | 🔴 ชำรุด
+            # 5 สีสถานะ: 🟢 ปกติ | 🟡 กำลังใช้งาน | 🔵 ยืม | 🟠 หมด | 🔴 ชำรุด
             if borrow_qty > 0:
                 badge_color = "🔵"
                 status_text = f"[ยืม ({borrow_qty} ชิ้น)]"
@@ -841,15 +839,20 @@ def render_tool_inspection_list(tools_all_df):
                     else:
                         st.info("ไม่มีรูปภาพ")
                 with col_form:
+                    # กำหนดค่าเริ่มต้นใน Selectbox ตามสถานะจริงของอุปกรณ์
                     base_st = current_status.split(" (")[0] if "(" in current_status else current_status
                     if borrow_qty > 0:
                         base_st = "ยืม"
 
-                    status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน", "ยืม"]
+                    # ตัดตัวเลือก "ยืม" ออกจากการตรวจสอบหน้างานทั่วไป
+                    status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
                     if row['subcategory'] == "เครื่องมือช่าง" and "อุปกรณ์หมด" in status_options:
                         status_options.remove("อุปกรณ์หมด")
 
-                    def_idx = status_options.index(base_st) if base_st in status_options else 0
+                    if base_st in status_options:
+                        def_idx = status_options.index(base_st)
+                    else:
+                        def_idx = 0  # ถ้าสถานะเดิมถูกยืมอยู่หรือนอกเหนือจากนี้ ให้เริ่มต้นที่ "ปกติ"
 
                     selected_status = st.selectbox(
                         "สถานะการตรวจสอบ *",
