@@ -761,7 +761,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ใส่กรอบกลุ่มความสูง 500 เลื่อนดูง่าย) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ใส่กรอบกลุ่มความสูง 500 เลื่อนดูง่าย + ปรับตรรกะสถานะปกติ) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -781,8 +781,12 @@ def render_tool_inspection_list(tools_all_df):
                 if "อุปกรณ์หมด" in status_options:
                     status_options.remove("อุปกรณ์หมด")
 
+            # หากการตรวจรอบที่แล้วอยู่ในสถานะ "กำลังใช้งาน (...)" ให้ตั้งค่าเริ่มต้นสำหรับรอบปัจจุบันกลับมาเป็น "ปกติ"
             base_status = current_status.split(" (")[0] if "(" in current_status else current_status
-            def_idx = status_options.index(base_status) if base_status in status_options else 0
+            if base_status == "กำลังใช้งาน":
+                def_idx = 0
+            else:
+                def_idx = status_options.index(base_status) if base_status in status_options else 0
 
             col_sel, col_img = st.columns([3, 1])
             with col_sel:
@@ -797,19 +801,14 @@ def render_tool_inspection_list(tools_all_df):
                 img_bytes = get_item_image(rid)
                 if img_bytes:
                     with st.popover("📷 ดูรูป"):
-                        st.image(img_bytes, use_container_width=True, caption=row['name'])
+                        st.image(img_bytes, width=180, caption=row['name'])
                 else:
                     st.caption("ไม่มีรูป")
 
             # หากเลือกสถานะผิดปกติ ให้แสดงช่องกรอกรายละเอียดเพิ่มเติม
             if selected_status != "ปกติ":
                 if selected_status == "กำลังใช้งาน":
-                    detail_default = ""
-                    if current_status.startswith("กำลังใช้งาน"):
-                        m_detail = re.search(r'\((.*?)\)', current_status)
-                        if m_detail:
-                            detail_default = m_detail.group(1)
-                    st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{rid}")
+                    st.text_input("ระบุรายละเอียดการใช้งาน *", value="", key=f"issue_detail_{rid}")
                     if int(row['quantity']) > 1:
                         st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
                 elif selected_status in ["ชำรุด", "สูญหาย"]:
@@ -1354,13 +1353,12 @@ elif st.session_state.role in TECH_ROLES:
                     render_tool_inspection_list(tools_all_df)
 
                     st.markdown("<br>", unsafe_allow_html=True)
-                    st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
-                    st.info("💡 บนมือถือ/แท็บเล็ต: สามารถกดเลือกรูปภาพจากแกลเลอรีหรือถ่ายรูปพร้อมกันให้ครบ 4 รูปในช่องด้านล่างนี้ได้เลยครับ")
+                    st.info("💡 สามารถกดเลือกหรือถ่ายรูปให้ครบทั้ง 4 รูปพร้อมกันในช่องอัปโหลดด้านล่างนี้ได้เลยครับ")
 
-                    # ใช้ multi-file uploader เพื่อให้มือถือและแท็บเล็ตเลือกรูปหลายรูปได้ในครั้งเดียวอย่างเสถียร
+                    # ปุ่มอัปโหลดรูปภาพแบบ multi-file uploader ที่รองรับมือถือและแท็บเล็ต
                     photo_files = st.file_uploader(
-                        "อัปโหลดรูปถ่ายรวมหน้างาน (เลือกหรือถ่ายให้ครบ 4 รูป)",
+                        "เลือก / ถ่ายรูปภาพรวมหน้างาน (ครบ 4 รูป)",
                         type=["jpg", "jpeg", "png"],
                         accept_multiple_files=True,
                         key=f"tech_multi_uploader_{st.session_state.uploader_version}"
@@ -1368,6 +1366,13 @@ elif st.session_state.role in TECH_ROLES:
 
                     num_photos = len(photo_files) if photo_files else 0
                     st.progress(min(num_photos / 4.0, 1.0), text=f"📸 แนบรูปแล้ว {num_photos}/4 รูป")
+
+                    # พรีวิวแสดงภาพขนาดใหญ่ ชัดเจน 4 คอลัมน์
+                    if photo_files:
+                        cols_prev = st.columns(min(num_photos, 4))
+                        for p_idx, p_file in enumerate(photo_files):
+                            with cols_prev[p_idx % 4]:
+                                st.image(p_file, caption=f"รูปที่ {p_idx + 1}", use_container_width=True)
 
                     if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
                         item_reports = {}
@@ -1459,10 +1464,10 @@ elif st.session_state.role in TECH_ROLES:
                 render_pool_list(pool_all_df)
 
                 st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
-                st.info("💡 บนมือถือ/แท็บเล็ต: สามารถกดเลือกรูปภาพจากแกลเลอรีหรือถ่ายรูปพร้อมกันให้ครบ 4 รูปในช่องด้านล่างนี้ได้เลยครับ")
+                st.info("💡 สามารถกดเลือกหรือถ่ายรูปให้ครบทั้ง 4 รูปพร้อมกันในช่องอัปโหลดด้านล่างนี้ได้เลยครับ")
 
                 pool_photo_files = st.file_uploader(
-                    "อัปโหลดรูปถ่ายสระว่ายน้ำรวม 4 รูป",
+                    "เลือก / ถ่ายรูปภาพสระว่ายน้ำรวม (ครบ 4 รูป)",
                     type=["jpg", "jpeg", "png"],
                     accept_multiple_files=True,
                     key=f"tech_pool_multi_{st.session_state.uploader_version}"
@@ -1470,6 +1475,13 @@ elif st.session_state.role in TECH_ROLES:
 
                 num_pool_photos = len(pool_photo_files) if pool_photo_files else 0
                 st.progress(min(num_pool_photos / 4.0, 1.0), text=f"📸 แนบรูปแล้ว {num_pool_photos}/4 รูป")
+
+                # พรีวิวแสดงภาพขนาดใหญ่ 4 คอลัมน์
+                if pool_photo_files:
+                    cols_pool_prev = st.columns(min(num_pool_photos, 4))
+                    for p_idx, p_file in enumerate(pool_photo_files):
+                        with cols_pool_prev[p_idx % 4]:
+                            st.image(p_file, caption=f"รูปที่ {p_idx + 1}", use_container_width=True)
 
                 if st.button("💾 บันทึกจำนวนอุปกรณ์สระว่ายน้ำ", type="primary", use_container_width=True):
                     if num_pool_photos < 4:
