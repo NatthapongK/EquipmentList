@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับปรับปรุง UI ช่างล่าสุด)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับปรับปรุง UI ช่างล่าสุด 2026)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -325,7 +325,7 @@ def switch_role(new_role):
         db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
     st.rerun()
 
-# --- THEME & CSS ---
+# --- THEME & CSS (Modern 2026 UI) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
@@ -374,7 +374,7 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .stTabs [aria-selected="true"]{color:#38BDF8; font-weight:600;}
 .stTabs [data-baseweb="tab-highlight"]{background:#38BDF8; height:3px;}
 
-[data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card);}
+[data-testid="stExpander"]{border:1px solid var(--line); border-radius:12px; background:var(--card); margin-bottom: 0.5rem;}
 [data-testid="stForm"]{border:1px solid var(--line); border-radius:12px; background:var(--card); padding:1rem;}
 
 [data-testid="stDataFrame"], .stTable {
@@ -488,7 +488,7 @@ else:
             st.query_params.clear()
             st.rerun()
 
-# --- LOGIN FORM IF NOT LOGGED IN OR ROLE IS NONE ---
+# --- LOGIN FORM IF NOT LOGGED IN ---
 if not st.session_state.logged_in or not st.session_state.role or st.session_state.role == "None":
     _, col_login, _ = st.columns([1, 1.6, 1])
     with col_login:
@@ -506,7 +506,6 @@ if not st.session_state.logged_in or not st.session_state.role or st.session_sta
         if submitted:
             role_val = ""
             user_val = ""
-            
             try:
                 admin_user = st.secrets["admin"]["username"]
                 admin_pass = st.secrets["admin"]["password"]
@@ -530,32 +529,46 @@ if not st.session_state.logged_in or not st.session_state.role or st.session_sta
                     "token": token, "username": user_val, "role": role_val,
                     "original_role": orig_role, "created": datetime.now(timezone.utc)
                 })
-                
                 st.session_state.logged_in = True
                 st.session_state.role = role_val
                 st.session_state.username = user_val
                 st.session_state.original_role = orig_role
                 st.session_state.token = token
-                
                 st.query_params["token"] = token
                 try:
                     local_store.setItem(LS_KEY, token, key="ls_set_token")
                 except:
                     pass
-                
                 st.success("เข้าสู่ระบบสำเร็จ!")
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
-# --- HEADER (ถ้า Login ผ่านแล้ว) ---
+# --- HEADER (LOGGED IN) ---
 if st.session_state.role in TECH_ROLES:
-    st.markdown(
-        f'<div class="app-hero"><div><div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์</div>'
-        f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
-        f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
-        unsafe_allow_html=True)
+    col_th_title, col_th_logout = st.columns([3, 1])
+    with col_th_title:
+        st.markdown(
+            f'<div class="app-hero"><div><div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์</div>'
+            f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
+            f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
+            unsafe_allow_html=True)
+    with col_th_logout:
+        if st.button("🚪 ออกจากระบบ", type="secondary", use_container_width=True, key="tech_top_logout"):
+            if st.session_state.get("token"):
+                db.sessions.delete_one({"token": st.session_state.token})
+            try:
+                local_store.deleteItem(LS_KEY, key="ls_del_token")
+            except:
+                pass
+            st.session_state.logged_in = False
+            st.session_state.role = None
+            st.session_state.username = ""
+            st.session_state.original_role = None
+            st.session_state.token = None
+            st.query_params.clear()
+            st.rerun()
 else:
     col_h_title, col_h_btn = st.columns([4, 1])
     with col_h_title:
@@ -762,7 +775,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ติ๊กทันสมัยแทน 🛠️ + ปุ่มดูรูปอยู่บรรทัดเดียวกันด้านหลัง) ---
+# --- NEW 2026 MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (จำค่าสถานะเดิม & ทำงานต่อเนื่อง) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -770,59 +783,53 @@ def render_tool_inspection_list(tools_all_df):
     if tech_search.strip():
         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
 
-    with keyed_container("tech_check_list", height=500):
+    st.caption("💡 คลิกที่ชื่ออุปกรณ์เพื่อดูรายละเอียดหรือตรวจสอบสถานะ · สามารถเลือกสถานะความผิดปกติเพื่อบันทึกต่อเนื่องได้ทันที")
+
+    with keyed_container("tech_check_list", height=520):
         for _, row in tools_df.iterrows():
             rid = row['id']
             current_status = row['status']
-            
-            # ย่อชื่อที่ยาวเกินไปให้พอดีบรรทัด
-            display_name = row['name']
-            if "เครื่องตรวจเช็กเต้ารับไฟฟ้า" in display_name:
-                display_name = "เครื่องตรวจเช็กเต้ารับไฟฟ้า"
+            is_abnormal = current_status != "ปกติ"
 
-            col_chk, col_pop = st.columns([4.2, 1.8])
-            with col_chk:
-                is_checked = st.checkbox(f"#{rid} - {display_name} ({row['quantity']})", key=f"flag_chk_{rid}")
-            with col_pop:
-                img_bytes = get_item_image(rid)
-                if img_bytes:
-                    with st.popover("📷 ดูรูป"):
-                        st.image(img_bytes, width=180, caption=row['name'])
-                else:
-                    st.caption("ไม่มีรูป")
+            # กำหนดไอคอนและสีตามสถานะปัจจุบัน
+            badge_color = "🟢" if not is_abnormal else "🔴"
+            status_text = f"[{current_status}]" if is_abnormal else "[ปกติ]"
 
-            # สถานะอุปกรณ์จะแสดงก็ต่อเมื่อติ๊กเลือก Checkbox แล้วเท่านั้น
-            if is_checked:
-                status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
-                if row['subcategory'] == "เครื่องมือช่าง":
-                    if "อุปกรณ์หมด" in status_options:
+            with st.expander(f"{badge_color} #{rid} - {row['name']} (คงเหลือ: {row['quantity']})  {status_text}"):
+                col_img, col_form = st.columns([1, 2.2])
+                with col_img:
+                    img_bytes = get_item_image(rid)
+                    if img_bytes:
+                        st.image(img_bytes, caption=row['name'], use_container_width=True)
+                    else:
+                        st.info("ไม่มีรูปภาพ")
+                with col_form:
+                    # ดึงสถานะเดิมมาเป็น Default ในพรีเซ็ต
+                    base_st = current_status.split(" (")[0] if "(" in current_status else current_status
+                    status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
+                    if row['subcategory'] == "เครื่องมือช่าง" and "อุปกรณ์หมด" in status_options:
                         status_options.remove("อุปกรณ์หมด")
 
-                base_status = current_status.split(" (")[0] if "(" in current_status else current_status
-                if base_status == "กำลังใช้งาน":
-                    def_idx = 0
-                else:
-                    def_idx = status_options.index(base_status) if base_status in status_options else 0
+                    def_idx = status_options.index(base_st) if base_st in status_options else 0
 
-                selected_status = st.selectbox(
-                    f"สถานะ {rid}",
-                    status_options,
-                    index=def_idx,
-                    key=f"status_sel_{rid}"
-                )
+                    selected_status = st.selectbox(
+                        "สถานะการตรวจสอบ *",
+                        status_options,
+                        index=def_idx,
+                        key=f"status_sel_{rid}"
+                    )
 
-                if selected_status != "ปกติ":
-                    if selected_status == "กำลังใช้งาน":
-                        st.text_input("ระบุรายละเอียดการใช้งาน *", value="", key=f"issue_detail_{rid}")
-                        if int(row['quantity']) > 1:
-                            st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
-                    elif selected_status in ["ชำรุด", "สูญหาย"]:
-                        if int(row['quantity']) > 1:
-                            st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
+                    if selected_status != "ปกติ":
+                        if selected_status == "กำลังใช้งาน":
+                            detail_def = current_status.split("(")[1].replace(")", "") if "กำลังใช้งาน (" in current_status else ""
+                            st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_def, key=f"issue_detail_{rid}")
+                            if int(row['quantity']) > 1:
+                                st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
+                        elif selected_status in ["ชำรุด", "สูญหาย"]:
+                            if int(row['quantity']) > 1:
+                                st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
 
-            st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--line);'>", unsafe_allow_html=True)
-
-# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (คลิกชื่อเพื่อดูรูป + จำนวนต่อท้ายในบรรทัดเดียวกัน) ---
+# --- NEW 2026 MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ (ทำงานต่อเนื่อง & ปรับจำนวนง่าย) ---
 @fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
@@ -830,24 +837,29 @@ def render_pool_list(pool_all_df):
     if tech_pool_search.strip():
         pool_df = pool_df[pool_df['name'].str.contains(tech_pool_search.strip(), case=False, na=False)]
 
-    with keyed_container("pool_check_list", height=500):
+    st.caption("💡 ตรวจสอบจำนวนคงเหลือปัจจุบันของเคมีภัณฑ์และอุปกรณ์สระว่ายน้ำ สามารถกดดูรูปภาพและปรับแก้ตัวเลขได้ทันที")
+
+    with keyed_container("pool_check_list", height=520):
         for _, row in pool_df.iterrows():
             rid = row['id']
-            col_name, col_qty = st.columns([4, 2])
-            with col_name:
-                img_bytes = get_item_image(rid)
-                if img_bytes:
-                    with st.popover(f"📦 #{rid} - {row['name']}"):
-                        st.image(img_bytes, width=220, caption=row['name'])
-                else:
-                    st.markdown(f"📦 #{rid} - {row['name']}")
-            with col_qty:
-                st.number_input(f"คงเหลือ {rid}", min_value=0, value=int(row['quantity']),
-                                key=f"pool_q_{rid}", label_visibility="collapsed")
-            st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
+            with st.expander(f"🏊 #{rid} - {row['name']} (ปัจจุบัน: {row['quantity']} ชิ้น)"):
+                col_img, col_num = st.columns([1, 2])
+                with col_img:
+                    img_bytes = get_item_image(rid)
+                    if img_bytes:
+                        st.image(img_bytes, caption=row['name'], use_container_width=True)
+                    else:
+                        st.info("ไม่มีรูปภาพ")
+                with col_num:
+                    st.number_input(
+                        "ปรับจำนวนคงเหลือจริง *",
+                        min_value=0,
+                        value=int(row['quantity']),
+                        key=f"pool_q_{rid}"
+                    )
 
 def clear_inspection_widget_state():
-    prefixes = ("flag_", "issue_type_", "issue_detail_", "issue_qty_", "pool_q_", "status_sel_", "flag_chk_")
+    prefixes = ("issue_type_", "issue_detail_", "issue_qty_", "pool_q_", "status_sel_")
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and k.startswith(prefixes):
             del st.session_state[k]
@@ -1382,22 +1394,14 @@ elif st.session_state.role in TECH_ROLES:
                         item_reports = {}
                         for _, row in tools_all_df.iterrows():
                             rid = row['id']
-                            is_checked = st.session_state.get(f"flag_chk_{rid}", False)
-                            if is_checked:
-                                sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
-                                item_reports[rid] = {
-                                    "flagged": True,
-                                    "status": sel_st,
-                                    "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
-                                    "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
-                                }
-                            else:
-                                item_reports[rid] = {
-                                    "flagged": False,
-                                    "status": "ปกติ",
-                                    "detail": "",
-                                    "qty": 1
-                                }
+                            sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
+                            is_flagged = sel_st != "ปกติ"
+                            item_reports[rid] = {
+                                "flagged": is_flagged,
+                                "status": sel_st,
+                                "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
+                                "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
+                            }
 
                         error_msg = ""
                         for item_id, data in item_reports.items():
