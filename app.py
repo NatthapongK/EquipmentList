@@ -12,8 +12,8 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ  (เวอร์ชันปรับปรุงเสถียรภาพ)
-#  ต้องใช้ Streamlit >= 1.37
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ  (เวอร์ชันปรับความเร็ว)
+#  ต้องใช้ Streamlit >= 1.37 (รองรับ st.fragment)
 #  ต้องตั้งค่า .streamlit/secrets.toml:
 #     [mongo]
 #     uri = "mongodb+srv://..."
@@ -128,11 +128,13 @@ DEFAULT_INITIAL_ITEMS = [
 ]
 
 def build_default_docs():
+    """สร้างเอกสารอุปกรณ์เริ่มต้นพร้อม id ลำดับ 1..N (ใช้ insert_many ครั้งเดียว)"""
     return [{
         "id": idx, "name": i[0], "category": i[1], "subcategory": i[2],
         "quantity": i[3], "status": i[4], "alert_zero": 0, "note": i[5], "image": i[6]
     } for idx, i in enumerate(DEFAULT_INITIAL_ITEMS, start=1)]
 
+# --- MONGODB CONNECTION ---
 @st.cache_resource
 def init_mongo():
     try:
@@ -170,6 +172,7 @@ def get_next_sequence(name):
         {"_id": name}, {"$inc": {"seq": 1}}, upsert=True, return_document=pymongo.ReturnDocument.AFTER)
     return counter["seq"]
 
+# --- IMAGE HELPERS ---
 def compress_image_to_base64(uploaded_file, max_size=(800, 800), quality=80):
     if uploaded_file is None:
         return None
@@ -208,6 +211,7 @@ def get_image_store():
 def get_item_image(item_id):
     return get_image_store().get(int(item_id))
 
+# --- CACHED DATA FUNCTIONS ---
 @st.cache_data(ttl=30, show_spinner=False)
 def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0, "image": 0})))
@@ -320,6 +324,14 @@ def parse_tech_txt_content(text_content):
 def esc(text):
     return _html.escape(str(text))
 
+def keyed_container(key, **kwargs):
+    try:
+        return st.container(key=key, **kwargs)
+    except TypeError:
+        return st.container(**kwargs)
+
+fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None) or (lambda f: f)
+
 def switch_role(new_role):
     st.session_state.role = new_role
     st.session_state.original_role = ROLE_ADMIN
@@ -328,6 +340,7 @@ def switch_role(new_role):
         db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
     st.rerun()
 
+# --- THEME & RESPONSIVE MOBILE CSS ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
@@ -410,6 +423,7 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 </style>
 """, unsafe_allow_html=True)
 
+# --- SESSION & LOGIN STATE ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
@@ -447,9 +461,11 @@ if not st.session_state.logged_in:
 _flash = st.session_state.pop("_flash", None)
 if _flash:
     st.toast(_flash[0], icon=_flash[1])
+
 if st.session_state.get("token") and saved_token != st.session_state.token:
     local_store.setItem(LS_KEY, st.session_state.token, key="ls_set_token")
 
+# --- SIDEBAR ---
 if st.session_state.role in TECH_ROLES:
     st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
 else:
@@ -485,6 +501,7 @@ else:
             st.query_params.clear()
             st.rerun()
 
+# --- HEADER ---
 if st.session_state.role in TECH_ROLES:
     st.markdown(
         f'<div class="app-hero"><div><div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์</div>'
@@ -505,6 +522,7 @@ else:
             get_image_store.clear()
             st.rerun()
 
+# --- ALERT SYSTEM & DATA FETCH ---
 low_stock_limit = int(get_settings_val('low_stock_threshold', '1'))
 items_df = get_items_df()
 
@@ -519,11 +537,9 @@ abn_label = "ชำรุด / กำลังใช้งาน / หมด" if
 abn_title = "อุปกรณ์ชำรุด/กำลังใช้งาน/หมด" if is_tech_view else "อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด/ถูกยืม"
 
 if not items_df.empty:
-    # แก้ไขเงื่อนไขการตรวจจับสถานะ "กำลังใช้งาน" ให้ครอบคลุมและแม่นยำยิ่งขึ้น
     abnormal_items = items_df[
         items_df['status'].isin(abn_statuses) |
-        items_df['status'].str.startswith('กำลังใช้งาน', na=False) |
-        items_df['status'].str.contains('กำลังใช้งาน', na=False)
+        items_df['status'].str.startswith('กำลังใช้งาน', na=False)
     ]
     thr = pd.Series(low_stock_limit, index=items_df.index).where(items_df['alert_zero'] != 1, 0)
     low_stock_items = items_df[(items_df['subcategory'] != 'เครื่องมือช่าง') & (items_df['quantity'] <= thr)]
@@ -596,6 +612,7 @@ else:
     st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
 st.markdown("")
 
+# --- SHARED BORROW / RETURN COMPONENT ---
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
@@ -696,67 +713,70 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (คืนรูปแบบเดิมที่คลิกได้ปกติ พร้อมจัดกลุ่มตาราง) ---
+# --- ลิสต์ตรวจเช็คอุปกรณ์ช่าง (ปรับเฉพาะรูปแบบการเลือกสถานะเหมือน New Text Document.txt) ---
+@fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
     tools_df = tools_all_df
     if tech_search.strip():
         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
 
-    with st.container():
+    with keyed_container("tech_check_list", height=500):
         for _, row in tools_df.iterrows():
             rid = row['id']
             current_status = row['status']
-            is_currently_flagged = current_status != "ปกติ"
+            
+            st.markdown(f"**🛠️ #{rid} - {row['name']}** (คงเหลือ: {row['quantity']})")
 
-            col_item, col_flag = st.columns([5, 1.4])
-            with col_item:
-                status_badge = f" (สถานะเดิม: {current_status})" if is_currently_flagged else ""
-                with st.expander(f"🛠️ {row['name']}{status_badge} (คงเหลือ: {row['quantity']})"):
-                    img_bytes = get_item_image(rid)
-                    if img_bytes:
-                        st.image(img_bytes, width=220, caption=f"รูปภาพ: {row['name']}")
-                    else:
-                        st.info("*(ไม่มีรูปภาพประกอบสำหรับรายการนี้)*")
-            with col_flag:
-                is_flagged = st.checkbox("แจ้งปัญหา", value=is_currently_flagged, key=f"flag_{rid}")
+            status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
+            if row['subcategory'] == "เครื่องมือช่าง":
+                if "อุปกรณ์หมด" in status_options:
+                    status_options.remove("อุปกรณ์หมด")
 
-            if is_flagged:
-                options_list = ["-- เลือกประเภท --", "กำลังใช้งาน", "อุปกรณ์หมด", "ชำรุด", "สูญหาย"]
-                if row['subcategory'] == "เครื่องมือช่าง":
-                    options_list.remove("อุปกรณ์หมด")
-                default_idx = 0
-                detail_default = ""
-                if current_status.startswith("กำลังใช้งาน") or "กำลังใช้งาน" in current_status:
-                    default_idx = 1
-                    m_detail = re.search(r'\((.*?)\)', current_status)
-                    if m_detail:
-                        detail_default = m_detail.group(1)
-                elif current_status in options_list:
-                    default_idx = options_list.index(current_status)
+            # หากการตรวจรอบที่แล้วอยู่ในสถานะ "กำลังใช้งาน (...)" ให้ตั้งค่าเริ่มต้นสำหรับรอบปัจจุบันกลับมาเป็น "ปกติ"
+            base_status = current_status.split(" (")[0] if "(" in current_status else current_status
+            if base_status == "กำลังใช้งาน":
+                def_idx = 0
+            else:
+                def_idx = status_options.index(base_status) if base_status in status_options else 0
 
-                col_sub1, col_sub2 = st.columns(2)
-                with col_sub1:
-                    issue_type = st.selectbox("ประเภทปัญหา *", options_list, index=default_idx, key=f"issue_type_{rid}")
-                with col_sub2:
-                    item_total_q = int(row['quantity'])
-                    if issue_type == "กำลังใช้งาน":
-                        st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_default, key=f"issue_detail_{rid}")
-                        if item_total_q > 1:
-                            st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
-                    elif issue_type in ["ชำรุด", "สูญหาย"]:
-                        if item_total_q > 1:
-                            st.number_input(f"จำนวนชิ้นที่{issue_type} *", min_value=1, max_value=item_total_q, value=1, key=f"issue_qty_{rid}")
-            st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
+            col_sel, col_img = st.columns([3, 1])
+            with col_sel:
+                selected_status = st.selectbox(
+                    f"สถานะ {rid}",
+                    status_options,
+                    index=def_idx,
+                    key=f"status_sel_{rid}",
+                    label_visibility="collapsed"
+                )
+            with col_img:
+                img_bytes = get_item_image(rid)
+                if img_bytes:
+                    with st.popover("📷 ดูรูป"):
+                        st.image(img_bytes, width=180, caption=row['name'])
+                else:
+                    st.caption("ไม่มีรูป")
 
-# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ ---
+            if selected_status != "ปกติ":
+                if selected_status == "กำลังใช้งาน":
+                    st.text_input("ระบุรายละเอียดการใช้งาน *", value="", key=f"issue_detail_{rid}")
+                    if int(row['quantity']) > 1:
+                        st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
+                elif selected_status in ["ชำรุด", "สูญหาย"]:
+                    if int(row['quantity']) > 1:
+                        st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['quantity']), value=1, key=f"issue_qty_{rid}")
+
+            st.markdown("<hr style='margin: 8px 0; border: 0; border-top: 1px solid var(--line);'>", unsafe_allow_html=True)
+
+# --- ลิสต์จำนวนอุปกรณ์สระว่ายน้ำ (fragment) ---
+@fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
     pool_df = pool_all_df
     if tech_pool_search.strip():
         pool_df = pool_df[pool_df['name'].str.contains(tech_pool_search.strip(), case=False, na=False)]
 
-    with st.container():
+    with keyed_container("pool_check_list", height=500):
         for _, row in pool_df.iterrows():
             col_item, col_qty = st.columns([5, 1.6])
             with col_item:
@@ -772,11 +792,12 @@ def render_pool_list(pool_all_df):
             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
 
 def clear_inspection_widget_state():
-    prefixes = ("flag_", "issue_type_", "issue_detail_", "issue_qty_", "pool_q_")
+    prefixes = ("flag_", "issue_type_", "issue_detail_", "issue_qty_", "pool_q_", "status_sel_")
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and k.startswith(prefixes):
             del st.session_state[k]
 
+# --- DIVISION BY ROLE ---
 if st.session_state.role == ROLE_ADMIN:
     admin_menu = st.tabs([
         "📋 1. จัดการอุปกรณ์ทั้งหมด",
@@ -1299,20 +1320,27 @@ elif st.session_state.role in TECH_ROLES:
                         item_reports = {}
                         for _, row in tools_all_df.iterrows():
                             rid = row['id']
-                            if f"flag_{rid}" not in st.session_state:
-                                continue
-                            item_reports[rid] = {
-                                "flagged": bool(st.session_state.get(f"flag_{rid}")),
-                                "status": st.session_state.get(f"issue_type_{rid}", "ปกติ"),
-                                "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
-                                "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
-                            }
+                            sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
+                            if sel_st != "ปกติ":
+                                item_reports[rid] = {
+                                    "flagged": True,
+                                    "status": sel_st,
+                                    "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
+                                    "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
+                                }
+                            else:
+                                item_reports[rid] = {
+                                    "flagged": False,
+                                    "status": "ปกติ",
+                                    "detail": "",
+                                    "qty": 1
+                                }
 
                         error_msg = ""
                         for data in item_reports.values():
                             if data["flagged"]:
                                 if data["status"] in ("-- เลือกประเภท --", "ปกติ"):
-                                    error_msg = "❌ กรุณาเลือกประเภทปัญหาให้ครบถ้วนสำหรับรายการที่ติ๊ก"
+                                    error_msg = "❌ กรุณาเลือกประเภทปัญหาให้ครบถ้วนสำหรับรายการที่แจ้งปัญหา"
                                     break
                                 if data["status"] == "กำลังใช้งาน" and not data["detail"].strip():
                                     error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
