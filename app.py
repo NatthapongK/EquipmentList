@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับแก้ไข KPI, คืนสต็อก, และ UI มือถือ)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ฉบับอัปเดตวงกลม 5 สี & สถานะยืม)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -152,7 +152,6 @@ def init_mongo():
         database.items.insert_many(build_default_docs())
         database.counters.update_one({"_id": "items_id"}, {"$set": {"seq": len(DEFAULT_INITIAL_ITEMS)}}, upsert=True)
     else:
-        # อัปเดตข้อมูลเก่าให้มี orig_quantity หากยังไม่มี
         database.items.update_many({"orig_quantity": {"$exists": False}}, [{"$set": {"orig_quantity": "$quantity"}}])
 
     database.settings.update_one({"key": "low_stock_threshold"}, {"$setOnInsert": {"value": "1"}}, upsert=True)
@@ -333,7 +332,7 @@ def switch_role(new_role):
         db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
     st.rerun()
 
-# --- THEME & CSS (แก้การแสดงผล KPI และมือถือให้สวยงาม ไม่ยืดเยื้อ) ---
+# --- THEME & CSS ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
@@ -363,7 +362,6 @@ h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
 .chip{display:inline-block; padding:.15rem .55rem; border-radius:999px; font-size:.75rem; font-weight:600;
   background:var(--teal); color:#fff;}
 
-/* แก้ไข KPI Grid ไม่ให้ตัวหนังสือตกบรรทัดยืดเยื้อบนมือถือ */
 .kpi-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:0.5rem; margin-bottom:0.8rem;}
 .kpi{background:var(--card); border:1px solid var(--line); border-left:3px solid var(--c,var(--teal));
   border-radius:8px; padding:0.5rem 0.6rem;}
@@ -610,16 +608,25 @@ if not items_df.empty:
 else:
     item_name_map = {}
 
+# ดึงรายการอุปกรณ์ที่กำลังถูกยืมเพื่อนำมาอัปเดตสถานะอัตโนมัติ
+active_borrows = get_active_borrows()
+borrowed_item_map = {}
+for t in active_borrows:
+    it_id = t["item_id"]
+    q_borrowed = t.get("quantity", 1)
+    borrowed_item_map[it_id] = borrowed_item_map.get(it_id, 0) + q_borrowed
+
 is_tech_view = st.session_state.role in TECH_ROLES
-abn_statuses = ['ชำรุด', 'อุปกรณ์หมด'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'อุปกรณ์หมด']
-abn_label = "ชำรุด / กำลังใช้งาน / หมด" if is_tech_view else "ผิดปกติ / กำลังใช้งาน / หมด"
-abn_title = "อุปกรณ์ชำรุด/กำลังใช้งาน/หมด" if is_tech_view else "อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด"
+abn_statuses = ['ชำรุด', 'อุปกรณ์หมด', 'ยืม'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'อุปกรณ์หมด', 'ยืม']
+abn_label = "ชำรุด / กำลังใช้งาน / หมด / ยืม" if is_tech_view else "ผิดปกติ / กำลังใช้งาน / หมด"
+abn_title = "อุปกรณ์ชำรุด/กำลังใช้งาน/หมด/ยืม" if is_tech_view else "อุปกรณ์ผิดปกติ/กำลังใช้งาน/หมด"
 
 if not items_df.empty:
     abnormal_items = items_df[
         items_df['status'].isin(abn_statuses) |
         items_df['status'].str.startswith('กำลังใช้งาน', na=False) |
-        items_df['status'].str.contains('กำลังใช้งาน', na=False)
+        items_df['status'].str.contains('กำลังใช้งาน', na=False) |
+        items_df['id'].isin(borrowed_item_map.keys())
     ]
     thr = pd.Series(low_stock_limit, index=items_df.index).where(items_df['alert_zero'] != 1, 0)
     low_stock_items = items_df[(items_df['subcategory'] != 'เครื่องมือช่าง') & (items_df['quantity'] <= thr)]
@@ -627,7 +634,6 @@ else:
     abnormal_items = pd.DataFrame()
     low_stock_items = pd.DataFrame()
 
-active_borrows = get_active_borrows()
 borrowed_cnt = len(active_borrows)
 abn_cnt, low_cnt = len(abnormal_items), len(low_stock_items)
 
@@ -793,7 +799,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (ทำงานต่อเนื่อง & คืนสต็อกอัตโนมัติเมื่อสถานะกลับเป็นปกติ) ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (แสดง 5 สีสถานะ และซิงค์สถานะถูกยืมอัตโนมัติ) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -807,10 +813,24 @@ def render_tool_inspection_list(tools_all_df):
         for _, row in tools_df.iterrows():
             rid = row['id']
             current_status = row['status']
-            is_abnormal = current_status != "ปกติ"
+            borrow_qty = borrowed_item_map.get(rid, 0)
 
-            badge_color = "🟢" if not is_abnormal else "🔴"
-            status_text = f"[{current_status}]" if is_abnormal else "[ปกติ]"
+            # กำหนดไอคอน 5 สีสถานะ: 🟢 ปกติ | 🟡 กำลังใช้งาน | 🔵 ยืม | 🟠 หมด | 🔴 ชำรุด
+            if borrow_qty > 0:
+                badge_color = "🔵"
+                status_text = f"[ยืม ({borrow_qty} ชิ้น)]"
+            elif current_status == "ปกติ":
+                badge_color = "🟢"
+                status_text = "[ปกติ]"
+            elif current_status.startswith("กำลังใช้งาน"):
+                badge_color = "🟡"
+                status_text = f"[{current_status}]"
+            elif current_status == "อุปกรณ์หมด":
+                badge_color = "🟠"
+                status_text = "[อุปกรณ์หมด]"
+            else:
+                badge_color = "🔴"
+                status_text = f"[{current_status}]"
 
             with st.expander(f"{badge_color} {row['name']} (คงเหลือ: {row['quantity']})  {status_text}"):
                 col_img, col_form = st.columns([1, 2.2])
@@ -822,7 +842,10 @@ def render_tool_inspection_list(tools_all_df):
                         st.info("ไม่มีรูปภาพ")
                 with col_form:
                     base_st = current_status.split(" (")[0] if "(" in current_status else current_status
-                    status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
+                    if borrow_qty > 0:
+                        base_st = "ยืม"
+
+                    status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน", "ยืม"]
                     if row['subcategory'] == "เครื่องมือช่าง" and "อุปกรณ์หมด" in status_options:
                         status_options.remove("อุปกรณ์หมด")
 
@@ -1455,7 +1478,6 @@ elif st.session_state.role in TECH_ROLES:
                                         detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
                                         flagged_summaries.append(detail_txt)
                                     else:
-                                        # หากรอบนี้กลับมาปกติ คืนค่าจำนวนคงเหลือเท่ากับ orig_quantity เดิม
                                         bulk_operations.append(pymongo.operations.UpdateOne(
                                             {"id": item_id}, {"$set": {"status": "ปกติ", "quantity": orig_q}}))
 
