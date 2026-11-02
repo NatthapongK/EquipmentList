@@ -844,7 +844,7 @@ def render_pool_list(pool_all_df):
             st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
 
 def clear_inspection_widget_state():
-    prefixes = ("flag_", "issue_type_", "issue_detail_", "issue_qty_", "pool_q_")
+    prefixes = ("flag_", "issue_type_", "issue_detail_", "issue_qty_", "pool_q_", "status_sel_")
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and k.startswith(prefixes):
             del st.session_state[k]
@@ -1369,84 +1369,84 @@ elif st.session_state.role in TECH_ROLES:
 
                     st.progress(len(photo_files) / 4, text=f"📸 แนบรูปแล้ว {len(photo_files)}/4 รูป")
                     if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
-    item_reports = {}
-    for _, row in tools_all_df.iterrows():
-        rid = row['id']
-        sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
-        if sel_st != "ปกติ":
-            item_reports[rid] = {
-                "flagged": True,
-                "status": sel_st,
-                "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
-                "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
-            }
-        else:
-            item_reports[rid] = {
-                "flagged": False,
-                "status": "ปกติ",
-                "detail": "",
-                "qty": 1
-            }
+                        item_reports = {}
+                        for _, row in tools_all_df.iterrows():
+                            rid = row['id']
+                            sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
+                            if sel_st != "ปกติ":
+                                item_reports[rid] = {
+                                    "flagged": True,
+                                    "status": sel_st,
+                                    "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
+                                    "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
+                                }
+                            else:
+                                item_reports[rid] = {
+                                    "flagged": False,
+                                    "status": "ปกติ",
+                                    "detail": "",
+                                    "qty": 1
+                                }
 
-    # ตรวจสอบความถูกต้องก่อนบันทึก
-    error_msg = ""
-    for item_id, data in item_reports.items():
-        if data["flagged"]:
-            if data["status"] == "กำลังใช้งาน" and not data["detail"].strip():
-                error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
-                break
+                        # ตรวจสอบความถูกต้องก่อนบันทึก
+                        error_msg = ""
+                        for item_id, data in item_reports.items():
+                            if data["flagged"]:
+                                if data["status"] == "กำลังใช้งาน" and not data["detail"].strip():
+                                    error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
+                                    break
 
-    if not error_msg and len(photo_files) < 4:
-        error_msg = "❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบทั้ง 4 รูป จึงจะสามารถยืนยันผลตรวจได้"
+                        if not error_msg and len(photo_files) < 4:
+                            error_msg = "❌ กรุณาอัปโหลดรูปถ่ายรวมหน้างานให้ครบทั้ง 4 รูป จึงจะสามารถยืนยันผลตรวจได้"
 
-    if error_msg:
-        st.error(error_msg)
-    else:
-        with st.spinner("กำลังบันทึกผลการตรวจ..."):
-            photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in photo_files]
-            flagged_summaries = []
-            bulk_operations = []
-            row_map = tools_all_df.set_index('id')
+                        if error_msg:
+                            st.error(error_msg)
+                        else:
+                            with st.spinner("กำลังบันทึกผลการตรวจ..."):
+                                photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in photo_files]
+                                flagged_summaries = []
+                                bulk_operations = []
+                                row_map = tools_all_df.set_index('id')
 
-            for item_id, data in item_reports.items():
-                curr_q = int(row_map.loc[item_id, 'quantity'])
-                item_name = row_map.loc[item_id, 'name']
+                                for item_id, data in item_reports.items():
+                                    curr_q = int(row_map.loc[item_id, 'quantity'])
+                                    item_name = row_map.loc[item_id, 'name']
 
-                if data["flagged"]:
-                    final_st = data["status"]
-                    if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
-                        final_st = f"กำลังใช้งาน ({data['detail']})"
-                    if data["status"] == "อุปกรณ์หมด":
-                        new_q = 0
-                    else:
-                        new_q = max(0, curr_q - data["qty"])
-                    bulk_operations.append(pymongo.operations.UpdateOne(
-                        {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
-                    detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
-                    flagged_summaries.append(detail_txt)
-                else:
-                    bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": "ปกติ"}}))
+                                    if data["flagged"]:
+                                        final_st = data["status"]
+                                        if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
+                                            final_st = f"กำลังใช้งาน ({data['detail']})"
+                                        if data["status"] == "อุปกรณ์หมด":
+                                            new_q = 0
+                                        else:
+                                            new_q = max(0, curr_q - data["qty"])
+                                        bulk_operations.append(pymongo.operations.UpdateOne(
+                                            {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
+                                        detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
+                                        flagged_summaries.append(detail_txt)
+                                    else:
+                                        bulk_operations.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"status": "ปกติ"}}))
 
-            if bulk_operations:
-                db.items.bulk_write(bulk_operations, ordered=False)
+                                if bulk_operations:
+                                    db.items.bulk_write(bulk_operations, ordered=False)
 
-            summary_details = ", ".join(flagged_summaries) if flagged_summaries else "ปกติทุกรายการ"
-            db.inspections.insert_one({
-                "id": get_next_sequence("inspections_id"),
-                "tech_name": st.session_state.username,
-                "category": "อุปกรณ์ช่าง",
-                "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
-                "session_num": global_count + 1,
-                "details": f"รอบที่ {global_count + 1} | รายการผิดปกติ: {summary_details}",
-                "photos": "|||".join(photos_b64)
-            })
+                                summary_details = ", ".join(flagged_summaries) if flagged_summaries else "ปกติทุกรายการ"
+                                db.inspections.insert_one({
+                                    "id": get_next_sequence("inspections_id"),
+                                    "tech_name": st.session_state.username,
+                                    "category": "อุปกรณ์ช่าง",
+                                    "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
+                                    "session_num": global_count + 1,
+                                    "details": f"รอบที่ {global_count + 1} | รายการผิดปกติ: {summary_details}",
+                                    "photos": "|||".join(photos_b64)
+                                })
 
-        refresh_items()
-        get_inspection_count.clear()
-        get_inspections_list.clear()
-        clear_inspection_widget_state()
-        st.session_state.uploader_version += 1
-        done("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
+                            refresh_items()
+                            get_inspection_count.clear()
+                            get_inspections_list.clear()
+                            clear_inspection_widget_state()
+                            st.session_state.uploader_version += 1
+                            done("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
                 else:
                     st.info("ไม่มีอุปกรณ์ช่างให้ตรวจสอบในขณะนี้")
 
