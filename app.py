@@ -10,10 +10,9 @@ import io
 import secrets
 from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
-import time
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (Auto-Sync & Clean UI)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (Dark Mode Force & UI Fixes)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -157,19 +156,9 @@ def init_mongo():
 
     database.settings.update_one({"key": "low_stock_threshold"}, {"$setOnInsert": {"value": "1"}}, upsert=True)
     database.settings.update_one({"key": "global_daily_quota"}, {"$setOnInsert": {"value": "3"}}, upsert=True)
-    database.settings.update_one({"key": "db_version"}, {"$setOnInsert": {"value": str(time.time())}}, upsert=True)
     return database
 
 db = init_mongo()
-
-def bump_db_version():
-    """อัปเดตเวอร์ชันฐานข้อมูลเพื่อให้ทุกหน้าจอทำการซิงค์อัตโนมัติ"""
-    db.settings.update_one({"key": "db_version"}, {"$set": {"value": str(time.time())}}, upsert=True)
-
-@st.cache_data(ttl=5, show_spinner=False)
-def get_db_version():
-    res = db.settings.find_one({"key": "db_version"})
-    return res["value"] if res else "0"
 
 def get_next_sequence(name):
     counter = db.counters.find_one_and_update(
@@ -214,7 +203,7 @@ def get_image_store():
 def get_item_image(item_id):
     return get_image_store().get(int(item_id))
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0, "image": 0})))
     if not df.empty:
@@ -224,11 +213,11 @@ def get_items_df():
         df['note'] = df['note'].fillna("") if 'note' in df.columns else ""
     return df
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def get_tech_users_df():
     return pd.DataFrame(list(db.tech_users.find({}, {"_id": 0})))
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_settings_val(key, default="1"):
     res = db.settings.find_one({"key": key})
     return res["value"] if res else default
@@ -236,13 +225,12 @@ def get_settings_val(key, default="1"):
 def set_settings_val(key, val):
     db.settings.update_one({"key": key}, {"$set": {"value": str(val)}}, upsert=True)
     get_settings_val.clear()
-    bump_db_version()
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_active_borrows():
     return list(db.transactions.find({"status": "กำลังยืม"}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1))
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_pending_reqs():
     return list(db.requisition_requests.find({"status": "รออนุมัติ"}, {"_id": 0}).sort("id", -1))
 
@@ -250,7 +238,7 @@ def get_pending_reqs():
 def get_inspection_count(category, today_str):
     return db.inspections.count_documents({"category": category, "inspection_date": {"$regex": f"^{today_str}"}})
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_tx_history(limit=300):
     return list(db.transactions.find({}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1).limit(limit))
 
@@ -259,7 +247,7 @@ def get_tx_image(tx_id):
     d = db.transactions.find_one({"id": tx_id}, {"_id": 0, "borrower_image": 1})
     return b64_to_bytes(d.get("borrower_image")) if d else None
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_inspections_list(limit=1000):
     return list(db.inspections.find({}, {"_id": 0, "photos": 0}).sort("id", -1).limit(limit))
 
@@ -271,30 +259,27 @@ def get_inspection_photos(insp_id):
         return []
     return [b for b in (b64_to_bytes(p) for p in str(raw).split("|||")) if b]
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_req_history(limit=300):
     return list(db.requisition_requests.find({"status": {"$ne": "รออนุมัติ"}}, {"_id": 0}).sort("id", -1).limit(limit))
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_my_reqs(username):
     return list(db.requisition_requests.find({"tech_name": username}, {"_id": 0}).sort("id", -1).limit(200))
 
 def clear_tx_cache():
     get_active_borrows.clear()
     get_tx_history.clear()
-    bump_db_version()
 
 def clear_req_cache():
     get_pending_reqs.clear()
     get_req_history.clear()
     get_my_reqs.clear()
-    bump_db_version()
 
 def refresh_items(images=False):
     get_items_df.clear()
     if images:
         get_image_store.clear()
-    bump_db_version()
 
 def done(msg, icon="✅"):
     st.session_state["_flash"] = (msg, icon)
@@ -339,38 +324,29 @@ def keyed_container(key, **kwargs):
 
 fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None) or (lambda f: f)
 
-# --- AUTO-SYNC BACKGROUND WATCHER (Real-time update) ---
-@fragment(run_every="3s")
-def background_sync_watcher():
-    current_remote_ver = get_db_version()
-    if "last_seen_ver" not in st.session_state:
-        st.session_state.last_seen_ver = current_remote_ver
-    elif st.session_state.last_seen_ver != current_remote_ver:
-        st.session_state.last_seen_ver = current_remote_ver
-        st.rerun(scope="app")
-
 def switch_role(new_role):
     st.session_state.role = new_role
     st.session_state.original_role = ROLE_ADMIN
     tk = st.session_state.get("token")
     if tk:
         db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
-    bump_db_version()
     st.rerun()
 
-# --- THEME & CSS ---
+# --- THEME & CSS (Force Dark Theme Config & Tight Padding) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
 :root{
+  color-scheme: dark;
   --ink:#F1F5F9; --muted:#94A3B8; --line:#334155; --bg:#0B132B; --card:#1E293B;
   --teal:#0E7C86; --teal-d:#0A5C64; --ok:#22C55E; --warn:#F59E0B; --bad:#EF4444;
 }
 .stApp, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp p, .stApp label, .stApp li,
 .stApp input, .stApp textarea, .stApp button, .stApp [data-baseweb="tab"], .stApp [data-baseweb="select"]{
   font-family:'IBM Plex Sans Thai','Noto Sans Thai',system-ui,sans-serif;
+  color: var(--ink) !important;
 }
-.stApp{background:var(--bg); color:var(--ink);}
+.stApp{background:var(--bg) !important; color:var(--ink);}
 
 header[data-testid="stHeader"] {display: none !important;}
 footer {visibility: hidden !important; display: none !important;}
@@ -378,21 +354,22 @@ footer {visibility: hidden !important; display: none !important;}
 .stDeployButton {display: none !important;}
 [data-testid="stStatusWidget"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
 
-.block-container{padding-top:1.2rem; padding-bottom:3rem; max-width:1200px;}
+/* ขยับตำแหน่งข้อความด้านบนให้ชิดขึ้นแบบข้อ 4 */
+.block-container{padding-top:0.4rem !important; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
 
-.app-hero{background:#111827; color:#fff; border-radius:12px; padding:0.85rem 1rem; border:1px solid var(--line);
-  display:flex; justify-content:space-between; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:0.8rem;}
-.app-hero .t{font-size:1.15rem; font-weight:700; line-height:1.2; color:#F8FAFC;}
-.app-hero .s{font-size:0.78rem; color:#94A3B8; margin-top:.1rem;}
+.app-hero{background:#111827; color:#fff; border-radius:12px; padding:0.6rem 0.9rem; border:1px solid var(--line);
+  display:flex; justify-content:space-between; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:0.6rem;}
+.app-hero .t{font-size:1.1rem; font-weight:700; line-height:1.2; color:#F8FAFC;}
+.app-hero .s{font-size:0.75rem; color:#94A3B8; margin-top:.1rem;}
 .chip{display:inline-block; padding:.15rem .55rem; border-radius:999px; font-size:.75rem; font-weight:600;
   background:var(--teal); color:#fff;}
 
-.kpi-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:0.5rem; margin-bottom:0.8rem;}
+.kpi-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:0.5rem; margin-bottom:0.6rem;}
 .kpi{background:var(--card); border:1px solid var(--line); border-left:3px solid var(--c,var(--teal));
-  border-radius:8px; padding:0.5rem 0.6rem;}
-.kpi .n{font-size:1.35rem; font-weight:700; line-height:1.1; color:#F8FAFC;}
-.kpi .l{font-size:0.72rem; color:var(--muted); line-height:1.2; margin-top:0.15rem;}
+  border-radius:8px; padding:0.4rem 0.5rem;}
+.kpi .n{font-size:1.3rem; font-weight:700; line-height:1.1; color:#F8FAFC;}
+.kpi .l{font-size:0.7rem; color:var(--muted); line-height:1.2; margin-top:0.1rem;}
 
 section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(--line);}
 .user-card{display:flex; align-items:center; gap:.7rem; padding:.7rem; border:1px solid var(--line);
@@ -403,12 +380,12 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .u-role{font-size:.8rem; color:var(--muted);}
 
 .stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto; flex-wrap:nowrap;}
-.stTabs [data-baseweb="tab"]{height:auto; padding:.5rem .8rem; font-weight:500; color:var(--muted); white-space:nowrap;}
+.stTabs [data-baseweb="tab"]{height:auto; padding:.4rem .7rem; font-weight:500; color:var(--muted); white-space:nowrap;}
 .stTabs [aria-selected="true"]{color:#38BDF8; font-weight:600;}
 .stTabs [data-baseweb="tab-highlight"]{background:#38BDF8; height:3px;}
 
-[data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card); margin-bottom: 0.4rem;}
-[data-testid="stForm"]{border:1px solid var(--line); border-radius:10px; background:var(--card); padding:0.8rem;}
+[data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card); margin-bottom: 0.3rem;}
+[data-testid="stForm"]{border:1px solid var(--line); border-radius:10px; background:var(--card); padding:0.7rem;}
 
 [data-testid="stDataFrame"], .stTable {
   border: 1px solid var(--line);
@@ -423,20 +400,20 @@ section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(
 .stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
 
-.req-banner{display:flex; align-items:center; gap:.9rem; padding:.8rem 1rem; margin-bottom:0.8rem;
+.req-banner{display:flex; align-items:center; gap:.9rem; padding:0.6rem 0.8rem; margin-bottom:0.6rem;
   border-radius:10px; border:2px solid var(--warn); background:linear-gradient(90deg,#78350F,#92400E);
   animation:reqpulse 1.8s ease-in-out infinite;}
-.req-banner .ic{font-size:1.7rem; line-height:1;}
-.req-banner .t{font-size:1.0rem; font-weight:700; color:#FEF3C7;}
-.req-banner .s{font-size:0.8rem; color:#FDE68A; margin-top:.1rem;}
+.req-banner .ic{font-size:1.5rem; line-height:1;}
+.req-banner .t{font-size:0.95rem; font-weight:700; color:#FEF3C7;}
+.req-banner .s{font-size:0.75rem; color:#FDE68A; margin-top:.05rem;}
 @keyframes reqpulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.55);} 50%{box-shadow:0 0 0 8px rgba(245,158,11,0);}}
 
 @media (max-width:768px){
-  .block-container{padding-left:.4rem; padding-right:.4rem;}
-  .kpi-grid{grid-template-columns:repeat(2,1fr); gap:0.4rem;}
-  .kpi .n{font-size:1.25rem;}
-  .kpi .l{font-size:0.7rem;}
-  .app-hero .t{font-size:1.0rem;}
+  .block-container{padding-left:.3rem; padding-right:.3rem;}
+  .kpi-grid{grid-template-columns:repeat(2,1fr); gap:0.3rem;}
+  .kpi .n{font-size:1.2rem;}
+  .kpi .l{font-size:0.65rem;}
+  .app-hero .t{font-size:0.95rem;}
   .stApp .stButton > button, .stApp [data-testid="stBaseButton-primary"] > button{width:100%;}
 }
 </style>
@@ -490,7 +467,7 @@ if st.session_state.get("token") and saved_token != st.session_state.token:
     except:
         pass
 
-# --- SIDEBAR & LOGOUT FIX ---
+# --- SIDEBAR & LOGOUT (ซ่อนปุ่มออกจากระบบเฉพาะหน้าช่าง ตามข้อ 1) ---
 if st.session_state.role in TECH_ROLES:
     st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
 else:
@@ -581,28 +558,23 @@ if not st.session_state.logged_in or not st.session_state.role or st.session_sta
                     local_store.setItem(LS_KEY, token, key="ls_set_token")
                 except:
                     pass
-                bump_db_version()
                 st.success("เข้าสู่ระบบสำเร็จ!")
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
-# --- RUN BACKGROUND AUTO-SYNC WATCHER ---
-background_sync_watcher()
-
 # --- HEADER (LOGGED IN) ---
 if st.session_state.role in TECH_ROLES:
-    # หน้าช่าง: เอาปุ่มออกจากระบบออกตามข้อ 1
     st.markdown(
         f'<div class="app-hero"><div><div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์</div>'
         f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
         f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
         unsafe_allow_html=True)
 else:
-    # หน้าแอดมิน: ตัดปุ่มโหลดข้อมูลใหม่ออกตามข้อ 3 (เพราะมีระบบ Auto-Sync แล้ว)
+    # ตัดปุ่ม "โหลดข้อมูลใหม่" ออกจากหน้าแอดมินโดยสมบูรณ์
     st.markdown(
-        f'<div class="app-hero" style="margin-bottom:0.5rem;"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
+        f'<div class="app-hero" style="margin-bottom:0.4rem;"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
         f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
         f'<span class="chip">{esc(st.session_state.role)}</span></div>',
         unsafe_allow_html=True)
@@ -1341,13 +1313,15 @@ elif st.session_state.role in TECH_ROLES:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
                 switch_role(ROLE_ADMIN)
 
-    tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกของ", "🔄 ระบบยืม-คืน อุปกรณ์"])
+    # เปลี่ยนชื่อเมนูตามข้อ 2 เป็น "📦 เบิกอุปกรณ์"
+    tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกอุปกรณ์", "🔄 ระบบยืม-คืน อุปกรณ์"])
 
     with tech_main_tab[2]:
         render_borrow_return_system()
 
     with tech_main_tab[1]:
-        st.markdown("### 📦 เบิกของ (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
+        # เปลี่ยนหัวข้อตามข้อ 3 เป็น "📦 คำขอเพิ่มสต็อก..."
+        st.markdown("### 📦 คำขอเพิ่มสต็อก (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
         st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังผู้ออกแบบ/ดูแลระบบเพื่อรออนุมัติบวกสต็อก")
 
         tools_requisition_df = items_df[
@@ -1361,16 +1335,15 @@ elif st.session_state.role in TECH_ROLES:
 
         if not tools_requisition_df.empty:
             with st.form("requisition_request_form", clear_on_submit=True):
-                # ตัดข้อความ [อุปกรณ์ช่าง] และ [อุปกรณ์สระว่ายน้ำ] ออกจากหน้าเบิกของ
-                req_item_dict = {f"{row['name']} (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id']
-                                 for _, row in tools_requisition_df.iterrows()}
-                sel_req_label = st.selectbox("เลือกอุปกรณ์ที่ต้องการเพิ่มจำนวน *", list(req_item_dict.keys()))
+                item_dict = {f"{row['name']} (คงเหลือในคลัง: {row['quantity']} ชิ้น)": row['id']
+                             for _, row in tools_requisition_df.iterrows()}
+                sel_req_label = st.selectbox("เลือกอุปกรณ์ที่ต้องการเพิ่มจำนวน *", list(item_dict.keys()))
                 req_qty = st.number_input("จำนวนที่ต้องการเพิ่มเข้าคลัง *", min_value=1, value=1)
                 req_note = st.text_area("หมายเหตุ / เหตุผลที่ขอเพิ่ม *")
 
                 if st.form_submit_button("📤 ส่งคำขอเบิกของ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
                     if req_note.strip():
-                        req_selected_id = req_item_dict[sel_req_label]
+                        req_selected_id = item_dict[sel_req_label]
                         db.requisition_requests.insert_one({
                             "id": get_next_sequence("requisition_requests_id"),
                             "tech_name": st.session_state.username, "item_id": req_selected_id,
