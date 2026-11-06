@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from streamlit_local_storage import LocalStorage
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (Dark Mode Force & UI Fixes)
+#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ปรับแก้จำนวนเฉพาะอุปกรณ์ช่างทั่วไป)
 # =====================================================================
 
 # --- TIMEZONE CONFIG (Thailand UTC+7) ---
@@ -354,7 +354,6 @@ footer {visibility: hidden !important; display: none !important;}
 .stDeployButton {display: none !important;}
 [data-testid="stStatusWidget"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
 
-/* ขยับตำแหน่งข้อความด้านบนให้ชิดขึ้นแบบข้อ 4 */
 .block-container{padding-top:0.4rem !important; padding-bottom:3rem; max-width:1200px;}
 h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
 
@@ -467,7 +466,7 @@ if st.session_state.get("token") and saved_token != st.session_state.token:
     except:
         pass
 
-# --- SIDEBAR & LOGOUT (ซ่อนปุ่มออกจากระบบเฉพาะหน้าช่าง ตามข้อ 1) ---
+# --- SIDEBAR & LOGOUT (ซ่อนปุ่มออกจากระบบเฉพาะหน้าช่าง) ---
 if st.session_state.role in TECH_ROLES:
     st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
 else:
@@ -572,7 +571,6 @@ if st.session_state.role in TECH_ROLES:
         f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
         unsafe_allow_html=True)
 else:
-    # ตัดปุ่ม "โหลดข้อมูลใหม่" ออกจากหน้าแอดมินโดยสมบูรณ์
     st.markdown(
         f'<div class="app-hero" style="margin-bottom:0.4rem;"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
         f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
@@ -782,7 +780,7 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง ---
+# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (แยกประเภท เครื่องมือช่าง VS อุปกรณ์ช่างทั่วไป) ---
 @fragment
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -790,12 +788,13 @@ def render_tool_inspection_list(tools_all_df):
     if tech_search.strip():
         tools_df = tools_df[tools_df['name'].str.contains(tech_search.strip(), case=False, na=False)]
 
-    st.caption("💡 คลิกที่ชื่ออุปกรณ์เพื่อแก้ไขสถานะความผิดปกติได้อย่างรวดเร็ว · สามารถกดปุ่มดูรูปภาพประกอบได้ภายใน")
+    st.caption("💡 คลิกที่ชื่ออุปกรณ์เพื่อตรวจสอบสถานะ · อุปกรณ์ช่างทั่วไปสามารถปรับแก้จำนวนคงเหลือจริงได้ทันที")
 
     with keyed_container("tech_check_list", height=520):
         for _, row in tools_df.iterrows():
             rid = row['id']
             current_status = row['status']
+            subcat = row.get('subcategory', '')
             borrow_qty = borrowed_item_map.get(rid, 0)
             borrower_info = ", ".join(borrower_details_map.get(rid, []))
 
@@ -816,32 +815,40 @@ def render_tool_inspection_list(tools_all_df):
                 status_text = f"[{current_status}]"
 
             with st.expander(f"{badge_color} {row['name']} (คงเหลือ: {row['quantity']})  {status_text}"):
-                base_st = current_status.split(" (")[0] if "(" in current_status else current_status
-                if borrow_qty > 0:
-                    base_st = "ยืม"
+                
+                # หากเป็น "อุปกรณ์ช่างทั่วไป" ให้สามารถระบุ/ปรับแก้จำนวนคงเหลือจริงหน้างานได้
+                if subcat == "อุปกรณ์ช่างทั่วไป":
+                    st.number_input(
+                        "ปรับจำนวนคงเหลือจริง *",
+                        min_value=0,
+                        value=int(row['quantity']),
+                        key=f"gen_q_{rid}"
+                    )
+                else:
+                    # หากเป็น "เครื่องมือช่าง" ใช้ระบบเลือกสถานะปกติ/ชำรุด/สูญหาย/กำลังใช้งาน ตามเดิม
+                    base_st = current_status.split(" (")[0] if "(" in current_status else current_status
+                    if borrow_qty > 0:
+                        base_st = "ยืม"
 
-                status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
-                if row['subcategory'] == "เครื่องมือช่าง" and "อุปกรณ์หมด" in status_options:
-                    status_options.remove("อุปกรณ์หมด")
+                    status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
+                    def_idx = status_options.index(base_st) if base_st in status_options else 0
 
-                def_idx = status_options.index(base_st) if base_st in status_options else 0
+                    selected_status = st.selectbox(
+                        "สถานะการตรวจสอบ *",
+                        status_options,
+                        index=def_idx,
+                        key=f"status_sel_{rid}"
+                    )
 
-                selected_status = st.selectbox(
-                    "สถานะการตรวจสอบ *",
-                    status_options,
-                    index=def_idx,
-                    key=f"status_sel_{rid}"
-                )
-
-                if selected_status != "ปกติ":
-                    if selected_status == "กำลังใช้งาน":
-                        detail_def = current_status.split("(")[1].replace(")", "") if "กำลังใช้งาน (" in current_status else ""
-                        st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_def, key=f"issue_detail_{rid}")
-                        if int(row['orig_quantity']) > 1:
-                            st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
-                    elif selected_status in ["ชำรุด", "สูญหาย"]:
-                        if int(row['orig_quantity']) > 1:
-                            st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
+                    if selected_status != "ปกติ":
+                        if selected_status == "กำลังใช้งาน":
+                            detail_def = current_status.split("(")[1].replace(")", "") if "กำลังใช้งาน (" in current_status else ""
+                            st.text_input("ระบุรายละเอียดการใช้งาน *", value=detail_def, key=f"issue_detail_{rid}")
+                            if int(row['orig_quantity']) > 1:
+                                st.number_input("จำนวนชิ้นที่นำไปใช้งาน *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
+                        elif selected_status in ["ชำรุด", "สูญหาย"]:
+                            if int(row['orig_quantity']) > 1:
+                                st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
 
                 img_bytes = get_item_image(rid)
                 if img_bytes:
@@ -879,7 +886,7 @@ def render_pool_list(pool_all_df):
                     st.caption("*(ไม่มีรูปภาพประกอบ)*")
 
 def clear_inspection_widget_state():
-    prefixes = ("issue_type_", "issue_detail_", "issue_qty_", "pool_q_", "status_sel_")
+    prefixes = ("issue_type_", "issue_detail_", "issue_qty_", "pool_q_", "status_sel_", "gen_q_")
     for k in list(st.session_state.keys()):
         if isinstance(k, str) and k.startswith(prefixes):
             del st.session_state[k]
@@ -1313,14 +1320,12 @@ elif st.session_state.role in TECH_ROLES:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
                 switch_role(ROLE_ADMIN)
 
-    # เปลี่ยนชื่อเมนูตามข้อ 2 เป็น "📦 เบิกอุปกรณ์"
     tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกอุปกรณ์", "🔄 ระบบยืม-คืน อุปกรณ์"])
 
     with tech_main_tab[2]:
         render_borrow_return_system()
 
     with tech_main_tab[1]:
-        # เปลี่ยนหัวข้อตามข้อ 3 เป็น "📦 คำขอเพิ่มสต็อก..."
         st.markdown("### 📦 คำขอเพิ่มสต็อก (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
         st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังผู้ออกแบบ/ดูแลระบบเพื่อรออนุมัติบวกสต็อก")
 
@@ -1416,18 +1421,27 @@ elif st.session_state.role in TECH_ROLES:
                         item_reports = {}
                         for _, row in tools_all_df.iterrows():
                             rid = row['id']
-                            sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
-                            is_flagged = sel_st != "ปกติ"
-                            item_reports[rid] = {
-                                "flagged": is_flagged,
-                                "status": sel_st,
-                                "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
-                                "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
-                            }
+                            subcat = row.get('subcategory', '')
+                            if subcat == "อุปกรณ์ช่างทั่วไป":
+                                q_val = int(st.session_state.get(f"gen_q_{rid}", row['quantity']))
+                                item_reports[rid] = {
+                                    "type": "general",
+                                    "quantity": q_val
+                                }
+                            else:
+                                sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
+                                is_flagged = sel_st != "ปกติ"
+                                item_reports[rid] = {
+                                    "type": "tool",
+                                    "flagged": is_flagged,
+                                    "status": sel_st,
+                                    "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
+                                    "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
+                                }
 
                         error_msg = ""
                         for item_id, data in item_reports.items():
-                            if data["flagged"]:
+                            if data["type"] == "tool" and data["flagged"]:
                                 if data["status"] == "กำลังใช้งาน" and not data["detail"].strip():
                                     error_msg = "❌ กรุณากรอกรายละเอียดการใช้งานสำหรับรายการที่เลือก 'กำลังใช้งาน'"
                                     break
@@ -1448,21 +1462,28 @@ elif st.session_state.role in TECH_ROLES:
                                     orig_q = int(row_map.loc[item_id, 'orig_quantity'])
                                     item_name = row_map.loc[item_id, 'name']
 
-                                    if data["flagged"]:
-                                        final_st = data["status"]
-                                        if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
-                                            final_st = f"กำลังใช้งาน ({data['detail']})"
-                                        if data["status"] == "อุปกรณ์หมด":
-                                            new_q = 0
-                                        else:
-                                            new_q = max(0, orig_q - data["qty"])
+                                    if data["type"] == "general":
+                                        new_q = data["quantity"]
                                         bulk_operations.append(pymongo.operations.UpdateOne(
-                                            {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
-                                        detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
-                                        flagged_summaries.append(detail_txt)
+                                            {"id": item_id}, {"$set": {"quantity": new_q, "orig_quantity": new_q, "status": "ปกติ"}}))
+                                        if new_q != int(row_map.loc[item_id, 'quantity']):
+                                            flagged_summaries.append(f"{item_name}: ปรับสต็อกเหลือ {new_q} ชิ้น")
                                     else:
-                                        bulk_operations.append(pymongo.operations.UpdateOne(
-                                            {"id": item_id}, {"$set": {"status": "ปกติ", "quantity": orig_q}}))
+                                        if data["flagged"]:
+                                            final_st = data["status"]
+                                            if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
+                                                final_st = f"กำลังใช้งาน ({data['detail']})"
+                                            if data["status"] == "อุปกรณ์หมด":
+                                                new_q = 0
+                                            else:
+                                                new_q = max(0, orig_q - data["qty"])
+                                            bulk_operations.append(pymongo.operations.UpdateOne(
+                                                {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
+                                            detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
+                                            flagged_summaries.append(detail_txt)
+                                        else:
+                                            bulk_operations.append(pymongo.operations.UpdateOne(
+                                                {"id": item_id}, {"$set": {"status": "ปกติ", "quantity": orig_q}}))
 
                                 if bulk_operations:
                                     db.items.bulk_write(bulk_operations, ordered=False)
