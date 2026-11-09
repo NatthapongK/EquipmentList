@@ -59,25 +59,39 @@ ROLE_TECH_SP = "ช่างประจำอาคารพิเศษ"
 TECH_ROLES = [ROLE_TECH, ROLE_TECH_SP]
 
 # --- DEFAULT HARDWARE & IOT CREDENTIALS (For Admin Only) ---
-DEFAULT_IOT_CONFIG = {
-    "mqtt_server": secret_iot.get("mqtt_server", ""),
-    "mqtt_user": secret_iot.get("mqtt_user", ""),
-    "mqtt_pass": secret_iot.get("mqtt_pass", ""),
-    "line_token": secret_iot.get("line_token", ""),
-    "line_group_id": secret_iot.get("line_group_id", ""),
-    "growatt_user": secret_iot.get("growatt_user", ""),
-    "growatt_pass": secret_iot.get("growatt_pass", ""),
-    "growatt_sn": secret_iot.get("growatt_sn", ""),
-    "google_webapp_url": secret_iot.get("google_webapp_url", ""),
-    "mqtt_port": 8883,
-    "topic_servo_cmd": "esp8266/servo",
-    "topic_servo_status": "esp8266/servo/status",
-    "topic_water": "Water alarm",
-    "topic_check_clients": "CheckClients",
-    "topic_fire": "Firealarm",
-    "topic_fire_relay": "nodemcu/control/relay",
+def get_iot_config():
+    # กำหนดค่าเริ่มต้นจาก st.secrets["iot"] (ถ้ามี) หรือใช้ค่าว่าง
+    try:
+        secret_iot = st.secrets.get("iot", {})
+    except Exception:
+        secret_iot = {}
 
-}
+    cfg = {
+        "mqtt_server": secret_iot.get("mqtt_server", ""),
+        "mqtt_user": secret_iot.get("mqtt_user", ""),
+        "mqtt_pass": secret_iot.get("mqtt_pass", ""),
+        "line_token": secret_iot.get("line_token", ""),
+        "line_group_id": secret_iot.get("line_group_id", ""),
+        "growatt_user": secret_iot.get("growatt_user", ""),
+        "growatt_pass": secret_iot.get("growatt_pass", ""),
+        "growatt_sn": secret_iot.get("growatt_sn", ""),
+        "google_webapp_url": secret_iot.get("google_webapp_url", ""),
+        "mqtt_port": 8883,
+        "topic_servo_cmd": "esp8266/servo",
+        "topic_servo_status": "esp8266/servo/status",
+        "topic_water": "Water alarm",
+        "topic_check_clients": "CheckClients",
+        "topic_fire": "Firealarm",
+        "topic_fire_relay": "nodemcu/control/relay",
+    }
+
+    # แทนที่ด้วยค่าที่ผู้ดูแลระบบตั้งค่าผ่านหน้าจอเว็บ (ถ้ามีการบันทึกทับในฐานข้อมูล settings)
+    for k in list(cfg.keys()):
+        saved = get_settings_val(f"iot_{k}", None)
+        if saved is not None and saved != "None":
+            cfg[k] = int(saved) if isinstance(cfg[k], int) and str(saved).isdigit() else saved
+
+    return cfg
 
 # รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
