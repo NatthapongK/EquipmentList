@@ -1037,11 +1037,12 @@ section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(i
   background: rgba(255, 255, 255, 0.04) !important;
 }
 .stTabs [aria-selected="true"] {
-  background: rgba(56, 189, 248, 0.14) !important;
-  color: #38BDF8 !important;
-  border: 1px solid rgba(56, 189, 248, 0.42) !important;
-  font-weight: 700 !important;
-  box-shadow: 0 2px 10px rgba(14, 165, 233, 0.15) !important;
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0.20) 0%, rgba(100, 116, 139, 0.14) 100%) !important;
+  color: #F1F5F9 !important;
+  border: 1px solid rgba(148, 163, 184, 0.30) !important;
+  border-bottom: 2px solid #5EA8A0 !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22) !important;
 }
 .stTabs [data-baseweb="tab-highlight"] {
   background-color: transparent !important;
@@ -1604,7 +1605,7 @@ if st.session_state.role == ROLE_ADMIN:
           </div>
           <div class="glass-kpi">
             <div class="top"><span class="lbl">ลิ้นชัก (ESP8266 Servo)</span><span class="ic-badge">🗄️</span></div>
-            <div class="val">{iot_mgr.servo_status}</div>
+            <div class="val" style="color:{'#34D399' if iot_mgr.servo_status == 'UP' else '#F8FAFC'} !important;">{'OPEN' if iot_mgr.servo_status == 'UP' else 'CLOSE'}</div>
             <div class="sub">อัปเดตล่าสุด: {iot_mgr.servo_last_update}</div>
           </div>
           <div class="glass-kpi">
