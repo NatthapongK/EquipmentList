@@ -738,6 +738,36 @@ def get_tx_image(tx_id):
 def get_inspections_list(limit=1000):
     return list(db.inspections.find({}, {"_id": 0, "photos": 0}).sort("id", -1).limit(limit))
 
+def get_latest_reductions(inspections):
+    """คืนรายการอุปกรณ์ที่ถูกปรับลดจำนวนในการตรวจเช็คล่าสุดของแต่ละหมวด (ช่าง / สระว่ายน้ำ)"""
+    rows = []
+    for cat in ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"]:
+        latest = next((r for r in inspections if r.get("category") == cat), None)  # รายการเรียงใหม่สุดก่อนอยู่แล้ว
+        if not latest:
+            continue
+        found = []
+        if isinstance(latest.get("changes"), list):
+            for c in latest["changes"]:
+                try:
+                    if int(c["new_qty"]) < int(c["old_qty"]):
+                        found.append((c.get("name", "-"), int(c["old_qty"]), int(c["new_qty"]), c.get("reason", "")))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        else:
+            # ข้อมูลเก่าที่ยังไม่มีฟิลด์ changes: ดึงจากข้อความ "ชื่อ: ปรับจาก X เหลือ Y" (เฉพาะสระว่ายน้ำ)
+            txt = str(latest.get("details", "")).split("|")[-1].replace("การเปลี่ยนแปลง:", "")
+            for part in txt.split(", "):
+                m = re.match(r"^\s*(.*?):\s*ปรับจาก (\d+) เหลือ (\d+)\s*$", part)
+                if m and int(m.group(3)) < int(m.group(2)):
+                    found.append((m.group(1).strip(), int(m.group(2)), int(m.group(3)), "ปรับจำนวน"))
+        for name, old_q, new_q, reason in found:
+            rows.append({
+                "อุปกรณ์": name, "หมวดหมู่": cat, "จำนวนเดิม": old_q, "จำนวนใหม่": new_q,
+                "ลดลง": old_q - new_q, "สาเหตุ": reason or "ปรับจำนวน",
+                "ผู้ตรวจ": latest.get("tech_name", "-"), "วันที่ตรวจ": str(latest.get("inspection_date", ""))[:16],
+            })
+    return rows
+
 @st.cache_data(ttl=600, max_entries=100, show_spinner=False)
 def get_inspection_photos(insp_id):
     doc = db.inspections.find_one({"id": insp_id}, {"_id": 0, "photos": 1})
@@ -1210,6 +1240,118 @@ section[data-testid="stSidebar"] {
   border: 1px solid var(--ocean-edge) !important;
 }
 
+/* =================================================================
+   GLASS PLUS - กระจกใสมากขึ้น: โปร่งแสงกว่าเดิม เห็นฉากหลังทะลุ มีประกายผิว
+   ================================================================= */
+:root {
+  --g-fill: linear-gradient(135deg, rgba(255, 255, 255, 0.13) 0%, rgba(125, 211, 252, 0.06) 38%, rgba(10, 30, 52, 0.26) 100%);
+  --g-edge: rgba(255, 255, 255, 0.24);
+  --g-shadow: 0 14px 44px rgba(0, 12, 32, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.38), inset 1px 0 0 rgba(255, 255, 255, 0.10), inset 0 -1px 0 rgba(125, 211, 252, 0.10), inset 0 0 28px rgba(125, 211, 252, 0.05);
+}
+
+/* ฉากหลังใต้น้ำสว่างขึ้น ให้กระจกมีอะไรให้เบลอ */
+.stApp::before {
+  background:
+    radial-gradient(34% 30% at 10% 14%, rgba(34, 211, 238, 0.34), transparent 70%),
+    radial-gradient(30% 28% at 90% 10%, rgba(56, 189, 248, 0.30), transparent 70%),
+    radial-gradient(38% 32% at 72% 90%, rgba(20, 184, 166, 0.28), transparent 70%),
+    radial-gradient(28% 26% at 18% 84%, rgba(59, 130, 246, 0.26), transparent 70%),
+    radial-gradient(22% 20% at 50% 48%, rgba(103, 232, 249, 0.14), transparent 70%) !important;
+  filter: blur(14px) !important;
+}
+/* ฟองอากาศโปร่งแสงลอยขึ้นช้าๆ */
+.stApp::after {
+  content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(circle at 8% 88%, rgba(255,255,255,0.20) 0 1.5px, rgba(186,230,253,0.07) 2px 26px, transparent 27px),
+    radial-gradient(circle at 24% 62%, rgba(255,255,255,0.16) 0 1px, rgba(186,230,253,0.06) 1.5px 16px, transparent 17px),
+    radial-gradient(circle at 78% 74%, rgba(255,255,255,0.18) 0 1.5px, rgba(186,230,253,0.07) 2px 34px, transparent 35px),
+    radial-gradient(circle at 92% 38%, rgba(255,255,255,0.14) 0 1px, rgba(186,230,253,0.05) 1.5px 14px, transparent 15px),
+    radial-gradient(circle at 55% 20%, rgba(255,255,255,0.14) 0 1px, rgba(186,230,253,0.05) 1.5px 20px, transparent 21px);
+  animation: bubbleRise 40s linear infinite alternate;
+}
+@keyframes bubbleRise {
+  0%   { transform: translateY(3%); }
+  100% { transform: translateY(-4%); }
+}
+
+/* การ์ด/กล่องทั้งหมด: กระจกโปร่ง เบลอลึก ขอบสว่างเป็นประกาย */
+.app-hero, .glass-kpi, .iot-card, .user-card, .brand-box,
+[data-testid="stExpander"], [data-testid="stForm"], .req-banner {
+  background: var(--g-fill) !important;
+  backdrop-filter: blur(30px) saturate(190%) brightness(1.06) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(190%) brightness(1.06) !important;
+  border: 1px solid var(--g-edge) !important;
+  border-top-color: rgba(255, 255, 255, 0.40) !important;
+  border-left-color: rgba(255, 255, 255, 0.30) !important;
+  box-shadow: var(--g-shadow) !important;
+}
+.app-hero::after, .glass-kpi::after {
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 26%, rgba(255, 255, 255, 0) 46%),
+    radial-gradient(120% 60% at 0% 0%, rgba(255, 255, 255, 0.10), transparent 60%) !important;
+}
+.glass-kpi:hover {
+  border-color: rgba(186, 230, 253, 0.65) !important;
+  box-shadow: 0 18px 48px rgba(0, 12, 32, 0.55), 0 0 28px rgba(103, 232, 249, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.45) !important;
+}
+.glass-kpi .ic-badge {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.26), rgba(56, 189, 248, 0.10)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.34) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.40) !important;
+}
+
+section[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(10, 30, 52, 0.46) 100%) !important;
+  backdrop-filter: blur(34px) saturate(190%) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.20) !important;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+.stTabs [data-baseweb="tab-list"] {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(10, 30, 52, 0.30)) !important;
+  backdrop-filter: blur(26px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.22) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.30), 0 8px 26px rgba(0, 12, 32, 0.35) !important;
+}
+
+.stApp button {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(125, 211, 252, 0.06) 55%, rgba(10, 30, 52, 0.34)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.26) !important;
+  backdrop-filter: blur(16px) saturate(170%) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34), 0 4px 14px rgba(0, 12, 32, 0.30) !important;
+}
+.stApp button:hover {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(125, 211, 252, 0.12) 55%, rgba(10, 30, 52, 0.30)) !important;
+  border-color: rgba(186, 230, 253, 0.65) !important;
+}
+.stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
+.stApp button[data-testid="stBaseButton-primaryFormSubmit"] {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.34) 0%, rgba(56, 189, 248, 0.62) 40%, rgba(14, 116, 190, 0.74) 100%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.50) !important;
+  box-shadow: 0 8px 24px rgba(14, 165, 233, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
+}
+
+.stApp [data-baseweb="input"], .stApp [data-baseweb="base-input"], .stApp [data-baseweb="select"] > div,
+.stApp [data-baseweb="textarea"], .stApp textarea {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(8, 22, 40, 0.32)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.20) !important;
+  backdrop-filter: blur(14px) saturate(160%) !important;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18) !important;
+}
+[data-testid="stDataFrame"], .stTable {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.20) !important;
+  backdrop-filter: blur(20px) saturate(160%) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 8px 26px rgba(0, 12, 32, 0.30) !important;
+}
+[data-testid="stAlert"] {
+  background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.02)) !important;
+  backdrop-filter: blur(22px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.22) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26) !important;
+}
+
 @media (max-width:768px){
   .block-container { padding-left: .4rem !important; padding-right: .4rem !important; }
   .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 0.45rem; }
@@ -1611,7 +1753,7 @@ if st.session_state.role == ROLE_ADMIN:
         st.markdown("---")
         st.caption("SYSTEM TELEMETRY")
         mqtt_badge = "🟢 Online" if iot_mgr.connected else "🔴 Offline"
-        servo_badge = "🔓 UP (0°)" if iot_mgr.servo_status == "UP" else "🔒 DOWN (180°)"
+        servo_badge = "🔓 UNLOCK" if iot_mgr.servo_status == "UP" else "🔒 LOCK"
         fire_badge = "🚨 ALERT" if iot_mgr.fire_status == "ALERT" else "🟢 NORMAL"
         water_any_alarm = any(v == "ALARM" for v in iot_mgr.water_status.values())
         water_badge = "🚨 ALARM" if water_any_alarm else "🟢 NORMAL"
@@ -1712,11 +1854,6 @@ if st.session_state.role == ROLE_ADMIN:
             <div class="top"><span class="lbl">กำลังถูกยืม / รออนุมัติเบิก</span><span class="ic-badge">📦</span></div>
             <div class="val">{borrowed_cnt} / {len(pending_reqs_all)}</div>
             <div class="sub">ยืมอยู่ {borrowed_cnt} รายการ · รออนุมัติ {len(pending_reqs_all)} รายการ</div>
-          </div>
-          <div class="glass-kpi">
-            <div class="top"><span class="lbl">ลิ้นชัก (ESP8266 Servo)</span><span class="ic-badge">🗄️</span></div>
-            <div class="val" style="color:{'#34D399' if iot_mgr.servo_status == 'UP' else '#F8FAFC'} !important;">{'OPEN' if iot_mgr.servo_status == 'UP' else 'CLOSE'}</div>
-            <div class="sub">อัปเดตล่าสุด: {iot_mgr.servo_last_update}</div>
           </div>
           <div class="glass-kpi">
             <div class="top"><span class="lbl">ระบบปั๊มน้ำ (Water Alarm)</span><span class="ic-badge">💧</span></div>
@@ -2020,7 +2157,7 @@ if st.session_state.role == ROLE_ADMIN:
                 if not tools_all_df.empty:
                     render_tool_inspection_list(tools_all_df)
                     if st.button("💾 บันทึกการตรวจเช็ค/ปรับจำนวนอุปกรณ์ช่าง", type="primary", use_container_width=True):
-                        bulk_ops, summaries = [], []
+                        bulk_ops, summaries, adm_changes = [], [], []
                         for _, row in tools_all_df.iterrows():
                             rid = int(row['id'])
                             subcat = str(row.get('subcategory', ''))
@@ -2033,6 +2170,8 @@ if st.session_state.role == ROLE_ADMIN:
                                 ))
                                 if new_q != int(row['quantity']):
                                     summaries.append(f"{item_name}: ปรับสต็อกเหลือ {new_q} ชิ้น")
+                                if new_q < int(row['quantity']):
+                                    adm_changes.append({"item_id": rid, "name": item_name, "old_qty": int(row['quantity']), "new_qty": new_q, "reason": "ปรับสต็อก"})
                             else:
                                 sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
                                 detail = st.session_state.get(f"issue_detail_{rid}", "") or ""
@@ -2044,6 +2183,8 @@ if st.session_state.role == ROLE_ADMIN:
                                         {"id": rid}, {"$set": {"status": final_st, "quantity": new_q}}
                                     ))
                                     summaries.append(f"{item_name}: {final_st}")
+                                    if new_q < int(row['quantity']):
+                                        adm_changes.append({"item_id": rid, "name": item_name, "old_qty": int(row['quantity']), "new_qty": new_q, "reason": sel_st})
                                 else:
                                     bulk_ops.append(pymongo.operations.UpdateOne(
                                         {"id": rid}, {"$set": {"status": "ปกติ", "quantity": orig_q}}
@@ -2057,6 +2198,7 @@ if st.session_state.role == ROLE_ADMIN:
                             "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
                             "session_num": 1,
                             "details": "Admin Direct Update | " + (", ".join(summaries) if summaries else "ปกติทุกรายการ"),
+                            "changes": adm_changes,
                             "photos": ""
                         })
                         refresh_items()
@@ -2068,7 +2210,7 @@ if st.session_state.role == ROLE_ADMIN:
                 if not pool_all_df.empty:
                     render_pool_list(pool_all_df)
                     if st.button("💾 บันทึกจำนวนอุปกรณ์สระว่ายน้ำ", type="primary", use_container_width=True):
-                        bulk_pool_ops, pool_summaries = [], []
+                        bulk_pool_ops, pool_summaries, adm_pool_changes = [], [], []
                         row_map = pool_all_df.set_index('id')
                         for item_id in pool_all_df['id']:
                             rid = int(item_id)
@@ -2077,6 +2219,8 @@ if st.session_state.role == ROLE_ADMIN:
                             if q_val != old_q:
                                 bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": rid}, {"$set": {"quantity": q_val, "orig_quantity": q_val}}))
                                 pool_summaries.append(f"{row_map.loc[rid, 'name']}: ปรับจาก {old_q} เหลือ {q_val}")
+                                if q_val < old_q:
+                                    adm_pool_changes.append({"item_id": rid, "name": row_map.loc[rid, 'name'], "old_qty": old_q, "new_qty": q_val, "reason": "ปรับจำนวน"})
                         if bulk_pool_ops:
                             db.items.bulk_write(bulk_pool_ops, ordered=False)
                         db.inspections.insert_one({
@@ -2086,6 +2230,7 @@ if st.session_state.role == ROLE_ADMIN:
                             "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
                             "session_num": 1,
                             "details": "Admin Pool Update | " + (", ".join(pool_summaries) if pool_summaries else "ไม่มีการเปลี่ยนจำนวน"),
+                            "changes": adm_pool_changes,
                             "photos": ""
                         })
                         refresh_items()
@@ -2095,7 +2240,7 @@ if st.session_state.role == ROLE_ADMIN:
 
         with admin_inv_tabs[2]:
             st.subheader("📊 รายงานการตรวจเช็คสภาพอุปกรณ์")
-            report_type = st.radio("เลือกมุมมองรายงาน", ["รายวัน (Daily)", "รายเดือน (Monthly)", "รายปี (Yearly)", "ประวัติทั้งหมด"], horizontal=True)
+            report_type = st.radio("เลือกมุมมองรายงาน", ["รายวัน (Daily)", "รายสัปดาห์ (Weekly)", "รายเดือน (Monthly)", "รายปี (Yearly)", "ประวัติทั้งหมด"], horizontal=True)
             inspections_df = pd.DataFrame(get_inspections_list())
 
             if not inspections_df.empty:
@@ -2104,6 +2249,14 @@ if st.session_state.role == ROLE_ADMIN:
                 if report_type == "รายวัน (Daily)":
                     target_date = st.date_input("เลือกวันที่", value=now_dt.date())
                     filtered_insp = inspections_df[inspections_df['inspection_date'].dt.date == target_date]
+                elif report_type == "รายสัปดาห์ (Weekly)":
+                    # เลือกวันใดก็ได้ในสัปดาห์ แล้วคำนวณช่วง จันทร์-อาทิตย์ ให้อัตโนมัติ
+                    week_pick = st.date_input("เลือกวันใดก็ได้ในสัปดาห์ที่ต้องการ", value=now_dt.date(), key="rep_week_pick")
+                    week_start = week_pick - timedelta(days=week_pick.weekday())
+                    week_end = week_start + timedelta(days=6)
+                    st.caption(f"📅 ช่วงสัปดาห์: {week_start.strftime('%d/%m/%Y')} (จันทร์) – {week_end.strftime('%d/%m/%Y')} (อาทิตย์)")
+                    _insp_day = inspections_df['inspection_date'].dt.date
+                    filtered_insp = inspections_df[(_insp_day >= week_start) & (_insp_day <= week_end)]
                 elif report_type == "รายเดือน (Monthly)":
                     col_m1, col_m2 = st.columns(2)
                     selected_month = col_m1.selectbox("เดือน", list(range(1, 13)), index=now_dt.month - 1)
@@ -2745,6 +2898,12 @@ elif st.session_state.role in TECH_ROLES:
         else:
             st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 
+    # แจ้งเตือนรายการที่ถูกปรับลดจำนวนในการตรวจเช็คล่าสุด (ถ้าปกติทุกรายการ จะไม่แสดงอะไร)
+    reduced_rows = get_latest_reductions(get_inspections_list())
+    if reduced_rows:
+        with st.expander(f"📉 การตรวจเช็คล่าสุดมีการปรับลดจำนวน ({len(reduced_rows)} รายการ)"):
+            st.dataframe(pd.DataFrame(reduced_rows), hide_index=True, use_container_width=True)
+
     if borrowed_cnt:
         with st.expander(f"📤 อุปกรณ์ที่กำลังถูกยืม ({borrowed_cnt} รายการ)"):
             st.dataframe(pd.DataFrame([{
@@ -2880,6 +3039,7 @@ elif st.session_state.role in TECH_ROLES:
                             with st.spinner("กำลังบันทึกผลการตรวจ..."):
                                 photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in photo_files]
                                 flagged_summaries, bulk_operations = [], []
+                                changes_list = []  # เก็บรายการที่จำนวนลดลง เพื่อแจ้งเตือนในหน้าช่าง
                                 row_map = tools_all_df.set_index('id')
 
                                 for item_id, data in item_reports.items():
@@ -2891,6 +3051,8 @@ elif st.session_state.role in TECH_ROLES:
                                             {"id": item_id}, {"$set": {"quantity": new_q, "orig_quantity": new_q, "status": "ปกติ"}}))
                                         if new_q != int(row_map.loc[item_id, 'quantity']):
                                             flagged_summaries.append(f"{item_name}: ปรับสต็อกเหลือ {new_q} ชิ้น")
+                                        if new_q < int(row_map.loc[item_id, 'quantity']):
+                                            changes_list.append({"item_id": int(item_id), "name": item_name, "old_qty": int(row_map.loc[item_id, 'quantity']), "new_qty": new_q, "reason": "ปรับสต็อก"})
                                     else:
                                         if data["flagged"]:
                                             final_st = f"กำลังใช้งาน ({data['detail']})" if (data["status"] == "กำลังใช้งาน" and data["detail"].strip()) else data["status"]
@@ -2899,6 +3061,8 @@ elif st.session_state.role in TECH_ROLES:
                                                 {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
                                             detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "")
                                             flagged_summaries.append(detail_txt)
+                                            if new_q < int(row_map.loc[item_id, 'quantity']):
+                                                changes_list.append({"item_id": int(item_id), "name": item_name, "old_qty": int(row_map.loc[item_id, 'quantity']), "new_qty": new_q, "reason": data['status']})
                                         else:
                                             bulk_operations.append(pymongo.operations.UpdateOne(
                                                 {"id": item_id}, {"$set": {"status": "ปกติ", "quantity": orig_q}}))
@@ -2914,6 +3078,7 @@ elif st.session_state.role in TECH_ROLES:
                                     "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
                                     "session_num": global_count + 1,
                                     "details": f"รอบที่ {global_count + 1} | รายการผิดปกติ: {summary_details}",
+                                    "changes": changes_list,
                                     "photos": "|||".join(photos_b64)
                                 })
 
@@ -2954,7 +3119,7 @@ elif st.session_state.role in TECH_ROLES:
                     else:
                         with st.spinner("กำลังบันทึกข้อมูล..."):
                             photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in pool_photo_files]
-                            pool_summaries, bulk_pool_ops = [], []
+                            pool_summaries, bulk_pool_ops, pool_changes = [], [], []
                             row_map = pool_all_df.set_index('id')
 
                             for item_id in pool_all_df['id']:
@@ -2967,6 +3132,8 @@ elif st.session_state.role in TECH_ROLES:
                                 if q_val != old_q:
                                     bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": rid}, {"$set": {"quantity": q_val, "orig_quantity": q_val}}))
                                     pool_summaries.append(f"{row_map.loc[rid, 'name']}: ปรับจาก {old_q} เหลือ {q_val}")
+                                    if q_val < old_q:
+                                        pool_changes.append({"item_id": rid, "name": row_map.loc[rid, 'name'], "old_qty": old_q, "new_qty": q_val, "reason": "ปรับจำนวน"})
 
                             if bulk_pool_ops:
                                 db.items.bulk_write(bulk_pool_ops, ordered=False)
@@ -2979,6 +3146,7 @@ elif st.session_state.role in TECH_ROLES:
                                 "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
                                 "session_num": 1,
                                 "details": summary_note,
+                                "changes": pool_changes,
                                 "photos": "|||".join(photos_b64)
                             })
 
