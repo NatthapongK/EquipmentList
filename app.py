@@ -60,22 +60,23 @@ TECH_ROLES = [ROLE_TECH, ROLE_TECH_SP]
 
 # --- DEFAULT HARDWARE & IOT CREDENTIALS (For Admin Only) ---
 DEFAULT_IOT_CONFIG = {
-    "mqtt_server": "dcb4e8c8b1594e88aef914771ce94103.s1.eu.hivemq.cloud",
+    "mqtt_server": secret_iot.get("mqtt_server", ""),
+    "mqtt_user": secret_iot.get("mqtt_user", ""),
+    "mqtt_pass": secret_iot.get("mqtt_pass", ""),
+    "line_token": secret_iot.get("line_token", ""),
+    "line_group_id": secret_iot.get("line_group_id", ""),
+    "growatt_user": secret_iot.get("growatt_user", ""),
+    "growatt_pass": secret_iot.get("growatt_pass", ""),
+    "growatt_sn": secret_iot.get("growatt_sn", ""),
+    "google_webapp_url": secret_iot.get("google_webapp_url", ""),
     "mqtt_port": 8883,
-    "mqtt_user": "32bit7k",
-    "mqtt_pass": "aA0891148075",
     "topic_servo_cmd": "esp8266/servo",
     "topic_servo_status": "esp8266/servo/status",
     "topic_water": "Water alarm",
     "topic_check_clients": "CheckClients",
     "topic_fire": "Firealarm",
     "topic_fire_relay": "nodemcu/control/relay",
-    "line_token": "Z4Q1Oovl195VbH2Zs+cgtJfQrWalykEOIqe9R+fwagj60jYeu80011v83fSulPpkUPTrGee8/6q4i/yAoF0XhfUA37dgLIkIHQqYKejfbAB99UNtRl8GEbhPwF6T1PyiDOOGqEvaj1dbaw256MMuiwdB04t89/1O/w1cDnyilFU=",
-    "line_group_id": "C663efc381970da04d51c09f2bda9c3a4",
-    "growatt_user": "32bit7k",
-    "growatt_pass": "aA0891148075",
-    "growatt_sn": "RKG7BL404R",
-    "google_webapp_url": "https://script.google.com/macros/s/AKfycbz2aB_1RR7UMMX92TOC9c_o_wbyCmfFt82K4hIYFfEFyPcmHL8UWAu0Z9sm99zQW2QFNQ/exec",
+
 }
 
 # รายการอุปกรณ์เริ่มต้นทั้งหมด
