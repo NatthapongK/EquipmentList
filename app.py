@@ -1037,12 +1037,11 @@ section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(i
   background: rgba(255, 255, 255, 0.04) !important;
 }
 .stTabs [aria-selected="true"] {
-  background: linear-gradient(180deg, rgba(148, 163, 184, 0.20) 0%, rgba(100, 116, 139, 0.14) 100%) !important;
-  color: #F1F5F9 !important;
-  border: 1px solid rgba(148, 163, 184, 0.30) !important;
-  border-bottom: 2px solid #5EA8A0 !important;
+  background: transparent !important;
+  color: #FFFFFF !important;
+  border: 1px solid transparent !important;
   font-weight: 600 !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22) !important;
+  box-shadow: none !important;
 }
 .stTabs [data-baseweb="tab-highlight"] {
   background-color: transparent !important;
@@ -1098,6 +1097,117 @@ section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(i
   display: flex; align-items: center; gap: .9rem; padding: 0.7rem 1rem; margin-bottom: 0.75rem;
   border-radius: 12px; border: 1px solid rgba(56, 189, 248, 0.45);
   background: linear-gradient(90deg, rgba(14, 116, 144, 0.35), rgba(15, 23, 42, 0.75));
+}
+
+/* =================================================================
+   OCEAN GLASSMORPHISM LAYER - ชั้นเสริมความเป็นกระจกใสสีมหาสมุทร
+   ================================================================= */
+:root {
+  --ocean-glass: linear-gradient(145deg, rgba(56, 189, 248, 0.10) 0%, rgba(14, 38, 64, 0.55) 45%, rgba(8, 24, 42, 0.62) 100%);
+  --ocean-edge: rgba(186, 230, 253, 0.22);
+  --ocean-glow: 0 10px 34px rgba(2, 20, 40, 0.45), 0 0 0 1px rgba(125, 211, 252, 0.05);
+  --ocean-shine: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 -1px 0 rgba(125, 211, 252, 0.05);
+}
+
+/* พื้นหลังน้ำทะเลลึก + ลูกแสงลอยช้าๆ เหมือนแสงใต้น้ำ */
+.stApp::before {
+  content: ""; position: fixed; inset: -10%; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(38% 32% at 12% 18%, rgba(34, 211, 238, 0.20), transparent 70%),
+    radial-gradient(34% 30% at 88% 12%, rgba(56, 189, 248, 0.18), transparent 70%),
+    radial-gradient(40% 34% at 70% 88%, rgba(20, 184, 166, 0.16), transparent 70%),
+    radial-gradient(30% 26% at 22% 82%, rgba(59, 130, 246, 0.14), transparent 70%);
+  filter: blur(18px);
+  animation: oceanDrift 28s ease-in-out infinite alternate;
+}
+@keyframes oceanDrift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  100% { transform: translate3d(-2.5%, 2%, 0) scale(1.06); }
+}
+.block-container, section[data-testid="stSidebar"], header[data-testid="stHeader"] { position: relative; z-index: 1; }
+
+/* การ์ดกระจกใส: เบลอแรง + เส้นขอบสว่างด้านบน + เงาลึก */
+.app-hero, .glass-kpi, .iot-card, .user-card, .brand-box,
+[data-testid="stExpander"], [data-testid="stForm"], .req-banner {
+  background: var(--ocean-glass) !important;
+  backdrop-filter: blur(24px) saturate(165%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(165%) !important;
+  border: 1px solid var(--ocean-edge) !important;
+  box-shadow: var(--ocean-glow), var(--ocean-shine) !important;
+}
+.app-hero, .glass-kpi { border-radius: 20px !important; position: relative; overflow: hidden; }
+/* เงาสะท้อนผิวกระจกเฉียงมุมบนซ้าย */
+.app-hero::after, .glass-kpi::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(120deg, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0) 38%);
+}
+.glass-kpi:hover {
+  transform: translateY(-3px);
+  border-color: rgba(125, 211, 252, 0.50) !important;
+  box-shadow: 0 14px 38px rgba(2, 20, 40, 0.5), 0 0 22px rgba(56, 189, 248, 0.16), var(--ocean-shine) !important;
+}
+.glass-kpi .ic-badge {
+  background: linear-gradient(145deg, rgba(125, 211, 252, 0.22), rgba(14, 165, 233, 0.08)) !important;
+  border: 1px solid rgba(186, 230, 253, 0.30) !important;
+  backdrop-filter: blur(8px);
+}
+
+/* Sidebar กระจกฝ้า */
+section[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, rgba(12, 32, 54, 0.62) 0%, rgba(6, 16, 30, 0.78) 100%) !important;
+  backdrop-filter: blur(28px) saturate(150%) !important;
+  border-right: 1px solid var(--ocean-edge) !important;
+}
+
+/* แท็บ: แถบกระจกใส */
+.stTabs [data-baseweb="tab-list"] {
+  background: rgba(10, 26, 44, 0.45) !important;
+  backdrop-filter: blur(20px) saturate(150%) !important;
+  border: 1px solid var(--ocean-edge) !important;
+  border-radius: 14px !important;
+  box-shadow: var(--ocean-shine) !important;
+}
+
+/* ปุ่มกระจก + ปุ่มหลักไล่สีน้ำทะเลมีประกาย */
+.stApp button {
+  background: linear-gradient(180deg, rgba(125, 211, 252, 0.12), rgba(14, 38, 64, 0.55)) !important;
+  border: 1px solid var(--ocean-edge) !important;
+  backdrop-filter: blur(12px) !important;
+  box-shadow: var(--ocean-shine) !important;
+}
+.stApp button:hover {
+  border-color: rgba(125, 211, 252, 0.55) !important;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.20), var(--ocean-shine) !important;
+}
+.stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
+.stApp button[data-testid="stBaseButton-primaryFormSubmit"] {
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.85) 0%, rgba(14, 165, 233, 0.90) 50%, rgba(37, 99, 235, 0.88) 100%) !important;
+  border: 1px solid rgba(186, 230, 253, 0.45) !important;
+  box-shadow: 0 6px 20px rgba(14, 165, 233, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+}
+
+/* ช่องกรอกข้อมูล / Dropdown / ตาราง: กระจกใส */
+.stApp [data-baseweb="input"], .stApp [data-baseweb="base-input"], .stApp [data-baseweb="select"] > div,
+.stApp [data-baseweb="textarea"], .stApp textarea {
+  background: rgba(8, 22, 40, 0.50) !important;
+  border-color: rgba(148, 163, 184, 0.22) !important;
+  border-radius: 12px !important;
+  backdrop-filter: blur(10px) !important;
+}
+.stApp [data-baseweb="input"]:focus-within, .stApp [data-baseweb="select"] > div:focus-within, .stApp textarea:focus {
+  border-color: rgba(125, 211, 252, 0.65) !important;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14) !important;
+}
+[data-testid="stDataFrame"], .stTable {
+  border: 1px solid var(--ocean-edge) !important;
+  border-radius: 14px !important;
+  background: rgba(8, 22, 40, 0.35) !important;
+  box-shadow: var(--ocean-shine) !important;
+}
+[data-testid="stAlert"] {
+  border-radius: 14px !important;
+  backdrop-filter: blur(16px) saturate(150%) !important;
+  border: 1px solid var(--ocean-edge) !important;
 }
 
 @media (max-width:768px){
@@ -2613,10 +2723,6 @@ elif st.session_state.role in TECH_ROLES:
       <div class="glass-kpi">
         <div class="top"><span class="lbl">{abn_label}</span><span class="ic-badge">⚠️</span></div>
         <div class="val" style="color:{'#F87171' if abn_cnt else '#34D399'} !important;">{abn_cnt}</div>
-      </div>
-      <div class="glass-kpi">
-        <div class="top"><span class="lbl">เหลือน้อยกว่าเกณฑ์</span><span class="ic-badge">📉</span></div>
-        <div class="val" style="color:{'#FBBF24' if low_cnt else '#34D399'} !important;">{low_cnt}</div>
       </div>
       <div class="glass-kpi">
         <div class="top"><span class="lbl">กำลังถูกยืมอยู่</span><span class="ic-badge">📤</span></div>
