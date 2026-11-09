@@ -14,7 +14,6 @@ import json
 import hashlib
 import secrets
 import threading
-from urllib.parse import quote
 from PIL import Image, ImageOps
 
 try:
@@ -34,12 +33,9 @@ except ImportError:
 
 # =====================================================================
 #  KAVE TOWN SHIFT - CENTRAL ENTERPRISE COMMAND & INVENTORY SYSTEM
-#  รวมศูนย์:
-#   1) ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (MongoDB)
-#   2) ระบบควบคุมลิ้นชักอัจฉริยะ ESP8266 Servo (MQTT: esp8266/servo)
-#   3) ระบบตรวจจับระดับน้ำและปั๊มน้ำ 5 จุด (MQTT: Water alarm + LINE OA)
-#   4) ระบบแจ้งเตือนอัคคีภัย Fire Alarm & Remote Relay Reset (MQTT: Firealarm)
-#   5) ระบบมอนิเตอร์โซลาร์เซลล์ Growatt SPF5000ES & Google Sheets Sync
+#  - Admin: ควบคุมครบทุกส่วน (Inventory, ESP8266 Drawer Servo, Water Pump,
+#           Fire Alarm + Relay Reset, Growatt Solar + Google Sheets)
+#  - Tech: เฉพาะระบบตรวจเช็คอุปกรณ์ช่าง/สระว่ายน้ำ เบิกของ และยืม-คืน (ไม่มี MQTT/Drawer/Water/Fire)
 # =====================================================================
 
 TZ_TH = timezone(timedelta(hours=7))
@@ -51,8 +47,8 @@ def get_now_str(fmt="%Y-%m-%d %H:%M:%S"):
     return get_now_th().strftime(fmt)
 
 st.set_page_config(
-    page_title="KAVE TOWN SHIFT · Enterprise Command Center",
-    page_icon="⚡",
+    page_title="ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ",
+    page_icon="🛠️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -62,7 +58,7 @@ ROLE_TECH = "ช่างประจำอาคาร"
 ROLE_TECH_SP = "ช่างประจำอาคารพิเศษ"
 TECH_ROLES = [ROLE_TECH, ROLE_TECH_SP]
 
-# --- DEFAULT HARDWARE & IOT CREDENTIALS (Overridable via st.secrets or Admin UI) ---
+# --- DEFAULT HARDWARE & IOT CREDENTIALS (For Admin Only) ---
 DEFAULT_IOT_CONFIG = {
     "mqtt_server": "dcb4e8c8b1594e88aef914771ce94103.s1.eu.hivemq.cloud",
     "mqtt_port": 8883,
@@ -80,7 +76,6 @@ DEFAULT_IOT_CONFIG = {
     "growatt_pass": "aA0891148075",
     "growatt_sn": "RKG7BL404R",
     "google_webapp_url": "https://script.google.com/macros/s/AKfycbz2aB_1RR7UMMX92TOC9c_o_wbyCmfFt82K4hIYFfEFyPcmHL8UWAu0Z9sm99zQW2QFNQ/exec",
-    "esp_tft_ip": ""
 }
 
 # รายการอุปกรณ์เริ่มต้นทั้งหมด
@@ -181,7 +176,7 @@ def build_default_docs():
     return docs
 
 # =====================================================================
-#  MONGODB INITIALIZATION (WITH FALLBACK MOCK FOR EASY TESTING)
+#  MONGODB INITIALIZATION
 # =====================================================================
 @st.cache_resource
 def init_mongo():
@@ -192,16 +187,7 @@ def init_mongo():
         uri = os.environ.get("MONGO_URI", "")
 
     if not uri:
-        st.error("❌ ไม่พบ `st.secrets['mongo']['uri']` กรุณาตั้งค่าไฟล์ `.streamlit/secrets.toml` หรือตั้งค่าใน Streamlit Cloud Secrets")
-        st.info("""**ตัวอย่างไฟล์ `.streamlit/secrets.toml`:**
-```toml
-[mongo]
-uri = "mongodb+srv://<username>:<password>@<cluster>.mongodb.net/?retryWrites=true&w=majority"
-
-[admin]
-username = "admin"
-password = "adminpassword"
-```""")
+        st.error("❌ ไม่พบ `st.secrets['mongo']['uri']` กรุณาตั้งค่าใน `.streamlit/secrets.toml`")
         st.stop()
 
     client = pymongo.MongoClient(uri, maxPoolSize=20, serverSelectionTimeoutMS=8000)
@@ -252,7 +238,7 @@ def get_iot_config():
     return cfg
 
 # =====================================================================
-#  REAL-TIME MQTT & IOT BACKGROUND ENGINE (Servo, Water, Fire, LINE)
+#  REAL-TIME MQTT & IOT BACKGROUND ENGINE (ADMIN ONLY)
 # =====================================================================
 def send_line_push(message_text, token=None, group_id=None):
     if requests is None:
@@ -282,11 +268,9 @@ class CentralIoTManager:
         self.connected = False
         self.last_connect_err = ""
         self.client = None
-        # 1. Drawer Servo State
         self.servo_status = "DOWN"
         self.servo_last_update = "--:--:--"
         self.servo_logs = []
-        # 2. Water Pump Alarm State
         self.water_status = {
             "A": "NORMAL", "B": "NORMAL", "C": "NORMAL", "D": "NORMAL", "UNDERGROUND": "NORMAL"
         }
@@ -294,7 +278,6 @@ class CentralIoTManager:
             "A": True, "B": True, "C": True, "D": True, "UNDERGROUND": True
         }
         self.water_last_msg = "พร้อมทำงาน (Ready)"
-        # 3. Fire Alarm State
         self.fire_status = "CLEAR"
         self.fire_location = "- (ระบบปกติ)"
         self.fire_zones = {
@@ -328,23 +311,15 @@ class CentralIoTManager:
         t_low = topic.lower()
         self.add_feed(topic, msg)
 
-        # --- 1. SERVO DRAWER ---
         if topic in ["esp8266/servo", "esp8266/servo/status"]:
             if msg_up in ["UP", "DOWN"]:
                 with self.lock:
                     self.servo_status = msg_up
                     self.servo_last_update = get_now_str("%H:%M:%S")
-                    self.servo_logs.insert(0, {
-                        "datetime": get_now_str("%Y-%m-%d %H:%M:%S"),
-                        "topic": topic,
-                        "status": msg_up,
-                        "detail": "เปิดลิ้นชัก (0°)" if msg_up == "UP" else "ล็อก/ปิดลิ้นชัก (180°)"
-                    })
                 if topic == "esp8266/servo/status":
                     self.log_to_db("SERVO", "Drawer Servo D4", msg_up, msg)
             return
 
-        # --- 2. WATER ALARM ---
         if t_low == "water alarm" or t_low.startswith("water alarm/status/"):
             with self.lock:
                 self.water_last_msg = msg
@@ -385,7 +360,6 @@ class CentralIoTManager:
                     break
             return
 
-        # --- 3. FIRE ALARM ---
         if t_low in ["firealarm", "fire_alarm"] or "firealarm" in t_low:
             if any(w in msg_up for w in ["RESET", "CLEAR", "NORMAL"]) or "สถานะปกติ" in msg:
                 with self.lock:
@@ -419,7 +393,7 @@ class CentralIoTManager:
 
     def connect(self):
         if mqtt is None:
-            self.last_connect_err = "ยังไม่ได้ติดตั้งไลบรารี paho-mqtt (pip install paho-mqtt)"
+            self.last_connect_err = "ยังไม่ได้ติดตั้ง paho-mqtt"
             return False
         cfg = get_iot_config()
         try:
@@ -486,11 +460,10 @@ class CentralIoTManager:
     def publish(self, topic, payload, retain=False):
         if not self.client or not self.connected:
             self.connect()
-            time.sleep(0.6)
+            time.sleep(0.5)
         if self.client:
             try:
-                info = self.client.publish(topic, str(payload), retain=retain)
-                # Loop locally as well so UI updates immediately
+                self.client.publish(topic, str(payload), retain=retain)
                 self.handle_message(topic, str(payload))
                 return True
             except Exception as e:
@@ -507,7 +480,7 @@ def get_iot_manager():
 iot_mgr = get_iot_manager()
 
 # =====================================================================
-#  GROWATT SPF5000ES CLOUD FETCHER & GOOGLE SHEETS SYNC
+#  GROWATT SPF5000ES CLOUD FETCHER & GOOGLE SHEETS SYNC (ADMIN ONLY)
 # =====================================================================
 def growatt_md5(password_str):
     m = hashlib.md5(password_str.encode("utf-8")).hexdigest()
@@ -597,10 +570,7 @@ def fetch_growatt_realtime(sync_sheets=False):
 
     for method, ep_url, body in endpoints:
         try:
-            if method == "POST":
-                r = sess.post(ep_url, data=body, timeout=12)
-            else:
-                r = sess.get(ep_url, timeout=12)
+            r = sess.post(ep_url, data=body, timeout=12) if method == "POST" else sess.get(ep_url, timeout=12)
             if r.status_code != 200:
                 continue
             j = r.json()
@@ -847,185 +817,205 @@ def switch_role(new_role):
     st.rerun()
 
 # =====================================================================
-#  GLASSY CRM & ADMIN DASHBOARD V2 UI THEME (CSS)
+#  ADMIN DASHBOARD V2 - COOL OCEAN GLASSMORPHISM UI (NO ORANGE SELECTED BG)
 # =====================================================================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
 
 :root {
   color-scheme: dark;
-  --bg-deep: #070B14;
-  --bg-radial: radial-gradient(circle at 12% 8%, rgba(14, 165, 233, 0.14) 0%, rgba(249, 115, 22, 0.06) 38%, rgba(7, 11, 20, 0.98) 80%);
-  --glass-card: rgba(17, 25, 40, 0.78);
-  --glass-card-hover: rgba(24, 35, 56, 0.88);
-  --glass-border: rgba(255, 255, 255, 0.09);
-  --glass-highlight: rgba(56, 189, 248, 0.35);
+  --bg-main: #08121E;
+  --bg-mesh:
+    radial-gradient(at 15% 10%, rgba(14, 165, 233, 0.20) 0px, transparent 52%),
+    radial-gradient(at 85% 15%, rgba(56, 189, 248, 0.14) 0px, transparent 48%),
+    radial-gradient(at 50% 90%, rgba(20, 184, 166, 0.10) 0px, transparent 55%),
+    linear-gradient(160deg, #07101C 0%, #0C1B2E 55%, #081320 100%);
+  --glass-surface: rgba(16, 30, 48, 0.65);
+  --glass-surface-strong: rgba(13, 24, 40, 0.84);
+  --glass-border: rgba(148, 163, 184, 0.16);
+  --glass-border-active: rgba(56, 189, 248, 0.55);
   --ink: #F8FAFC;
   --muted: #94A3B8;
-  --accent-orange: #FF7A2F;
-  --accent-orange-d: #EA580C;
-  --accent-cyan: #00F2FE;
-  --accent-blue: #3B82F6;
+  --cyan: #38BDF8;
+  --sky: #0EA5E9;
+  --teal: #14B8A6;
   --ok: #10B981;
   --warn: #F59E0B;
   --bad: #EF4444;
-  --purple: #8B5CF6;
 }
 
 .stApp, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp p, .stApp label, .stApp li,
 .stApp input, .stApp textarea, .stApp button, .stApp [data-baseweb="tab"], .stApp [data-baseweb="select"] {
-  font-family: 'IBM Plex Sans Thai', 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'IBM Plex Sans Thai', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   color: var(--ink) !important;
 }
 
 .stApp {
-  background-color: var(--bg-deep) !important;
-  background-image: var(--bg-radial) !important;
+  background-color: var(--bg-main) !important;
+  background-image: var(--bg-mesh) !important;
   background-attachment: fixed !important;
   color: var(--ink);
 }
 
-header[data-testid="stHeader"] { background: transparent !important; height: 1.5rem !important; }
+header[data-testid="stHeader"] { background: transparent !important; height: 1.4rem !important; }
 footer { visibility: hidden !important; display: none !important; }
 #MainMenu { visibility: hidden !important; display: none !important; }
 .stDeployButton { display: none !important; }
 [data-testid="stStatusWidget"] { display: none !important; }
 
 .block-container {
-  padding-top: 0.7rem !important;
+  padding-top: 0.65rem !important;
   padding-bottom: 3rem !important;
   max-width: 1380px !important;
 }
 
-/* --- SIDEBAR STUDIO NAVIGATION (Sorvo / Creator Analytics Style) --- */
+/* --- SIDEBAR: ADMIN DASHBOARD V2 FROSTED SLATE-BLUE --- */
 section[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, rgba(12, 18, 32, 0.96) 0%, rgba(8, 12, 22, 0.98) 100%) !important;
+  background: linear-gradient(180deg, rgba(10, 21, 36, 0.92) 0%, rgba(7, 15, 27, 0.96) 100%) !important;
   border-right: 1px solid var(--glass-border) !important;
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(22px) !important;
 }
 
 .brand-box {
   display: flex; align-items: center; gap: 0.75rem;
-  padding: 0.75rem 0.9rem; margin-bottom: 0.8rem;
+  padding: 0.75rem 0.9rem; margin-bottom: 0.75rem;
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(255,122,47,0.16), rgba(56,189,248,0.12));
-  border: 1px solid rgba(255,122,47,0.35);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  background: rgba(14, 165, 233, 0.10);
+  border: 1px solid rgba(56, 189, 248, 0.25);
 }
 .brand-logo {
-  width: 2.5rem; height: 2.5rem; border-radius: 10px;
-  background: linear-gradient(135deg, #FF7A2F, #F59E0B);
+  width: 2.35rem; height: 2.35rem; border-radius: 10px;
+  background: linear-gradient(135deg, #0EA5E9, #2563EB);
   display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 1.2rem; color: #fff;
-  box-shadow: 0 4px 12px rgba(255, 122, 47, 0.45);
+  font-weight: 800; font-size: 1.15rem; color: #fff;
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.35);
 }
-.brand-title { font-weight: 800; font-size: 0.98rem; letter-spacing: 0.4px; color: #fff; line-height: 1.15; }
-.brand-sub { font-size: 0.72rem; color: #CBD5E1; }
+.brand-title { font-weight: 800; font-size: 0.95rem; letter-spacing: 0.3px; color: #F8FAFC; line-height: 1.15; }
+.brand-sub { font-size: 0.72rem; color: #94A3B8; }
 
 .user-card {
-  display: flex; align-items: center; gap: .75rem; padding: .75rem .85rem;
+  display: flex; align-items: center; gap: .75rem; padding: .7rem .85rem;
   border: 1px solid var(--glass-border); border-radius: 14px;
-  background: rgba(30, 41, 59, 0.55); backdrop-filter: blur(12px);
+  background: rgba(255, 255, 255, 0.03);
   margin-bottom: 0.75rem;
 }
 .avatar {
-  width: 2.4rem; height: 2.4rem; border-radius: 50%;
-  background: linear-gradient(135deg, #00F2FE, #3B82F6);
-  color: #070B14 !important; display: flex; align-items: center; justify-content: center;
+  width: 2.3rem; height: 2.3rem; border-radius: 50%;
+  background: rgba(56, 189, 248, 0.18);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #38BDF8 !important; display: flex; align-items: center; justify-content: center;
   font-weight: 800; flex: none;
 }
-.u-name { font-weight: 700; font-size: 0.92rem; color: #F8FAFC; }
-.u-role { font-size: 0.75rem; color: var(--muted); }
+.u-name { font-weight: 700; font-size: 0.9rem; color: #F8FAFC; }
+.u-role { font-size: 0.74rem; color: var(--muted); }
 
-/* --- HERO HEADER BANNER --- */
+/* Sidebar Radio Navigation - Clean Translucent Pill (No Orange!) */
+section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label {
+  padding: 0.52rem 0.75rem !important;
+  border-radius: 10px !important;
+  margin-bottom: 0.22rem !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  transition: all 0.16s ease !important;
+}
+section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(148, 163, 184, 0.14) !important;
+}
+section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(input:checked) {
+  background: rgba(56, 189, 248, 0.13) !important;
+  border: 1px solid rgba(56, 189, 248, 0.42) !important;
+  box-shadow: inset 3px 0 0 #38BDF8 !important;
+}
+
+/* --- TOP BAR / HERO CARD --- */
 .app-hero {
-  background: linear-gradient(135deg, rgba(19, 28, 46, 0.88) 0%, rgba(13, 20, 36, 0.92) 100%);
-  backdrop-filter: blur(16px);
+  background: var(--glass-surface);
+  backdrop-filter: blur(20px);
   border-radius: 16px;
-  padding: 0.95rem 1.25rem;
+  padding: 0.85rem 1.2rem;
   border: 1px solid var(--glass-border);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
   display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;
-  margin-bottom: 0.9rem;
+  margin-bottom: 0.85rem;
 }
-.app-hero .t { font-size: 1.25rem; font-weight: 800; color: #FFFFFF; letter-spacing: 0.2px; }
-.app-hero .s { font-size: 0.8rem; color: #94A3B8; margin-top: 0.15rem; }
-.badge-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.app-hero .t { font-size: 1.18rem; font-weight: 800; color: #FFFFFF; letter-spacing: 0.2px; }
+.app-hero .s { font-size: 0.78rem; color: #94A3B8; margin-top: 0.12rem; }
+.badge-row { display: flex; gap: 0.45rem; align-items: center; flex-wrap: wrap; }
 .status-pill-top {
-  padding: 0.28rem 0.75rem; border-radius: 999px; font-size: 0.74rem; font-weight: 700;
+  padding: 0.25rem 0.7rem; border-radius: 999px; font-size: 0.73rem; font-weight: 600;
   display: inline-flex; align-items: center; gap: 0.35rem;
-  border: 1px solid rgba(255,255,255,0.12); background: rgba(15, 23, 42, 0.75);
+  border: 1px solid var(--glass-border); background: rgba(15, 23, 42, 0.6);
 }
-.status-pill-top.ok { color: #34D399 !important; border-color: rgba(16, 185, 129, 0.45); background: rgba(16, 185, 129, 0.12); }
-.status-pill-top.warn { color: #FBBF24 !important; border-color: rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.12); }
-.status-pill-top.bad { color: #F87171 !important; border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.15); }
+.status-pill-top.ok { color: #34D399 !important; border-color: rgba(16, 185, 129, 0.38); background: rgba(16, 185, 129, 0.10); }
+.status-pill-top.warn { color: #FBBF24 !important; border-color: rgba(245, 158, 11, 0.38); background: rgba(245, 158, 11, 0.10); }
+.status-pill-top.bad { color: #F87171 !important; border-color: rgba(239, 68, 68, 0.45); background: rgba(239, 68, 68, 0.14); }
+.status-pill-top.info { color: #38BDF8 !important; border-color: rgba(56, 189, 248, 0.38); background: rgba(56, 189, 248, 0.10); }
 
-/* --- GLASSY KPI & HARDWARE CARDS --- */
+/* --- GLASSY KPI CARDS (Admin Dashboard V2 Style) --- */
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(195px, 1fr));
   gap: 0.75rem;
-  margin-bottom: 0.9rem;
+  margin-bottom: 0.85rem;
 }
 .glass-kpi {
-  background: var(--glass-card);
-  backdrop-filter: blur(16px);
+  background: linear-gradient(145deg, rgba(22, 38, 60, 0.62) 0%, rgba(14, 25, 42, 0.76) 100%);
+  backdrop-filter: blur(18px);
   border: 1px solid var(--glass-border);
-  border-top: 2px solid var(--c, var(--accent-cyan));
-  border-radius: 14px;
-  padding: 0.85rem 1rem;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-  transition: transform 0.2s ease, border-color 0.2s ease;
+  border-radius: 16px;
+  padding: 0.95rem 1.05rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: transform 0.18s ease, border-color 0.18s ease;
 }
 .glass-kpi:hover {
   transform: translateY(-2px);
-  border-color: rgba(255, 255, 255, 0.22);
+  border-color: rgba(56, 189, 248, 0.38);
 }
-.glass-kpi .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; }
-.glass-kpi .lbl { font-size: 0.74rem; color: var(--muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.4px; }
+.glass-kpi .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
+.glass-kpi .lbl { font-size: 0.74rem; color: #94A3B8; font-weight: 600; }
+.glass-kpi .ic-badge {
+  width: 1.85rem; height: 1.85rem; border-radius: 9px;
+  background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.24);
+  display: flex; align-items: center; justify-content: center; font-size: 0.9rem;
+}
 .glass-kpi .val { font-size: 1.55rem; font-weight: 800; color: #FFFFFF; line-height: 1.15; }
-.glass-kpi .sub { font-size: 0.74rem; color: #CBD5E1; margin-top: 0.25rem; display: flex; align-items: center; gap: 0.3rem; }
+.glass-kpi .sub { font-size: 0.73rem; color: #94A3B8; margin-top: 0.28rem; }
 
-/* --- PUMP & ZONE STATUS CARDS --- */
-.iot-grid-5 {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-}
+/* --- IOT STATUS CARDS --- */
 .iot-card {
-  background: var(--glass-card);
+  background: var(--glass-surface);
+  backdrop-filter: blur(16px);
   border: 1px solid var(--glass-border);
   border-radius: 14px;
-  padding: 0.9rem 1rem;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.28);
+  padding: 0.85rem 1rem;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.2);
 }
-.iot-card .hd { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; font-weight: 700; margin-bottom: 0.45rem; }
+.iot-card .hd { font-size: 0.71rem; color: var(--muted); text-transform: uppercase; font-weight: 700; margin-bottom: 0.4rem; }
 .iot-card .bd { display: flex; justify-content: space-between; align-items: center; }
-.iot-card .nm { font-size: 0.98rem; font-weight: 700; color: #F8FAFC; }
+.iot-card .nm { font-size: 0.94rem; font-weight: 700; color: #F8FAFC; }
 .pill {
-  padding: 0.22rem 0.7rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700;
+  padding: 0.2rem 0.65rem; border-radius: 999px; font-size: 0.73rem; font-weight: 700;
   display: inline-block;
 }
-.pill-normal { background: rgba(16, 185, 129, 0.16); color: #34D399 !important; border: 1px solid #10B981; }
+.pill-normal { background: rgba(16, 185, 129, 0.14); color: #34D399 !important; border: 1px solid rgba(16, 185, 129, 0.45); }
 .pill-alarm {
-  background: rgba(239, 68, 68, 0.22); color: #FCA5A5 !important; border: 1px solid #EF4444;
-  animation: pulse-red 1.4s infinite;
+  background: rgba(239, 68, 68, 0.20); color: #FCA5A5 !important; border: 1px solid rgba(239, 68, 68, 0.55);
+  animation: pulse-red 1.5s infinite;
 }
-.pill-warn { background: rgba(245, 158, 11, 0.2); color: #FCD34D !important; border: 1px solid #F59E0B; }
-.pill-off { background: rgba(148, 163, 184, 0.15); color: #94A3B8 !important; border: 1px solid #64748B; }
+.pill-off { background: rgba(148, 163, 184, 0.12); color: #94A3B8 !important; border: 1px solid rgba(148, 163, 184, 0.3); }
 
 @keyframes pulse-red {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
-  50% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45); }
+  50% { box-shadow: 0 0 0 7px rgba(239, 68, 68, 0); }
 }
 
-/* --- TABS & CONTAINERS --- */
+/* --- TABS (NO ORANGE BACKGROUND! Clean Frosted Glass Pill + Cyan Indicator) --- */
 .stTabs [data-baseweb="tab-list"] {
   gap: 0.35rem;
-  background: rgba(15, 23, 42, 0.7);
-  padding: 0.35rem;
+  background: rgba(11, 22, 36, 0.68);
+  padding: 0.32rem;
   border-radius: 12px;
   border: 1px solid var(--glass-border);
   overflow-x: auto;
@@ -1033,30 +1023,44 @@ section[data-testid="stSidebar"] {
 }
 .stTabs [data-baseweb="tab"] {
   height: auto;
-  padding: 0.48rem 0.95rem;
+  padding: 0.45rem 0.95rem;
   border-radius: 9px;
-  font-weight: 600;
-  color: var(--muted);
+  font-weight: 500;
+  color: #94A3B8 !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
   white-space: nowrap;
+  transition: all 0.16s ease;
+}
+.stTabs [data-baseweb="tab"]:hover {
+  color: #E2E8F0 !important;
+  background: rgba(255, 255, 255, 0.04) !important;
 }
 .stTabs [aria-selected="true"] {
-  background: linear-gradient(135deg, #FF7A2F, #EA580C) !important;
-  color: #FFFFFF !important;
-  font-weight: 700;
-  box-shadow: 0 4px 12px rgba(255, 122, 47, 0.35);
+  background: rgba(56, 189, 248, 0.14) !important;
+  color: #38BDF8 !important;
+  border: 1px solid rgba(56, 189, 248, 0.42) !important;
+  font-weight: 700 !important;
+  box-shadow: 0 2px 10px rgba(14, 165, 233, 0.15) !important;
 }
-.stTabs [data-baseweb="tab-highlight"] { display: none !important; }
+.stTabs [data-baseweb="tab-highlight"] {
+  background-color: transparent !important;
+  display: none !important;
+}
 
+/* --- EXPANDERS, FORMS, TABLES & BUTTONS --- */
 [data-testid="stExpander"] {
   border: 1px solid var(--glass-border) !important;
   border-radius: 12px !important;
-  background: var(--glass-card) !important;
-  margin-bottom: 0.45rem !important;
+  background: var(--glass-surface) !important;
+  backdrop-filter: blur(14px) !important;
+  margin-bottom: 0.42rem !important;
 }
 [data-testid="stForm"] {
   border: 1px solid var(--glass-border) !important;
   border-radius: 14px !important;
-  background: var(--glass-card) !important;
+  background: var(--glass-surface) !important;
+  backdrop-filter: blur(16px) !important;
   padding: 0.9rem !important;
 }
 [data-testid="stDataFrame"], .stTable {
@@ -1065,25 +1069,34 @@ section[data-testid="stSidebar"] {
   overflow-x: auto !important;
 }
 
-.stApp button { border-radius: 10px !important; font-weight: 600 !important; transition: all 0.18s ease !important; }
+.stApp button {
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  border: 1px solid var(--glass-border) !important;
+  background: rgba(20, 35, 56, 0.72) !important;
+  transition: all 0.16s ease !important;
+}
+.stApp button:hover {
+  border-color: rgba(56, 189, 248, 0.45) !important;
+  background: rgba(28, 48, 76, 0.85) !important;
+}
 .stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"] {
-  background: linear-gradient(135deg, #FF7A2F 0%, #EA580C 100%) !important;
-  border: 1px solid rgba(255,255,255,0.15) !important;
+  background: linear-gradient(135deg, #0EA5E9 0%, #0284C7 100%) !important;
+  border: 1px solid rgba(125, 211, 252, 0.35) !important;
   color: #FFFFFF !important;
-  box-shadow: 0 4px 14px rgba(234, 88, 12, 0.35) !important;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.32) !important;
 }
 .stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
   transform: translateY(-1px);
 }
 
 .req-banner {
   display: flex; align-items: center; gap: .9rem; padding: 0.7rem 1rem; margin-bottom: 0.75rem;
-  border-radius: 12px; border: 1px solid var(--warn);
-  background: linear-gradient(90deg, rgba(120, 53, 15, 0.85), rgba(146, 64, 14, 0.75));
-  animation: pulse-red 2s ease-in-out infinite;
+  border-radius: 12px; border: 1px solid rgba(56, 189, 248, 0.45);
+  background: linear-gradient(90deg, rgba(14, 116, 144, 0.35), rgba(15, 23, 42, 0.75));
 }
 
 @media (max-width:768px){
@@ -1150,20 +1163,20 @@ if st.session_state.get("token") and saved_token != st.session_state.token and l
 #  LOGIN SCREEN (IF NOT LOGGED IN)
 # =====================================================================
 if not st.session_state.logged_in or not st.session_state.role or st.session_state.role == "None":
-    _, col_login, _ = st.columns([1, 1.5, 1])
+    _, col_login, _ = st.columns([1, 1.45, 1])
     with col_login:
         st.markdown("""
         <div class="app-hero" style="margin-top:2rem;">
           <div>
-            <div class="t">⚡ KAVE TOWN SHIFT · Enterprise Center</div>
-            <div class="s">ระบบคลังอุปกรณ์ช่าง · สระว่ายน้ำ · ควบคุมลิ้นชัก · ปั๊มน้ำ · Fire Alarm · Growatt Solar</div>
+            <div class="t">🛠️ ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ</div>
+            <div class="s">เข้าสู่ระบบเพื่อตรวจเช็ค ยืม-คืน และบริหารจัดการระบบ</div>
           </div>
         </div>
         """, unsafe_allow_html=True)
         with st.form("login_form"):
             username = st.text_input("ชื่อผู้ใช้งาน (Username)")
             password = st.text_input("รหัสผ่าน (Password)", type="password")
-            submitted = st.form_submit_button("🔐 เข้าสู่ระบบ (Sign In)", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("เข้าสู่ระบบ", type="primary", use_container_width=True)
 
         tech_df = get_tech_users_df()
         if submitted:
@@ -1242,123 +1255,6 @@ else:
 borrowed_cnt = len(active_borrows)
 abn_cnt, low_cnt = len(abnormal_items), len(low_stock_items)
 pending_reqs_all = get_pending_reqs()
-
-# =====================================================================
-#  SIDEBAR NAVIGATION (STUDIO / GLASSY CRM STYLE FOR ADMIN)
-# =====================================================================
-ADMIN_NAV_ITEMS = [
-    "🌟 1. ภาพรวมศูนย์ควบคุม (Executive Overview)",
-    "🛠️ 2. คลังอุปกรณ์ช่าง & สระว่ายน้ำ (Inventory & Logs)",
-    "🗄️ 3. ควบคุมลิ้นชักอัจฉริยะ (ESP8266 Servo Drawer)",
-    "💧 4. ระบบระดับน้ำ & ปั๊มน้ำ (Water Pump Alarm)",
-    "🚨 5. ระบบแจ้งเตือนอัคคีภัย (Fire Alarm & Relay Reset)",
-    "☀️ 6. ระบบโซลาร์เซลล์ (Growatt SPF5000ES & Sheets)",
-    "⚙️ 7. ตั้งค่าระบบ, เครือข่าย IoT & บัญชีช่าง"
-]
-
-if st.session_state.role in TECH_ROLES:
-    st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
-else:
-    with st.sidebar:
-        st.markdown("""
-        <div class="brand-box">
-          <div class="brand-logo">⚡</div>
-          <div>
-            <div class="brand-title">KAVE TOWN SHIFT</div>
-            <div class="brand-sub">Admin Command Studio V2</div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown(
-            f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper() if st.session_state.username else "A")}</div>'
-            f'<div><div class="u-name">{esc(st.session_state.username)}</div>'
-            f'<div class="u-role">{esc(st.session_state.role)}</div></div></div>',
-            unsafe_allow_html=True
-        )
-
-        st.caption("🧭 MAIN STUDIO MODULES")
-        selected_admin_module = st.radio(
-            "เลือกส่วนงานที่ต้องการควบคุม",
-            ADMIN_NAV_ITEMS,
-            label_visibility="collapsed",
-            key="admin_sidebar_nav"
-        )
-
-        st.markdown("---")
-        st.caption("📡 REAL-TIME HARDWARE STATUS")
-        mqtt_badge = "🟢 MQTT ONLINE" if iot_mgr.connected else "🔴 MQTT OFFLINE"
-        servo_badge = "🔓 OPEN (UP)" if iot_mgr.servo_status == "UP" else "🔒 LOCKED (DOWN)"
-        fire_badge = "🚨 FIRE ALERT!" if iot_mgr.fire_status == "ALERT" else "🟢 FIRE CLEAR"
-        water_any_alarm = any(v == "ALARM" for v in iot_mgr.water_status.values())
-        water_badge = "🚨 PUMP ALARM!" if water_any_alarm else "🟢 PUMPS NORMAL"
-
-        st.markdown(f"""
-        <div style="font-size:0.78rem; line-height:1.85; background:rgba(15,23,42,0.65); padding:0.65rem 0.8rem; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">
-          <div><b>Broker:</b> {mqtt_badge}</div>
-          <div><b>Drawer:</b> {servo_badge}</div>
-          <div><b>Water:</b> {water_badge}</div>
-          <div><b>Fire:</b> {fire_badge}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if st.button("🔄 เชื่อมต่อ MQTT ใหม่ / Sync", use_container_width=True):
-            iot_mgr.connect()
-            st.toast("รีเฟรชการเชื่อมต่อ MQTT แล้ว", icon="📡")
-            st.rerun()
-
-        st.markdown("---")
-        with st.expander("👤 สลับสิทธิ์ / ออกจากระบบ", expanded=False):
-            if st.session_state.original_role == ROLE_ADMIN:
-                if st.session_state.role == ROLE_ADMIN:
-                    if st.button("🔀 สลับเป็น 'ช่างประจำอาคารพิเศษ'", use_container_width=True):
-                        switch_role(ROLE_TECH_SP)
-                else:
-                    if st.button("🔙 สลับกลับเป็น 'แอดมิน'", type="primary", use_container_width=True):
-                        switch_role(ROLE_ADMIN)
-            if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
-                if st.session_state.get("token"):
-                    db.sessions.delete_one({"token": st.session_state.token})
-                if local_store is not None:
-                    try:
-                        local_store.deleteItem(LS_KEY, key="ls_del_token")
-                    except Exception:
-                        pass
-                st.session_state.logged_in = False
-                st.session_state.role = None
-                st.session_state.username = ""
-                st.session_state.original_role = None
-                st.session_state.token = None
-                st.query_params.clear()
-                st.rerun()
-
-# =====================================================================
-#  TOP HERO STATUS BAR
-# =====================================================================
-mqtt_cls = "ok" if iot_mgr.connected else "bad"
-mqtt_txt = "MQTT: CONNECTED" if iot_mgr.connected else "MQTT: DISCONNECTED"
-fire_cls = "bad" if iot_mgr.fire_status == "ALERT" else "ok"
-fire_txt = f"FIRE: {iot_mgr.fire_status}"
-water_alarm_cnt = sum(1 for v in iot_mgr.water_status.values() if v == "ALARM")
-water_cls = "bad" if water_alarm_cnt > 0 else "ok"
-water_txt = f"WATER ALARM: {water_alarm_cnt}" if water_alarm_cnt else "WATER: NORMAL"
-servo_cls = "warn" if iot_mgr.servo_status == "UP" else "ok"
-servo_txt = f"DRAWER: {iot_mgr.servo_status}"
-
-st.markdown(f"""
-<div class="app-hero">
-  <div>
-    <div class="t">🛠️ KAVE TOWN SHIFT · SMART ENTERPRISE COMMAND CENTER</div>
-    <div class="s">ประจำวันที่ {get_now_str("%d/%m/%Y %H:%M")} · ผู้ใช้งาน: <b>{esc(st.session_state.username)}</b> ({esc(st.session_state.role)})</div>
-  </div>
-  <div class="badge-row">
-    <span class="status-pill-top {mqtt_cls}">📡 {mqtt_txt}</span>
-    <span class="status-pill-top {servo_cls}">🗄️ {servo_txt}</span>
-    <span class="status-pill-top {water_cls}">💧 {water_txt}</span>
-    <span class="status-pill-top {fire_cls}">🔥 {fire_txt}</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
 
 # =====================================================================
 #  SHARED BORROW / RETURN COMPONENT
@@ -1462,7 +1358,7 @@ def render_borrow_return_system():
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
 # =====================================================================
-#  TECH UI INSPECTION LISTS (NO @fragment ISOLATION BUG ON SUBMIT)
+#  INSPECTION LISTS
 # =====================================================================
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
@@ -1562,25 +1458,128 @@ def clear_inspection_widget_state():
             del st.session_state[k]
 
 # =====================================================================
-#  ADMIN ROLE: 7 SEPARATE ENTERPRISE MODULES
+#  ROLE 1: ADMIN VIEW (FULL ACCESS TO ALL 7 MODULES)
 # =====================================================================
 if st.session_state.role == ROLE_ADMIN:
-    cfg_iot = get_iot_config()
+    ADMIN_NAV_ITEMS = [
+        "📊 1. ภาพรวมระบบ (Overview)",
+        "🛠️ 2. คลังอุปกรณ์ช่าง & สระว่ายน้ำ",
+        "🗄️ 3. ควบคุมลิ้นชัก (ESP8266 Servo)",
+        "💧 4. ระบบระดับน้ำ & ปั๊มน้ำ (Water Alarm)",
+        "🚨 5. ระบบแจ้งเตือนอัคคีภัย (Fire Alarm)",
+        "☀️ 6. ระบบโซลาร์เซลล์ (Growatt Solar)",
+        "⚙️ 7. ตั้งค่าระบบ & บัญชีผู้ใช้งาน"
+    ]
 
-    # Pending Requisition Alert Banner
+    with st.sidebar:
+        st.markdown("""
+        <div class="brand-box">
+          <div class="brand-logo">K</div>
+          <div>
+            <div class="brand-title">KAVE TOWN SHIFT</div>
+            <div class="brand-sub">Admin Dashboard V2</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(
+            f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper() if st.session_state.username else "A")}</div>'
+            f'<div><div class="u-name">{esc(st.session_state.username)}</div>'
+            f'<div class="u-role">{esc(st.session_state.role)}</div></div></div>',
+            unsafe_allow_html=True
+        )
+
+        st.caption("OVERVIEW & MODULES")
+        selected_admin_module = st.radio(
+            "เมนูควบคุมหลัก",
+            ADMIN_NAV_ITEMS,
+            label_visibility="collapsed",
+            key="admin_sidebar_nav"
+        )
+
+        st.markdown("---")
+        st.caption("SYSTEM TELEMETRY")
+        mqtt_badge = "🟢 Online" if iot_mgr.connected else "🔴 Offline"
+        servo_badge = "🔓 UP (0°)" if iot_mgr.servo_status == "UP" else "🔒 DOWN (180°)"
+        fire_badge = "🚨 ALERT" if iot_mgr.fire_status == "ALERT" else "🟢 NORMAL"
+        water_any_alarm = any(v == "ALARM" for v in iot_mgr.water_status.values())
+        water_badge = "🚨 ALARM" if water_any_alarm else "🟢 NORMAL"
+
+        st.markdown(f"""
+        <div style="font-size:0.77rem; line-height:1.85; background:rgba(15,23,42,0.55); padding:0.65rem 0.8rem; border-radius:12px; border:1px solid var(--glass-border);">
+          <div><b>MQTT Broker:</b> {mqtt_badge}</div>
+          <div><b>Servo Drawer:</b> {servo_badge}</div>
+          <div><b>Water Pumps:</b> {water_badge}</div>
+          <div><b>Fire Alarm:</b> {fire_badge}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("🔄 รีเฟรชการเชื่อมต่อ MQTT", use_container_width=True):
+            iot_mgr.connect()
+            st.toast("รีเฟรชการเชื่อมต่อ MQTT แล้ว", icon="📡")
+            st.rerun()
+
+        st.markdown("---")
+        with st.expander("👤 สลับมุมมอง / ออกจากระบบ", expanded=False):
+            if st.session_state.original_role == ROLE_ADMIN:
+                if st.button("🔀 สลับเป็น 'ช่างประจำอาคารพิเศษ'", use_container_width=True):
+                    switch_role(ROLE_TECH_SP)
+            if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
+                if st.session_state.get("token"):
+                    db.sessions.delete_one({"token": st.session_state.token})
+                if local_store is not None:
+                    try:
+                        local_store.deleteItem(LS_KEY, key="ls_del_token")
+                    except Exception:
+                        pass
+                st.session_state.logged_in = False
+                st.session_state.role = None
+                st.session_state.username = ""
+                st.session_state.original_role = None
+                st.session_state.token = None
+                st.query_params.clear()
+                st.rerun()
+
+    # Admin Top Hero Banner
+    cfg_iot = get_iot_config()
+    mqtt_cls = "ok" if iot_mgr.connected else "bad"
+    mqtt_txt = "MQTT: ONLINE" if iot_mgr.connected else "MQTT: OFFLINE"
+    fire_cls = "bad" if iot_mgr.fire_status == "ALERT" else "ok"
+    fire_txt = f"FIRE: {iot_mgr.fire_status}"
+    water_alarm_cnt = sum(1 for v in iot_mgr.water_status.values() if v == "ALARM")
+    water_cls = "bad" if water_alarm_cnt > 0 else "ok"
+    water_txt = f"WATER ALARM: {water_alarm_cnt}" if water_alarm_cnt else "WATER: NORMAL"
+    servo_cls = "info" if iot_mgr.servo_status == "UP" else "ok"
+    servo_txt = f"DRAWER: {iot_mgr.servo_status}"
+
+    st.markdown(f"""
+    <div class="app-hero">
+      <div>
+        <div class="t">🛠️ KAVE TOWN SHIFT · ADMIN COMMAND DASHBOARD</div>
+        <div class="s">วันที่ {get_now_str("%d/%m/%Y %H:%M")} · ผู้ดูแลระบบ: <b>{esc(st.session_state.username)}</b></div>
+      </div>
+      <div class="badge-row">
+        <span class="status-pill-top {mqtt_cls}">📡 {mqtt_txt}</span>
+        <span class="status-pill-top {servo_cls}">🗄️ {servo_txt}</span>
+        <span class="status-pill-top {water_cls}">💧 {water_txt}</span>
+        <span class="status-pill-top {fire_cls}">🔥 {fire_txt}</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     if pending_reqs_all:
         st.markdown(
-            f'<div class="req-banner"><div style="font-size:1.6rem;">📥</div><div>'
-            f'<div style="font-weight:700; color:#FEF3C7;">มีคำขอเบิกของรออนุมัติ {len(pending_reqs_all)} รายการ</div>'
-            f'<div style="font-size:0.78rem; color:#FDE68A;">ไปที่เมนู "2. คลังอุปกรณ์ช่าง & สระว่ายน้ำ -> อนุมัติคำขอเพิ่มอุปกรณ์" เพื่อพิจารณา</div></div></div>',
+            f'<div class="req-banner"><div style="font-size:1.5rem;">📥</div><div>'
+            f'<div style="font-weight:700; color:#E0F2FE;">มีคำขอเบิกของรออนุมัติ {len(pending_reqs_all)} รายการ</div>'
+            f'<div style="font-size:0.78rem; color:#BAE6FD;">ไปที่เมนู "2. คลังอุปกรณ์ช่าง & สระว่ายน้ำ -> อนุมัติคำขอเพิ่มอุปกรณ์" เพื่อพิจารณา</div></div></div>',
             unsafe_allow_html=True
         )
 
     # -----------------------------------------------------------------
-    # MODULE 1: EXECUTIVE OVERVIEW (Glassy CRM & Admin Dashboard V2)
+    # MODULE 1: EXECUTIVE OVERVIEW (Admin Dashboard V2 Glass Grid)
     # -----------------------------------------------------------------
-    if selected_admin_module.startswith("🌟 1."):
-        st.subheader("🌟 ภาพรวมศูนย์ควบคุมอัจฉริยะ (Executive Command & Audit Overview)")
+    if selected_admin_module.startswith("📊 1."):
+        st.subheader("📊 ภาพรวมศูนย์ควบคุม (Executive Overview)")
 
         sol = st.session_state.get("last_solar_data", {})
         soc_disp = f"{int(sol['soc'])}%" if sol.get("ok") else "--%"
@@ -1588,41 +1587,40 @@ if st.session_state.role == ROLE_ADMIN:
 
         st.markdown(f"""
         <div class="kpi-grid">
-          <div class="glass-kpi" style="--c:#00F2FE;">
-            <div class="top"><span class="lbl">รายการอุปกรณ์ทั้งหมด</span><span>🛠️</span></div>
+          <div class="glass-kpi">
+            <div class="top"><span class="lbl">รายการอุปกรณ์ทั้งหมด</span><span class="ic-badge">🛠️</span></div>
             <div class="val">{len(items_df)}</div>
-            <div class="sub">ชำรุด/ผิดปกติ: <b style="color:{'#EF4444' if abn_cnt else '#10B981'}">{abn_cnt}</b> · เหลือน้อย: <b style="color:{'#F59E0B' if low_cnt else '#10B981'}">{low_cnt}</b></div>
+            <div class="sub">สภาพปกติพร้อมใช้งาน {len(items_df) - abn_cnt} รายการ</div>
           </div>
-          <div class="glass-kpi" style="--c:#FF7A2F;">
-            <div class="top"><span class="lbl">กำลังถูกยืม / รออนุมัติเบิก</span><span>📦</span></div>
+          <div class="glass-kpi">
+            <div class="top"><span class="lbl">ชำรุด / กำลังใช้งาน / หมด</span><span class="ic-badge">⚠️</span></div>
+            <div class="val" style="color:{'#F87171' if abn_cnt else '#34D399'} !important;">{abn_cnt}</div>
+            <div class="sub">สต็อกเหลือน้อยกว่าเกณฑ์: {low_cnt} รายการ</div>
+          </div>
+          <div class="glass-kpi">
+            <div class="top"><span class="lbl">กำลังถูกยืม / รออนุมัติเบิก</span><span class="ic-badge">📦</span></div>
             <div class="val">{borrowed_cnt} / {len(pending_reqs_all)}</div>
             <div class="sub">ยืมอยู่ {borrowed_cnt} รายการ · รออนุมัติ {len(pending_reqs_all)} รายการ</div>
           </div>
-          <div class="glass-kpi" style="--c:{'#F59E0B' if iot_mgr.servo_status=='UP' else '#10B981'};">
-            <div class="top"><span class="lbl">สถานะลิ้นชัก (ESP8266 Servo)</span><span>🗄️</span></div>
+          <div class="glass-kpi">
+            <div class="top"><span class="lbl">ลิ้นชัก (ESP8266 Servo)</span><span class="ic-badge">🗄️</span></div>
             <div class="val">{iot_mgr.servo_status}</div>
             <div class="sub">อัปเดตล่าสุด: {iot_mgr.servo_last_update}</div>
           </div>
-          <div class="glass-kpi" style="--c:{'#EF4444' if water_alarm_cnt else '#10B981'};">
-            <div class="top"><span class="lbl">ระบบปั๊มน้ำ (Water Alarm)</span><span>💧</span></div>
-            <div class="val">{'ALARM ('+str(water_alarm_cnt)+')' if water_alarm_cnt else 'NORMAL'}</div>
+          <div class="glass-kpi">
+            <div class="top"><span class="lbl">ระบบปั๊มน้ำ (Water Alarm)</span><span class="ic-badge">💧</span></div>
+            <div class="val" style="color:{'#F87171' if water_alarm_cnt else '#34D399'} !important;">{'ALARM ('+str(water_alarm_cnt)+')' if water_alarm_cnt else 'NORMAL'}</div>
             <div class="sub">ออนไลน์ {sum(1 for v in iot_mgr.water_online.values() if v)}/5 จุดตรวจวัด</div>
           </div>
-          <div class="glass-kpi" style="--c:{'#EF4444' if iot_mgr.fire_status=='ALERT' else '#10B981'};">
-            <div class="top"><span class="lbl">ระบบอัคคีภัย (Fire Alarm)</span><span>🚨</span></div>
-            <div class="val">{iot_mgr.fire_status}</div>
-            <div class="sub">{esc(iot_mgr.fire_location[:28])}</div>
-          </div>
-          <div class="glass-kpi" style="--c:#8B5CF6;">
-            <div class="top"><span class="lbl">โซลาร์เซลล์ (SPF5000ES)</span><span>☀️</span></div>
-            <div class="val">{soc_disp}</div>
+          <div class="glass-kpi">
+            <div class="top"><span class="lbl">ระบบอัคคีภัย & โซลาร์เซลล์</span><span class="ic-badge">☀️</span></div>
+            <div class="val">{iot_mgr.fire_status} · {soc_disp}</div>
             <div class="sub">PV Input: {pv_disp}</div>
           </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # Quick Action Control Strip
-        st.markdown("#### ⚡ แผงควบคุมด่วนสำหรับแอดมิน (Quick Hardware & System Controls)")
+        st.markdown("#### ⚡ แผงควบคุมด่วน (Quick Hardware & System Controls)")
         qa1, qa2, qa3, qa4, qa5 = st.columns(5)
         if qa1.button("🔓 เปิดลิ้นชัก (Servo UP)", type="primary", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_servo_cmd"], "UP")
@@ -1679,18 +1677,18 @@ if st.session_state.role == ROLE_ADMIN:
                 )
 
         with col_ov2:
-            st.markdown("#### 📋 สรุปรายการอุปกรณ์ที่ต้องดูแลทันที")
+            st.markdown("#### 📋 สรุปรายการอุปกรณ์ที่ต้องดูแล")
             if abn_cnt:
                 with st.expander(f"❌ {abn_title} ({abn_cnt} รายการ)", expanded=True):
                     st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
             else:
-                st.success("✅ อุปกรณ์ช่างและสระว่ายน้ำทุกชิ้นอยู่ในสภาพปกติ")
+                st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
 
             if low_cnt:
                 with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์ ({low_cnt} รายการ)", expanded=True):
                     st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
             else:
-                st.success("✅ สต็อกอุปกรณ์ทั่วไปมีจำนวนเพียงพอทุกรายการ")
+                st.success("✅ อุปกรณ์ทั่วไปมีจำนวนเพียงพอทุกรายการ")
 
             if borrowed_cnt:
                 with st.expander(f"📤 อุปกรณ์ที่กำลังถูกยืม ({borrowed_cnt} รายการ)", expanded=False):
@@ -1707,7 +1705,7 @@ if st.session_state.role == ROLE_ADMIN:
     elif selected_admin_module.startswith("🛠️ 2."):
         admin_inv_tabs = st.tabs([
             "📋 2.1 จัดการอุปกรณ์ทั้งหมด",
-            "🧑‍🔧 2.2 ตรวจเช็ค/ปรับสต็อกหน้างาน (Admin Direct)",
+            "🧑‍🔧 2.2 ตรวจเช็ค/ปรับสต็อกโดยตรง",
             "📊 2.3 รายงานการตรวจเช็ค",
             "📥 2.4 อนุมัติคำขอเพิ่มอุปกรณ์",
             "🔄 2.5 ยืม-คืน เครื่องมือ-อุปกรณ์"
@@ -1903,17 +1901,15 @@ if st.session_state.role == ROLE_ADMIN:
                     refresh_items(images=True)
                     done("นำเข้าอุปกรณ์และลำดับใหม่สำเร็จ!")
 
-        # 2.2 Admin Direct Inspection & Stock Adjust (No 4-photo restriction for Admin if desired)
         with admin_inv_tabs[1]:
-            st.markdown("#### 🧑‍🔧 ตรวจเช็คสภาพและปรับแก้จำนวนอุปกรณ์โดยแอดมิน (ไม่ต้องสลับหน้า)")
+            st.markdown("#### 🧑‍🔧 ตรวจเช็คสภาพและปรับแก้จำนวนอุปกรณ์โดยแอดมิน")
             adm_cat = st.radio("เลือกหมวดหมู่", ["🔧 หมวดอุปกรณ์ช่าง", "🏊 หมวดอุปกรณ์สระว่ายน้ำ"], horizontal=True, key="adm_insp_cat")
             if adm_cat == "🔧 หมวดอุปกรณ์ช่าง":
                 tools_all_df = items_df[items_df['category'] == 'อุปกรณ์ช่าง'] if not items_df.empty else pd.DataFrame()
                 if not tools_all_df.empty:
                     render_tool_inspection_list(tools_all_df)
-                    if st.button("💾 บันทึกการตรวจเช็ค/ปรับจำนวนอุปกรณ์ช่าง (สิทธิ์แอดมิน)", type="primary", use_container_width=True):
+                    if st.button("💾 บันทึกการตรวจเช็ค/ปรับจำนวนอุปกรณ์ช่าง", type="primary", use_container_width=True):
                         bulk_ops, summaries = [], []
-                        row_map = tools_all_df.set_index('id')
                         for _, row in tools_all_df.iterrows():
                             rid = int(row['id'])
                             subcat = str(row.get('subcategory', ''))
@@ -1960,7 +1956,7 @@ if st.session_state.role == ROLE_ADMIN:
                 pool_all_df = items_df[items_df['category'] == 'อุปกรณ์สระว่ายน้ำ'] if not items_df.empty else pd.DataFrame()
                 if not pool_all_df.empty:
                     render_pool_list(pool_all_df)
-                    if st.button("💾 บันทึกจำนวนอุปกรณ์สระว่ายน้ำ (สิทธิ์แอดมิน)", type="primary", use_container_width=True):
+                    if st.button("💾 บันทึกจำนวนอุปกรณ์สระว่ายน้ำ", type="primary", use_container_width=True):
                         bulk_pool_ops, pool_summaries = [], []
                         row_map = pool_all_df.set_index('id')
                         for item_id in pool_all_df['id']:
@@ -1986,7 +1982,6 @@ if st.session_state.role == ROLE_ADMIN:
                         clear_inspection_widget_state()
                         done("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
 
-        # 2.3 Inspection Reports
         with admin_inv_tabs[2]:
             st.subheader("📊 รายงานการตรวจเช็คสภาพอุปกรณ์")
             report_type = st.radio("เลือกมุมมองรายงาน", ["รายวัน (Daily)", "รายเดือน (Monthly)", "รายปี (Yearly)", "ประวัติทั้งหมด"], horizontal=True)
@@ -2038,7 +2033,6 @@ if st.session_state.role == ROLE_ADMIN:
             else:
                 st.info("ยังไม่มีประวัติการตรวจเช็คในระบบ")
 
-        # 2.4 Requisition Approvals
         with admin_inv_tabs[3]:
             st.subheader("📥 จัดการคำขอเพิ่มอุปกรณ์เข้าคลัง")
             sub_req_pending, sub_req_history = st.tabs(["📥 คำขอที่รออนุมัติ", "📜 ประวัติการอนุมัติคำขอ"])
@@ -2083,24 +2077,25 @@ if st.session_state.role == ROLE_ADMIN:
                 else:
                     st.info("ยังไม่มีประวัติการอนุมัติคำขอ")
 
-        # 2.5 Borrow / Return
         with admin_inv_tabs[4]:
             render_borrow_return_system()
 
     # -----------------------------------------------------------------
-    # MODULE 3: ESP8266 SMART DRAWER SERVO CONTROL (`esp8266 ลิ้นชัก.txt`)
+    # MODULE 3: ESP8266 SMART DRAWER SERVO CONTROL
     # -----------------------------------------------------------------
     elif selected_admin_module.startswith("🗄️ 3."):
         st.subheader("🗄️ ระบบควบคุมลิ้นชักอัจฉริยะ (ESP8266 Servo Controller)")
-        st.caption(f"เชื่อมโยงกับบอร์ด ESP8266 (Pin D4 / GPIO2) ผ่าน HiveMQ Cloud TLS · Command Topic: `{cfg_iot['topic_servo_cmd']}` · Status Topic: `{cfg_iot['topic_servo_status']}`")
+        st.caption(f"เชื่อมโยงกับบอร์ด ESP8266 (Pin D4 / GPIO2) · Command Topic: `{cfg_iot['topic_servo_cmd']}` · Status Topic: `{cfg_iot['topic_servo_status']}`")
 
         s_col1, s_col2 = st.columns([1.2, 1.8])
         with s_col1:
             is_up = iot_mgr.servo_status == "UP"
             st.markdown(f"""
-            <div class="glass-kpi" style="--c:{'#10B981' if is_up else '#3B82F6'}; padding:1.4rem;">
-              <div class="top"><span class="lbl">CURRENT SERVO POSITION</span><span>{'🔓' if is_up else '🔒'}</span></div>
-              <div class="val" style="font-size:2.1rem;">{'UP (เปิดลิ้นชัก 0°)' if is_up else 'DOWN (ล็อก 180°)'}</div>
+            <div class="glass-kpi" style="padding:1.35rem;">
+              <div class="top"><span class="lbl">CURRENT SERVO POSITION</span><span class="ic-badge">{'🔓' if is_up else '🔒'}</span></div>
+              <div class="val" style="font-size:2rem; color:{'#38BDF8' if is_up else '#34D399'} !important;">
+                {'UP (เปิดลิ้นชัก 0°)' if is_up else 'DOWN (ล็อก 180°)'}
+              </div>
               <div class="sub">อัปเดตสถานะล่าสุด: {iot_mgr.servo_last_update}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -2133,13 +2128,12 @@ if st.session_state.role == ROLE_ADMIN:
                 st.info("ยังไม่มีประวัติการสั่งเปิด-ปิดลิ้นชัก")
 
     # -----------------------------------------------------------------
-    # MODULE 4: WATER LEVEL & PUMP ALARM (`Server API-MQTT.txt` + `index-Firealarm.txt`)
+    # MODULE 4: WATER LEVEL & PUMP ALARM
     # -----------------------------------------------------------------
     elif selected_admin_module.startswith("💧 4."):
         st.subheader("💧 ระบบตรวจจับระดับน้ำและปั๊มน้ำ (Water Level & Pump Alarm System)")
         st.caption(f"เชื่อมโยงกับ NodeMCU Server & จอ TFT · Topic: `{cfg_iot['topic_water']}` และ `Water alarm/status/#` พร้อมแจ้งเตือนเข้ากลุ่ม LINE OA")
 
-        # Real-time 5 Pump Cards
         p_cols = st.columns(5)
         pump_meta = [
             ("A", "Transferpump A", "อาคาร A ห้องปั๊มน้ำ"),
@@ -2161,13 +2155,13 @@ if st.session_state.role == ROLE_ADMIN:
             )
 
         w_act1, w_act2, w_act3 = st.columns([1.2, 1.2, 1.6])
-        if w_act1.button("📡 ส่งคำสั่ง CheckClients (ตรวจสอบสถานะออนไลน์ทุกจุด)", type="primary", use_container_width=True):
+        if w_act1.button("📡 ส่งคำสั่ง CheckClients (ตรวจสอบสถานะออนไลน์)", type="primary", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_check_clients"], "CheckClients")
             iot_mgr.publish(cfg_iot["topic_water"], "CheckClients")
             done("ส่งคำสั่ง CheckClients ไปยัง MQTT แล้ว")
 
         with w_act2:
-            sim_pump = st.selectbox("จำลอง/เปลี่ยนสถานะปั๊ม (สำหรับทดสอบหรือสั่งการด้วยมือ)", [
+            sim_pump = st.selectbox("จำลอง/ส่งสถานะปั๊ม", [
                 "TransferpumpA Normal", "TransferpumpA Alarm",
                 "TransferpumpB Normal", "TransferpumpB Alarm",
                 "TransferpumpC Normal", "TransferpumpC Alarm",
@@ -2192,14 +2186,13 @@ if st.session_state.role == ROLE_ADMIN:
             done(f"ส่ง MQTT '{sim_pump}' แล้ว (LINE Push: {info_l})")
 
         st.markdown("---")
-        # Analytics & CSV Import/Export (Matching index-Firealarm.txt)
         st.markdown("#### 📊 สถิติและประวัติการแจ้งเตือนระดับน้ำ (Water Alarm Incident Analytics)")
         water_logs = list(db.iot_logs.find({"system": "WATER"}, {"_id": 0}).sort("datetime", -1).limit(1000))
         w_df = pd.DataFrame(water_logs)
 
         col_up_w, col_dl_w = st.columns(2)
         with col_up_w:
-            up_w_csv = st.file_uploader("📂 นำเข้าไฟล์ `log.csv` จากการ์ด SD ของบอร์ด ESP32-TFT (ถ้ามี)", type=["csv"], key="up_water_csv")
+            up_w_csv = st.file_uploader("📂 นำเข้าไฟล์ `log.csv` จากการ์ด SD ของบอร์ด ESP32-TFT", type=["csv"], key="up_water_csv")
             if up_w_csv is not None and st.button("📥 บันทึกข้อมูลจาก log.csv ลงฐานข้อมูล", key="btn_imp_w"):
                 csv_df = pd.read_csv(up_w_csv)
                 ins = []
@@ -2246,10 +2239,10 @@ if st.session_state.role == ROLE_ADMIN:
 
             st.dataframe(w_df[["datetime", "location", "status", "raw"]], use_container_width=True, hide_index=True)
         else:
-            st.info("ยังไม่มีข้อมูลประวัติระดับน้ำในฐานข้อมูล (ระบบจะบันทึกอัตโนมัติเมื่อมีสัญญาณ MQTT หรือสามารถอัปโหลดไฟล์ `log.csv` จาก SD Card ได้)")
+            st.info("ยังไม่มีข้อมูลประวัติระดับน้ำในฐานข้อมูล")
 
     # -----------------------------------------------------------------
-    # MODULE 5: FIRE ALARM & RELAY RESET (`FireAlarmAPI.txt` + `Server ESP-TFT2.8-Firealarm.txt`)
+    # MODULE 5: FIRE ALARM & RELAY RESET
     # -----------------------------------------------------------------
     elif selected_admin_module.startswith("🚨 5."):
         st.subheader("🚨 ระบบแจ้งเตือนอัคคีภัยและรีเซ็ตรีเลย์ (Fire Alarm & Remote Relay Control)")
@@ -2259,9 +2252,9 @@ if st.session_state.role == ROLE_ADMIN:
         with f_top1:
             is_alert = iot_mgr.fire_status == "ALERT"
             st.markdown(f"""
-            <div class="glass-kpi" style="--c:{'#EF4444' if is_alert else '#10B981'}; padding:1.2rem;">
-              <div class="top"><span class="lbl">MAIN FIRE ALARM STATUS</span><span>🔥</span></div>
-              <div class="val" style="color:{'#EF4444' if is_alert else '#10B981'} !important;">
+            <div class="glass-kpi" style="padding:1.2rem;">
+              <div class="top"><span class="lbl">MAIN FIRE ALARM STATUS</span><span class="ic-badge">🔥</span></div>
+              <div class="val" style="color:{'#F87171' if is_alert else '#34D399'} !important;">
                 {'🚨 FIRE ALERT! ตรวจพบสัญญาณเตือนภัย' if is_alert else '✅ NORMAL (CLEAR) สถานะปกติ'}
               </div>
               <div class="sub">ตำแหน่งล่าสุด: <b>{esc(iot_mgr.fire_location)}</b></div>
@@ -2279,7 +2272,6 @@ if st.session_state.role == ROLE_ADMIN:
                 ok_l, info_l = send_line_push("✅ ALARM CLEAR! สถานะปกติ (ทดสอบจากระบบ Admin Portal)")
                 done(f"ส่งข้อความเข้ากลุ่ม LINE แล้ว ({info_l})")
 
-        # Zone Status Cards (Buildings A-D, Club, Library, ST, Unknown)
         z_cols = st.columns(4)
         z_items = [
             ("A", "อาคาร A (ชั้น 1-8 โซน 1-3)"),
@@ -2318,13 +2310,13 @@ if st.session_state.role == ROLE_ADMIN:
                 done(f"จำลองสัญญาณเตือนภัย: {sim_bldg}")
 
         st.markdown("---")
-        st.markdown("#### 📊 สถิติและประวัติสัญญาณแจ้งเตือนอัคคีภัย (Fire Alarm Log History)")
+        st.markdown("#### 📊 ประวัติสัญญาณแจ้งเตือนอัคคีภัย (Fire Alarm Log History)")
         fire_logs = list(db.iot_logs.find({"system": "FIRE"}, {"_id": 0}).sort("datetime", -1).limit(1000))
         f_df = pd.DataFrame(fire_logs)
 
         col_up_f, col_dl_f = st.columns(2)
         with col_up_f:
-            up_f_csv = st.file_uploader("📂 นำเข้าไฟล์ `fire_log.csv` จากการ์ด SD ของบอร์ด ESP32-TFT (ถ้ามี)", type=["csv"], key="up_fire_csv")
+            up_f_csv = st.file_uploader("📂 นำเข้าไฟล์ `fire_log.csv` จากการ์ด SD", type=["csv"], key="up_fire_csv")
             if up_f_csv is not None and st.button("📥 บันทึกข้อมูลจาก fire_log.csv ลงฐานข้อมูล", key="btn_imp_f"):
                 csv_df = pd.read_csv(up_f_csv)
                 ins = []
@@ -2352,11 +2344,11 @@ if st.session_state.role == ROLE_ADMIN:
             st.info("ยังไม่มีประวัติสัญญาณแจ้งเตือนอัคคีภัยในฐานข้อมูล")
 
     # -----------------------------------------------------------------
-    # MODULE 6: GROWATT SPF5000ES SOLAR MONITOR (`Growatt-sheet.txt`)
+    # MODULE 6: GROWATT SPF5000ES SOLAR MONITOR
     # -----------------------------------------------------------------
     elif selected_admin_module.startswith("☀️ 6."):
         st.subheader("☀️ ระบบมอนิเตอร์โซลาร์เซลล์ (Growatt SPF5000ES & Google Sheets Sync)")
-        st.caption(f"อินเวอร์เตอร์ Serial Number: `{cfg_iot['growatt_sn']}` · บัญชี Growatt: `{cfg_iot['growatt_user']}` · รองรับการส่งข้อมูลขึ้น Google Sheets อัตโนมัติ")
+        st.caption(f"อินเวอร์เตอร์ Serial Number: `{cfg_iot['growatt_sn']}` · บัญชี Growatt: `{cfg_iot['growatt_user']}`")
 
         g_col1, g_col2, _ = st.columns([1.2, 1.4, 1.4])
         if g_col1.button("🔄 ดึงข้อมูลเรียลไทม์จาก Growatt Cloud", type="primary", use_container_width=True):
@@ -2368,7 +2360,6 @@ if st.session_state.role == ROLE_ADMIN:
 
         sol = st.session_state.get("last_solar_data")
         if not sol:
-            # Load latest from DB if available
             last_sol_doc = db.iot_logs.find_one({"system": "SOLAR"}, {"_id": 0}, sort=[("datetime", -1)])
             if last_sol_doc and last_sol_doc.get("data"):
                 sol = last_sol_doc["data"]
@@ -2379,26 +2370,25 @@ if st.session_state.role == ROLE_ADMIN:
             else:
                 st.info(f"📡 ข้อมูลล่าสุดเมื่อ: **{sol['updated']}** · อุณหภูมิอินเวอร์เตอร์: **{sol['invTemp']} °C**")
 
-            # 4 Card Layout matching CYD 2.8" TFT UI in Growatt-sheet.txt
             st.markdown(f"""
             <div class="kpi-grid">
-              <div class="glass-kpi" style="--c:#10B981;">
-                <div class="top"><span class="lbl">🔋 BATTERY (SOC & VOLTAGE)</span><span>{sol['batMode']}</span></div>
+              <div class="glass-kpi">
+                <div class="top"><span class="lbl">BATTERY (SOC & VOLTAGE)</span><span class="ic-badge">🔋</span></div>
                 <div class="val">{int(sol['soc'])}% <span style="font-size:1rem; color:#94A3B8;">({sol['vBat']} V)</span></div>
                 <div class="sub">กำลังไฟแบตเตอรี่: <b>{int(sol['batP'])} W</b> ({sol['batMode']})</div>
               </div>
-              <div class="glass-kpi" style="--c:#F59E0B;">
-                <div class="top"><span class="lbl">☀️ SOLAR (PV INPUT)</span><span>PV1</span></div>
+              <div class="glass-kpi">
+                <div class="top"><span class="lbl">SOLAR (PV INPUT)</span><span class="ic-badge">☀️</span></div>
                 <div class="val">{int(sol['pvP'])} W</div>
                 <div class="sub">แรงดันแผง: <b>{sol['pvV']} V</b> · กระแสชาร์จ: <b>{sol['pvI']} A</b></div>
               </div>
-              <div class="glass-kpi" style="--c:#FF7A2F;">
-                <div class="top"><span class="lbl">🏠 AC LOAD (OUTPUT)</span><span>{sol['loadPct']}%</span></div>
+              <div class="glass-kpi">
+                <div class="top"><span class="lbl">AC LOAD (OUTPUT)</span><span class="ic-badge">🏠</span></div>
                 <div class="val">{int(sol['load'])} W</div>
                 <div class="sub">สัดส่วนโหลดใช้งาน: <b>{sol['loadPct']}%</b></div>
               </div>
-              <div class="glass-kpi" style="--c:#00F2FE;">
-                <div class="top"><span class="lbl">⚡ GRID IN (AC INPUT)</span><span>{int(sol['gridV'])} V</span></div>
+              <div class="glass-kpi">
+                <div class="top"><span class="lbl">GRID IN (AC INPUT)</span><span class="ic-badge">⚡</span></div>
                 <div class="val">{int(sol['gridP'])} W</div>
                 <div class="sub">แรงดันไฟการไฟฟ้า: <b>{int(sol['gridV'])} V</b> · Temp: <b>{sol['invTemp']}°C</b></div>
               </div>
@@ -2410,7 +2400,7 @@ if st.session_state.role == ROLE_ADMIN:
             st.info("💡 กดปุ่ม **'🔄 ดึงข้อมูลเรียลไทม์จาก Growatt Cloud'** ด้านบนเพื่อแสดงสถานะแบตเตอรี่ แผงโซลาร์ โหลดใช้งาน และไฟการไฟฟ้า")
 
         st.markdown("---")
-        st.markdown("#### 📈 ประวัติการบันทึกค่าพลังงานโซลาร์เซลล์ (Solar Telemetry Logs)")
+        st.markdown("#### 📈 ประวัติการบันทึกค่าพลังงานโซลาร์เซลล์")
         sol_logs = list(db.iot_logs.find({"system": "SOLAR"}, {"_id": 0}).sort("datetime", -1).limit(200))
         if sol_logs:
             sol_rows = []
@@ -2428,8 +2418,7 @@ if st.session_state.role == ROLE_ADMIN:
                     "ไฟ Grid (W)": d.get("gridP"),
                     "อุณหภูมิ (°C)": d.get("invTemp")
                 })
-            sol_df = pd.DataFrame(sol_rows)
-            st.dataframe(sol_df, use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(sol_rows), use_container_width=True, hide_index=True)
         else:
             st.caption("ยังไม่มีประวัติการดึงค่าพลังงานในฐานข้อมูล")
 
@@ -2586,9 +2575,25 @@ if st.session_state.role == ROLE_ADMIN:
                 st.info("ยังไม่มีข้อความ MQTT เข้ามาในเซสชันนี้")
 
 # =====================================================================
-#  TECH ROLE VIEW (UNCHANGED WORKFLOW + FIXED NUMBER INPUT SYNC)
+#  ROLE 2: TECH VIEW (PURE INVENTORY ONLY - NO MQTT/DRAWER/WATER/FIRE)
 # =====================================================================
 elif st.session_state.role in TECH_ROLES:
+    # ซ่อน Sidebar ของช่างทั้งหมด
+    st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
+
+    # ส่วนหัวของช่าง: ไม่มีป้าย MQTT, Drawer, Water, Fire ใดๆ ทั้งสิ้น
+    st.markdown(f"""
+    <div class="app-hero">
+      <div>
+        <div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ</div>
+        <div class="s">ประจำวันที่ {get_now_str("%d/%m/%Y")}</div>
+      </div>
+      <div class="badge-row">
+        <span class="status-pill-top info">👷 {esc(st.session_state.username)} ({esc(st.session_state.role)})</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     if st.session_state.role == ROLE_TECH_SP:
         col_banner, col_btn_back = st.columns([3, 1])
         with col_banner:
@@ -2597,14 +2602,51 @@ elif st.session_state.role in TECH_ROLES:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
                 switch_role(ROLE_ADMIN)
 
+    # KPI เฉพาะคลังอุปกรณ์เท่านั้น
     st.markdown(f"""
     <div class="kpi-grid">
-      <div class="glass-kpi" style="--c:#00F2FE;"><div class="top"><span class="lbl">รายการอุปกรณ์ทั้งหมด</span></div><div class="val">{len(items_df)}</div></div>
-      <div class="glass-kpi" style="--c:{'#EF4444' if abn_cnt else '#10B981'};"><div class="top"><span class="lbl">{abn_label}</span></div><div class="val">{abn_cnt}</div></div>
-      <div class="glass-kpi" style="--c:{'#F59E0B' if low_cnt else '#10B981'};"><div class="top"><span class="lbl">เหลือน้อยกว่าเกณฑ์</span></div><div class="val">{low_cnt}</div></div>
-      <div class="glass-kpi" style="--c:#FF7A2F;"><div class="top"><span class="lbl">กำลังถูกยืมอยู่</span></div><div class="val">{borrowed_cnt}</div></div>
+      <div class="glass-kpi">
+        <div class="top"><span class="lbl">รายการอุปกรณ์ทั้งหมด</span><span class="ic-badge">🛠️</span></div>
+        <div class="val">{len(items_df)}</div>
+      </div>
+      <div class="glass-kpi">
+        <div class="top"><span class="lbl">{abn_label}</span><span class="ic-badge">⚠️</span></div>
+        <div class="val" style="color:{'#F87171' if abn_cnt else '#34D399'} !important;">{abn_cnt}</div>
+      </div>
+      <div class="glass-kpi">
+        <div class="top"><span class="lbl">เหลือน้อยกว่าเกณฑ์</span><span class="ic-badge">📉</span></div>
+        <div class="val" style="color:{'#FBBF24' if low_cnt else '#34D399'} !important;">{low_cnt}</div>
+      </div>
+      <div class="glass-kpi">
+        <div class="top"><span class="lbl">กำลังถูกยืมอยู่</span><span class="ic-badge">📤</span></div>
+        <div class="val">{borrowed_cnt}</div>
+      </div>
     </div>
     """, unsafe_allow_html=True)
+
+    col_a1, col_a2 = st.columns(2)
+    with col_a1:
+        if abn_cnt:
+            with st.expander(f"❌ {abn_title} ({abn_cnt} รายการ)"):
+                st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
+        else:
+            st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
+    with col_a2:
+        if low_cnt:
+            with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อย ({low_cnt} รายการ)"):
+                st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
+        else:
+            st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
+
+    if borrowed_cnt:
+        with st.expander(f"📤 อุปกรณ์ที่กำลังถูกยืม ({borrowed_cnt} รายการ)"):
+            st.dataframe(pd.DataFrame([{
+                "อุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
+                "จำนวนที่ยืม": t.get("quantity", 1),
+                "ผู้ยืม": t.get("borrower_name"),
+                "ผู้ให้ยืม": t.get("giver_name"),
+                "วันที่ยืม": t.get("borrow_date"),
+            } for t in active_borrows]), hide_index=True, use_container_width=True)
 
     tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกอุปกรณ์", "🔄 ระบบยืม-คืน อุปกรณ์"])
 
