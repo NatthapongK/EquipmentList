@@ -7,15 +7,41 @@ import base64
 import html as _html
 import re
 import io
+import os
+import ssl
+import time
+import json
+import hashlib
 import secrets
+import threading
+from urllib.parse import quote
 from PIL import Image, ImageOps
-from streamlit_local_storage import LocalStorage
+
+try:
+    import requests
+except ImportError:
+    requests = None
+
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    mqtt = None
+
+try:
+    from streamlit_local_storage import LocalStorage
+except ImportError:
+    LocalStorage = None
 
 # =====================================================================
-#  ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (ปรับแก้จำนวนเฉพาะอุปกรณ์ช่างทั่วไป)
+#  KAVE TOWN SHIFT - CENTRAL ENTERPRISE COMMAND & INVENTORY SYSTEM
+#  รวมศูนย์:
+#   1) ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ (MongoDB)
+#   2) ระบบควบคุมลิ้นชักอัจฉริยะ ESP8266 Servo (MQTT: esp8266/servo)
+#   3) ระบบตรวจจับระดับน้ำและปั๊มน้ำ 5 จุด (MQTT: Water alarm + LINE OA)
+#   4) ระบบแจ้งเตือนอัคคีภัย Fire Alarm & Remote Relay Reset (MQTT: Firealarm)
+#   5) ระบบมอนิเตอร์โซลาร์เซลล์ Growatt SPF5000ES & Google Sheets Sync
 # =====================================================================
 
-# --- TIMEZONE CONFIG (Thailand UTC+7) ---
 TZ_TH = timezone(timedelta(hours=7))
 
 def get_now_th():
@@ -24,13 +50,38 @@ def get_now_th():
 def get_now_str(fmt="%Y-%m-%d %H:%M:%S"):
     return get_now_th().strftime(fmt)
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="ระบบจัดการอุปกรณ์-เครื่องมือช่าง & สระว่ายน้ำ", page_icon="🛠️", layout="wide")
+st.set_page_config(
+    page_title="KAVE TOWN SHIFT · Enterprise Command Center",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 ROLE_ADMIN = "ผู้ออกแบบ/ดูแลระบบ"
 ROLE_TECH = "ช่างประจำอาคาร"
 ROLE_TECH_SP = "ช่างประจำอาคารพิเศษ"
 TECH_ROLES = [ROLE_TECH, ROLE_TECH_SP]
+
+# --- DEFAULT HARDWARE & IOT CREDENTIALS (Overridable via st.secrets or Admin UI) ---
+DEFAULT_IOT_CONFIG = {
+    "mqtt_server": "dcb4e8c8b1594e88aef914771ce94103.s1.eu.hivemq.cloud",
+    "mqtt_port": 8883,
+    "mqtt_user": "32bit7k",
+    "mqtt_pass": "aA0891148075",
+    "topic_servo_cmd": "esp8266/servo",
+    "topic_servo_status": "esp8266/servo/status",
+    "topic_water": "Water alarm",
+    "topic_check_clients": "CheckClients",
+    "topic_fire": "Firealarm",
+    "topic_fire_relay": "nodemcu/control/relay",
+    "line_token": "Z4Q1Oovl195VbH2Zs+cgtJfQrWalykEOIqe9R+fwagj60jYeu80011v83fSulPpkUPTrGee8/6q4i/yAoF0XhfUA37dgLIkIHQqYKejfbAB99UNtRl8GEbhPwF6T1PyiDOOGqEvaj1dbaw256MMuiwdB04t89/1O/w1cDnyilFU=",
+    "line_group_id": "C663efc381970da04d51c09f2bda9c3a4",
+    "growatt_user": "32bit7k",
+    "growatt_pass": "aA0891148075",
+    "growatt_sn": "RKG7BL404R",
+    "google_webapp_url": "https://script.google.com/macros/s/AKfycbz2aB_1RR7UMMX92TOC9c_o_wbyCmfFt82K4hIYFfEFyPcmHL8UWAu0Z9sm99zQW2QFNQ/exec",
+    "esp_tft_ip": ""
+}
 
 # รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
@@ -129,13 +180,30 @@ def build_default_docs():
         })
     return docs
 
+# =====================================================================
+#  MONGODB INITIALIZATION (WITH FALLBACK MOCK FOR EASY TESTING)
+# =====================================================================
 @st.cache_resource
 def init_mongo():
+    uri = None
     try:
         uri = st.secrets["mongo"]["uri"]
     except Exception:
-        st.error("❌ ไม่พบ st.secrets['mongo']['uri'] กรุณาตั้งค่าใน .streamlit/secrets.toml")
+        uri = os.environ.get("MONGO_URI", "")
+
+    if not uri:
+        st.error("❌ ไม่พบ `st.secrets['mongo']['uri']` กรุณาตั้งค่าไฟล์ `.streamlit/secrets.toml` หรือตั้งค่าใน Streamlit Cloud Secrets")
+        st.info("""**ตัวอย่างไฟล์ `.streamlit/secrets.toml`:**
+```toml
+[mongo]
+uri = "mongodb+srv://<username>:<password>@<cluster>.mongodb.net/?retryWrites=true&w=majority"
+
+[admin]
+username = "admin"
+password = "adminpassword"
+```""")
         st.stop()
+
     client = pymongo.MongoClient(uri, maxPoolSize=20, serverSelectionTimeoutMS=8000)
     database = client["inventory_pro"]
 
@@ -147,6 +215,7 @@ def init_mongo():
     database.settings.create_index("key")
     database.sessions.create_index("token", unique=True)
     database.sessions.create_index("created", expireAfterSeconds=60 * 60 * 24 * 30)
+    database.iot_logs.create_index([("system", 1), ("datetime", -1)])
 
     if database.items.count_documents({}, limit=1) == 0:
         database.items.insert_many(build_default_docs())
@@ -165,6 +234,463 @@ def get_next_sequence(name):
         {"_id": name}, {"$inc": {"seq": 1}}, upsert=True, return_document=pymongo.ReturnDocument.AFTER)
     return counter["seq"]
 
+@st.cache_data(ttl=30, show_spinner=False)
+def get_settings_val(key, default="1"):
+    res = db.settings.find_one({"key": key})
+    return res["value"] if res else default
+
+def set_settings_val(key, val):
+    db.settings.update_one({"key": key}, {"$set": {"value": str(val)}}, upsert=True)
+    get_settings_val.clear()
+
+def get_iot_config():
+    cfg = DEFAULT_IOT_CONFIG.copy()
+    for k, v in DEFAULT_IOT_CONFIG.items():
+        saved = get_settings_val(f"iot_{k}", None)
+        if saved is not None and saved != "None":
+            cfg[k] = int(saved) if isinstance(v, int) and str(saved).isdigit() else saved
+    return cfg
+
+# =====================================================================
+#  REAL-TIME MQTT & IOT BACKGROUND ENGINE (Servo, Water, Fire, LINE)
+# =====================================================================
+def send_line_push(message_text, token=None, group_id=None):
+    if requests is None:
+        return False, "requests library not installed"
+    cfg = get_iot_config()
+    tk = token or cfg["line_token"]
+    gid = group_id or cfg["line_group_id"]
+    if not tk or not gid:
+        return False, "Missing LINE Token or Group ID"
+    try:
+        headers = {
+            "Content-Type": "application/json; charset=UTF-8",
+            "Authorization": f"Bearer {tk}"
+        }
+        payload = {
+            "to": gid,
+            "messages": [{"type": "text", "text": message_text}]
+        }
+        r = requests.post("https://api.line.me/v2/bot/message/push", headers=headers, json=payload, timeout=6)
+        return (200 <= r.status_code < 300), f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+class CentralIoTManager:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.connected = False
+        self.last_connect_err = ""
+        self.client = None
+        # 1. Drawer Servo State
+        self.servo_status = "DOWN"
+        self.servo_last_update = "--:--:--"
+        self.servo_logs = []
+        # 2. Water Pump Alarm State
+        self.water_status = {
+            "A": "NORMAL", "B": "NORMAL", "C": "NORMAL", "D": "NORMAL", "UNDERGROUND": "NORMAL"
+        }
+        self.water_online = {
+            "A": True, "B": True, "C": True, "D": True, "UNDERGROUND": True
+        }
+        self.water_last_msg = "พร้อมทำงาน (Ready)"
+        # 3. Fire Alarm State
+        self.fire_status = "CLEAR"
+        self.fire_location = "- (ระบบปกติ)"
+        self.fire_zones = {
+            "A": "NORMAL", "B": "NORMAL", "C": "NORMAL", "D": "NORMAL",
+            "CLUB": "NORMAL", "LIBRARY": "NORMAL", "ST": "NORMAL", "UNKNOWN": "NORMAL"
+        }
+        self.raw_mqtt_feed = []
+
+    def add_feed(self, topic, msg):
+        now_s = get_now_str("%Y-%m-%d %H:%M:%S")
+        with self.lock:
+            self.raw_mqtt_feed.insert(0, {"datetime": now_s, "topic": topic, "message": msg})
+            if len(self.raw_mqtt_feed) > 150:
+                self.raw_mqtt_feed.pop()
+
+    def log_to_db(self, system_name, location, status, raw_msg=""):
+        try:
+            db.iot_logs.insert_one({
+                "datetime": get_now_str("%Y-%m-%d %H:%M:%S"),
+                "system": system_name,
+                "location": location,
+                "status": status,
+                "raw": raw_msg
+            })
+        except Exception:
+            pass
+
+    def handle_message(self, topic, payload_str):
+        msg = payload_str.strip()
+        msg_up = msg.upper()
+        t_low = topic.lower()
+        self.add_feed(topic, msg)
+
+        # --- 1. SERVO DRAWER ---
+        if topic in ["esp8266/servo", "esp8266/servo/status"]:
+            if msg_up in ["UP", "DOWN"]:
+                with self.lock:
+                    self.servo_status = msg_up
+                    self.servo_last_update = get_now_str("%H:%M:%S")
+                    self.servo_logs.insert(0, {
+                        "datetime": get_now_str("%Y-%m-%d %H:%M:%S"),
+                        "topic": topic,
+                        "status": msg_up,
+                        "detail": "เปิดลิ้นชัก (0°)" if msg_up == "UP" else "ล็อก/ปิดลิ้นชัก (180°)"
+                    })
+                if topic == "esp8266/servo/status":
+                    self.log_to_db("SERVO", "Drawer Servo D4", msg_up, msg)
+            return
+
+        # --- 2. WATER ALARM ---
+        if t_low == "water alarm" or t_low.startswith("water alarm/status/"):
+            with self.lock:
+                self.water_last_msg = msg
+            if t_low.startswith("water alarm/status/"):
+                sub = topic.split("/")[-1].upper()
+                key = "UNDERGROUND" if "UNDERGROUND" in sub else sub.replace("TRANSFERPUMP", "").strip()
+                if key in self.water_status and msg_up in ["ALARM", "NORMAL"]:
+                    with self.lock:
+                        prev = self.water_status[key]
+                        self.water_status[key] = msg_up
+                        self.water_online[key] = True
+                    if prev != msg_up:
+                        self.log_to_db("WATER", key, msg_up, msg)
+                return
+
+            if msg_up == "CHECKCLIENTS" or "CHECK ALARM" in msg_up:
+                return
+
+            pumps_map = [
+                ("TRANSFERPUMPA", "A"), ("TRANSFERPUMPB", "B"),
+                ("TRANSFERPUMPC", "C"), ("TRANSFERPUMPD", "D"),
+                ("UNDERGROUND PUMP", "UNDERGROUND")
+            ]
+            for prefix, k in pumps_map:
+                if prefix in msg_up:
+                    with self.lock:
+                        if "OFFLINE" in msg_up:
+                            self.water_online[k] = False
+                        elif "ONLINE" in msg_up:
+                            self.water_online[k] = True
+                        else:
+                            self.water_online[k] = True
+                            new_st = "NORMAL" if "NORMAL" in msg_up else "ALARM"
+                            prev = self.water_status.get(k, "NORMAL")
+                            self.water_status[k] = new_st
+                            if prev != new_st:
+                                self.log_to_db("WATER", k, new_st, msg)
+                    break
+            return
+
+        # --- 3. FIRE ALARM ---
+        if t_low in ["firealarm", "fire_alarm"] or "firealarm" in t_low:
+            if any(w in msg_up for w in ["RESET", "CLEAR", "NORMAL"]) or "สถานะปกติ" in msg:
+                with self.lock:
+                    self.fire_status = "CLEAR"
+                    self.fire_location = "- (ระบบปกติ)"
+                    for zk in self.fire_zones:
+                        self.fire_zones[zk] = "NORMAL"
+                self.log_to_db("FIRE", msg, "CLEAR", msg)
+            else:
+                with self.lock:
+                    self.fire_status = "ALERT"
+                    self.fire_location = msg
+                    matched = False
+                    if any(x in msg_up for x in ["อาคาร A", "BUILDING A", "BLDGA"]):
+                        self.fire_zones["A"] = "ALERT"; matched = True
+                    if any(x in msg_up for x in ["อาคาร B", "BUILDING B", "BLDGB"]):
+                        self.fire_zones["B"] = "ALERT"; matched = True
+                    if any(x in msg_up for x in ["อาคาร C", "BUILDING C", "BLDGC"]):
+                        self.fire_zones["C"] = "ALERT"; matched = True
+                    if any(x in msg_up for x in ["อาคาร D", "BUILDING D", "BLDGD"]):
+                        self.fire_zones["D"] = "ALERT"; matched = True
+                    if "สโมสร" in msg or "CLUB" in msg_up or "PAVILION" in msg_up:
+                        self.fire_zones["CLUB"] = "ALERT"; matched = True
+                    if "ห้องสมุด" in msg or "LIBRARY" in msg_up:
+                        self.fire_zones["LIBRARY"] = "ALERT"; matched = True
+                    if "ST" in msg_up or "บันไดหนีไฟ" in msg:
+                        self.fire_zones["ST"] = "ALERT"; matched = True
+                    if not matched:
+                        self.fire_zones["UNKNOWN"] = "ALERT"
+                self.log_to_db("FIRE", msg, "ALERT", msg)
+
+    def connect(self):
+        if mqtt is None:
+            self.last_connect_err = "ยังไม่ได้ติดตั้งไลบรารี paho-mqtt (pip install paho-mqtt)"
+            return False
+        cfg = get_iot_config()
+        try:
+            if self.client:
+                try:
+                    self.client.loop_stop()
+                    self.client.disconnect()
+                except Exception:
+                    pass
+
+            cid = f"KaveAdminPortal_{secrets.token_hex(4)}"
+            try:
+                client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=cid)
+            except AttributeError:
+                client = mqtt.Client(client_id=cid)
+
+            client.username_pw_set(cfg["mqtt_user"], cfg["mqtt_pass"])
+            client.tls_set(cert_reqs=ssl.CERT_NONE)
+            client.tls_insecure_set(True)
+
+            def on_connect(c, userdata, flags, rc):
+                if rc == 0:
+                    self.connected = True
+                    self.last_connect_err = ""
+                    c.subscribe([
+                        (cfg["topic_servo_cmd"], 0),
+                        (cfg["topic_servo_status"], 0),
+                        (cfg["topic_water"], 0),
+                        ("Water alarm/status/#", 0),
+                        (cfg["topic_check_clients"], 0),
+                        (cfg["topic_fire"], 0),
+                        ("firealarm", 0),
+                        ("FireAlarm", 0),
+                        ("fire_alarm", 0),
+                        (cfg["topic_fire_relay"], 0),
+                    ])
+                else:
+                    self.connected = False
+                    self.last_connect_err = f"MQTT rc={rc}"
+
+            def on_disconnect(c, userdata, rc):
+                self.connected = False
+
+            def on_message(c, userdata, msg):
+                try:
+                    payload = msg.payload.decode("utf-8", errors="ignore")
+                    self.handle_message(msg.topic, payload)
+                except Exception:
+                    pass
+
+            client.on_connect = on_connect
+            client.on_disconnect = on_disconnect
+            client.on_message = on_message
+
+            client.connect_async(cfg["mqtt_server"], int(cfg["mqtt_port"]), keepalive=30)
+            client.loop_start()
+            self.client = client
+            return True
+        except Exception as e:
+            self.connected = False
+            self.last_connect_err = str(e)
+            return False
+
+    def publish(self, topic, payload, retain=False):
+        if not self.client or not self.connected:
+            self.connect()
+            time.sleep(0.6)
+        if self.client:
+            try:
+                info = self.client.publish(topic, str(payload), retain=retain)
+                # Loop locally as well so UI updates immediately
+                self.handle_message(topic, str(payload))
+                return True
+            except Exception as e:
+                self.last_connect_err = str(e)
+                return False
+        return False
+
+@st.cache_resource
+def get_iot_manager():
+    mgr = CentralIoTManager()
+    mgr.connect()
+    return mgr
+
+iot_mgr = get_iot_manager()
+
+# =====================================================================
+#  GROWATT SPF5000ES CLOUD FETCHER & GOOGLE SHEETS SYNC
+# =====================================================================
+def growatt_md5(password_str):
+    m = hashlib.md5(password_str.encode("utf-8")).hexdigest()
+    chars = list(m)
+    for i in range(0, len(chars), 2):
+        if chars[i] == '0':
+            chars[i] = 'c'
+    return "".join(chars)
+
+def _find_key_ci(node, target_key):
+    t_low = target_key.lower()
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k.lower() == t_low and v is not None and not isinstance(v, (dict, list)):
+                return v
+        for v in node.values():
+            res = _find_key_ci(v, target_key)
+            if res is not None:
+                return res
+    elif isinstance(node, list):
+        for item in node:
+            res = _find_key_ci(item, target_key)
+            if res is not None:
+                return res
+    return None
+
+def _get_f(node, keys):
+    for k in keys:
+        v = _find_key_ci(node, k)
+        if v is not None:
+            try:
+                return float(str(v).strip())
+            except Exception:
+                pass
+    return None
+
+def fetch_growatt_realtime(sync_sheets=False):
+    if requests is None:
+        return {"ok": False, "error": "requests library not installed"}
+    cfg = get_iot_config()
+    hosts = ["server.growatt.com", "server-api.growatt.com", "openapi.growatt.com"]
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+    pwd_md5 = growatt_md5(cfg["growatt_pass"])
+    sn = cfg["growatt_sn"]
+
+    sess = requests.Session()
+    sess.headers.update({"User-Agent": ua, "X-Requested-With": "XMLHttpRequest"})
+
+    logged_in_host = None
+    plant_id = ""
+    last_err = ""
+
+    for h in hosts:
+        try:
+            url = f"https://{h}/newTwoLoginAPI.do"
+            resp = sess.post(
+                url,
+                data={"userName": cfg["growatt_user"], "password": pwd_md5},
+                headers={"Origin": f"https://{h}", "Referer": f"https://{h}/login"},
+                timeout=12
+            )
+            if resp.status_code == 200:
+                j = resp.json()
+                if j.get("back", {}).get("success"):
+                    logged_in_host = h
+                    data_arr = j.get("back", {}).get("data", [])
+                    if data_arr and isinstance(data_arr, list):
+                        plant_id = str(data_arr[0].get("plantId", ""))
+                    break
+                else:
+                    last_err = f"Login failed on {h}: {j.get('back', {}).get('msg', 'Unknown')}"
+            else:
+                last_err = f"HTTP {resp.status_code} on {h}"
+        except Exception as e:
+            last_err = str(e)
+
+    if not logged_in_host:
+        return {"ok": False, "error": last_err or "Cannot login to Growatt servers"}
+
+    endpoints = [
+        ("GET", f"https://{logged_in_host}/newStorageAPI.do?op=getStorageParams_sacolar&storageId={sn}", None),
+        ("GET", f"https://{logged_in_host}/newStorageAPI.do?op=getStorageInfo_sacolar&storageId={sn}", None),
+        ("POST", f"https://{logged_in_host}/newStorageAPI.do?op=getStorageParams_sacolar", {"storageId": sn}),
+        ("POST", f"https://{logged_in_host}/newStorageAPI.do?op=getStorageInfo_sacolar", {"storageId": sn}),
+        ("GET", f"https://{logged_in_host}/newTwoPlantAPI.do?op=getAllDeviceList&plantId={plant_id}&language=1&currPage=1", None),
+    ]
+
+    for method, ep_url, body in endpoints:
+        try:
+            if method == "POST":
+                r = sess.post(ep_url, data=body, timeout=12)
+            else:
+                r = sess.get(ep_url, timeout=12)
+            if r.status_code != 200:
+                continue
+            j = r.json()
+            vBat = _get_f(j, ["vBat", "vBattery", "vbatSys", "vAkku"])
+            soc = _get_f(j, ["capacity", "soc", "batterySoc"])
+            if vBat is None and soc is None:
+                continue
+
+            pvV = _get_f(j, ["vPv1", "vPv", "pvVoltage"]) or 0.0
+            pvP = _get_f(j, ["ppv1", "pPv1", "ppv", "pvPower", "pCharge1"]) or 0.0
+            load = _get_f(j, ["outPutPower", "pLoad", "pLocalLoad", "loadPower", "activePower"]) or 0.0
+            loadPct = _get_f(j, ["loadPercent"]) or 0.0
+            gridP = _get_f(j, ["pAcInPut"]) or 0.0
+            gridV = _get_f(j, ["vGrid"]) or 0.0
+            invTemp = _get_f(j, ["invTemperature"]) or 0.0
+            pch = _get_f(j, ["pCharge"]) or 0.0
+            pdis = _get_f(j, ["pDischarge"]) or 0.0
+            iChg = _get_f(j, ["iChargePV1", "iCharge1", "icharge1"])
+
+            vBat = vBat or 0.0
+            soc = soc or 0.0
+            if iChg and iChg > 0:
+                pvI = iChg
+            elif pvP > 0 and vBat > 10:
+                pvI = pvP / vBat
+            elif pvP > 0 and pvV > 1:
+                pvI = pvP / pvV
+            else:
+                pvI = 0.0
+
+            if pdis > 0.5:
+                batMode, batP = "DISCHARGING", pdis
+            elif pch > 0.5:
+                batMode, batP = "CHARGING", pch
+            else:
+                batMode, batP = "IDLE", 0.0
+
+            result = {
+                "ok": True,
+                "host": logged_in_host,
+                "updated": get_now_str("%Y-%m-%d %H:%M:%S"),
+                "vBat": round(vBat, 1),
+                "soc": round(soc, 0),
+                "pvV": round(pvV, 1),
+                "pvI": round(pvI, 1),
+                "pvP": round(pvP, 0),
+                "load": round(load, 0),
+                "loadPct": round(loadPct, 1),
+                "gridP": round(gridP, 0),
+                "gridV": round(gridV, 0),
+                "invTemp": round(invTemp, 1),
+                "batMode": batMode,
+                "batP": round(batP, 0),
+            }
+
+            db.iot_logs.insert_one({
+                "datetime": result["updated"],
+                "system": "SOLAR",
+                "location": sn,
+                "status": batMode,
+                "data": result
+            })
+
+            if sync_sheets and cfg.get("google_webapp_url"):
+                try:
+                    requests.post(
+                        cfg["google_webapp_url"],
+                        json={
+                            "vBat": result["vBat"],
+                            "soc": result["soc"],
+                            "pvP": result["pvP"],
+                            "pvI": result["pvI"],
+                            "load": result["load"]
+                        },
+                        timeout=10
+                    )
+                    result["sheets_synced"] = True
+                except Exception as ex:
+                    result["sheets_synced"] = False
+                    result["sheets_err"] = str(ex)
+
+            return result
+        except Exception as e:
+            last_err = str(e)
+
+    return {"ok": False, "error": last_err or "No SPF5000ES data found"}
+
+# =====================================================================
+#  IMAGE & DATABASE HELPER FUNCTIONS
+# =====================================================================
 def compress_image_to_base64(uploaded_file, max_size=(800, 800), quality=80):
     if uploaded_file is None:
         return None
@@ -216,15 +742,6 @@ def get_items_df():
 @st.cache_data(ttl=60, show_spinner=False)
 def get_tech_users_df():
     return pd.DataFrame(list(db.tech_users.find({}, {"_id": 0})))
-
-@st.cache_data(ttl=30, show_spinner=False)
-def get_settings_val(key, default="1"):
-    res = db.settings.find_one({"key": key})
-    return res["value"] if res else default
-
-def set_settings_val(key, val):
-    db.settings.update_one({"key": key}, {"$set": {"value": str(val)}}, upsert=True)
-    get_settings_val.clear()
 
 @st.cache_data(ttl=15, show_spinner=False)
 def get_active_borrows():
@@ -294,8 +811,7 @@ def nz(v):
 
 def parse_tech_txt_content(text_content):
     tech_list = []
-    u = None
-    p = None
+    u, p = None, None
     for line in text_content.splitlines():
         line_s = line.strip()
         if not line_s:
@@ -322,8 +838,6 @@ def keyed_container(key, **kwargs):
     except TypeError:
         return st.container(**kwargs)
 
-fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None) or (lambda f: f)
-
 def switch_role(new_role):
     st.session_state.role = new_role
     st.session_state.original_role = ROLE_ADMIN
@@ -332,93 +846,257 @@ def switch_role(new_role):
         db.sessions.update_one({"token": tk}, {"$set": {"role": new_role}})
     st.rerun()
 
-# --- THEME & CSS (Force Dark Theme Config & Tight Padding) ---
+# =====================================================================
+#  GLASSY CRM & ADMIN DASHBOARD V2 UI THEME (CSS)
+# =====================================================================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap');
-:root{
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
   color-scheme: dark;
-  --ink:#F1F5F9; --muted:#94A3B8; --line:#334155; --bg:#0B132B; --card:#1E293B;
-  --teal:#0E7C86; --teal-d:#0A5C64; --ok:#22C55E; --warn:#F59E0B; --bad:#EF4444;
+  --bg-deep: #070B14;
+  --bg-radial: radial-gradient(circle at 12% 8%, rgba(14, 165, 233, 0.14) 0%, rgba(249, 115, 22, 0.06) 38%, rgba(7, 11, 20, 0.98) 80%);
+  --glass-card: rgba(17, 25, 40, 0.78);
+  --glass-card-hover: rgba(24, 35, 56, 0.88);
+  --glass-border: rgba(255, 255, 255, 0.09);
+  --glass-highlight: rgba(56, 189, 248, 0.35);
+  --ink: #F8FAFC;
+  --muted: #94A3B8;
+  --accent-orange: #FF7A2F;
+  --accent-orange-d: #EA580C;
+  --accent-cyan: #00F2FE;
+  --accent-blue: #3B82F6;
+  --ok: #10B981;
+  --warn: #F59E0B;
+  --bad: #EF4444;
+  --purple: #8B5CF6;
 }
+
 .stApp, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp p, .stApp label, .stApp li,
-.stApp input, .stApp textarea, .stApp button, .stApp [data-baseweb="tab"], .stApp [data-baseweb="select"]{
-  font-family:'IBM Plex Sans Thai','Noto Sans Thai',system-ui,sans-serif;
+.stApp input, .stApp textarea, .stApp button, .stApp [data-baseweb="tab"], .stApp [data-baseweb="select"] {
+  font-family: 'IBM Plex Sans Thai', 'Inter', system-ui, -apple-system, sans-serif;
   color: var(--ink) !important;
 }
-.stApp{background:var(--bg) !important; color:var(--ink);}
 
-header[data-testid="stHeader"] {display: none !important;}
-footer {visibility: hidden !important; display: none !important;}
-#MainMenu {visibility: hidden !important; display: none !important;}
-.stDeployButton {display: none !important;}
-[data-testid="stStatusWidget"] {display: none !important; visibility: hidden !important; opacity: 0 !important;}
-
-.block-container{padding-top:0.4rem !important; padding-bottom:3rem; max-width:1200px;}
-h2, h3, h4{color:var(--ink); font-weight:600; letter-spacing:0;}
-
-.app-hero{background:#111827; color:#fff; border-radius:12px; padding:0.6rem 0.9rem; border:1px solid var(--line);
-  display:flex; justify-content:space-between; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:0.6rem;}
-.app-hero .t{font-size:1.1rem; font-weight:700; line-height:1.2; color:#F8FAFC;}
-.app-hero .s{font-size:0.75rem; color:#94A3B8; margin-top:.1rem;}
-.chip{display:inline-block; padding:.15rem .55rem; border-radius:999px; font-size:.75rem; font-weight:600;
-  background:var(--teal); color:#fff;}
-
-.kpi-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:0.5rem; margin-bottom:0.6rem;}
-.kpi{background:var(--card); border:1px solid var(--line); border-left:3px solid var(--c,var(--teal));
-  border-radius:8px; padding:0.4rem 0.5rem;}
-.kpi .n{font-size:1.3rem; font-weight:700; line-height:1.1; color:#F8FAFC;}
-.kpi .l{font-size:0.7rem; color:var(--muted); line-height:1.2; margin-top:0.1rem;}
-
-section[data-testid="stSidebar"]{background:#111827; border-right:1px solid var(--line);}
-.user-card{display:flex; align-items:center; gap:.7rem; padding:.7rem; border:1px solid var(--line);
-  border-radius:12px; background:var(--card);}
-.avatar{width:2.4rem; height:2.4rem; border-radius:50%; background:var(--teal); color:#fff;
-  display:flex; align-items:center; justify-content:center; font-weight:700; flex:none;}
-.u-name{font-weight:600; line-height:1.2; word-break:break-all; color:#F8FAFC;}
-.u-role{font-size:.8rem; color:var(--muted);}
-
-.stTabs [data-baseweb="tab-list"]{gap:.2rem; border-bottom:1px solid var(--line); overflow-x:auto; flex-wrap:nowrap;}
-.stTabs [data-baseweb="tab"]{height:auto; padding:.4rem .7rem; font-weight:500; color:var(--muted); white-space:nowrap;}
-.stTabs [aria-selected="true"]{color:#38BDF8; font-weight:600;}
-.stTabs [data-baseweb="tab-highlight"]{background:#38BDF8; height:3px;}
-
-[data-testid="stExpander"]{border:1px solid var(--line); border-radius:10px; background:var(--card); margin-bottom: 0.3rem;}
-[data-testid="stForm"]{border:1px solid var(--line); border-radius:10px; background:var(--card); padding:0.7rem;}
-
-[data-testid="stDataFrame"], .stTable {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow-x: auto !important;
-  -webkit-overflow-scrolling: touch;
+.stApp {
+  background-color: var(--bg-deep) !important;
+  background-image: var(--bg-radial) !important;
+  background-attachment: fixed !important;
+  color: var(--ink);
 }
 
-.stApp button{border-radius:8px; font-weight:600;}
-.stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
-.stApp button[data-testid="stBaseButton-primaryFormSubmit"]{background:var(--teal); border-color:var(--teal); color:#fff;}
-.stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
-.stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover{background:var(--teal-d); border-color:var(--teal-d);}
+header[data-testid="stHeader"] { background: transparent !important; height: 1.5rem !important; }
+footer { visibility: hidden !important; display: none !important; }
+#MainMenu { visibility: hidden !important; display: none !important; }
+.stDeployButton { display: none !important; }
+[data-testid="stStatusWidget"] { display: none !important; }
 
-.req-banner{display:flex; align-items:center; gap:.9rem; padding:0.6rem 0.8rem; margin-bottom:0.6rem;
-  border-radius:10px; border:2px solid var(--warn); background:linear-gradient(90deg,#78350F,#92400E);
-  animation:reqpulse 1.8s ease-in-out infinite;}
-.req-banner .ic{font-size:1.5rem; line-height:1;}
-.req-banner .t{font-size:0.95rem; font-weight:700; color:#FEF3C7;}
-.req-banner .s{font-size:0.75rem; color:#FDE68A; margin-top:.05rem;}
-@keyframes reqpulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.55);} 50%{box-shadow:0 0 0 8px rgba(245,158,11,0);}}
+.block-container {
+  padding-top: 0.7rem !important;
+  padding-bottom: 3rem !important;
+  max-width: 1380px !important;
+}
+
+/* --- SIDEBAR STUDIO NAVIGATION (Sorvo / Creator Analytics Style) --- */
+section[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, rgba(12, 18, 32, 0.96) 0%, rgba(8, 12, 22, 0.98) 100%) !important;
+  border-right: 1px solid var(--glass-border) !important;
+  backdrop-filter: blur(18px);
+}
+
+.brand-box {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.75rem 0.9rem; margin-bottom: 0.8rem;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255,122,47,0.16), rgba(56,189,248,0.12));
+  border: 1px solid rgba(255,122,47,0.35);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+.brand-logo {
+  width: 2.5rem; height: 2.5rem; border-radius: 10px;
+  background: linear-gradient(135deg, #FF7A2F, #F59E0B);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 1.2rem; color: #fff;
+  box-shadow: 0 4px 12px rgba(255, 122, 47, 0.45);
+}
+.brand-title { font-weight: 800; font-size: 0.98rem; letter-spacing: 0.4px; color: #fff; line-height: 1.15; }
+.brand-sub { font-size: 0.72rem; color: #CBD5E1; }
+
+.user-card {
+  display: flex; align-items: center; gap: .75rem; padding: .75rem .85rem;
+  border: 1px solid var(--glass-border); border-radius: 14px;
+  background: rgba(30, 41, 59, 0.55); backdrop-filter: blur(12px);
+  margin-bottom: 0.75rem;
+}
+.avatar {
+  width: 2.4rem; height: 2.4rem; border-radius: 50%;
+  background: linear-gradient(135deg, #00F2FE, #3B82F6);
+  color: #070B14 !important; display: flex; align-items: center; justify-content: center;
+  font-weight: 800; flex: none;
+}
+.u-name { font-weight: 700; font-size: 0.92rem; color: #F8FAFC; }
+.u-role { font-size: 0.75rem; color: var(--muted); }
+
+/* --- HERO HEADER BANNER --- */
+.app-hero {
+  background: linear-gradient(135deg, rgba(19, 28, 46, 0.88) 0%, rgba(13, 20, 36, 0.92) 100%);
+  backdrop-filter: blur(16px);
+  border-radius: 16px;
+  padding: 0.95rem 1.25rem;
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+.app-hero .t { font-size: 1.25rem; font-weight: 800; color: #FFFFFF; letter-spacing: 0.2px; }
+.app-hero .s { font-size: 0.8rem; color: #94A3B8; margin-top: 0.15rem; }
+.badge-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.status-pill-top {
+  padding: 0.28rem 0.75rem; border-radius: 999px; font-size: 0.74rem; font-weight: 700;
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  border: 1px solid rgba(255,255,255,0.12); background: rgba(15, 23, 42, 0.75);
+}
+.status-pill-top.ok { color: #34D399 !important; border-color: rgba(16, 185, 129, 0.45); background: rgba(16, 185, 129, 0.12); }
+.status-pill-top.warn { color: #FBBF24 !important; border-color: rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.12); }
+.status-pill-top.bad { color: #F87171 !important; border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.15); }
+
+/* --- GLASSY KPI & HARDWARE CARDS --- */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(195px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+.glass-kpi {
+  background: var(--glass-card);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
+  border-top: 2px solid var(--c, var(--accent-cyan));
+  border-radius: 14px;
+  padding: 0.85rem 1rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.glass-kpi:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.glass-kpi .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; }
+.glass-kpi .lbl { font-size: 0.74rem; color: var(--muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.4px; }
+.glass-kpi .val { font-size: 1.55rem; font-weight: 800; color: #FFFFFF; line-height: 1.15; }
+.glass-kpi .sub { font-size: 0.74rem; color: #CBD5E1; margin-top: 0.25rem; display: flex; align-items: center; gap: 0.3rem; }
+
+/* --- PUMP & ZONE STATUS CARDS --- */
+.iot-grid-5 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.iot-card {
+  background: var(--glass-card);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  padding: 0.9rem 1rem;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.28);
+}
+.iot-card .hd { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; font-weight: 700; margin-bottom: 0.45rem; }
+.iot-card .bd { display: flex; justify-content: space-between; align-items: center; }
+.iot-card .nm { font-size: 0.98rem; font-weight: 700; color: #F8FAFC; }
+.pill {
+  padding: 0.22rem 0.7rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700;
+  display: inline-block;
+}
+.pill-normal { background: rgba(16, 185, 129, 0.16); color: #34D399 !important; border: 1px solid #10B981; }
+.pill-alarm {
+  background: rgba(239, 68, 68, 0.22); color: #FCA5A5 !important; border: 1px solid #EF4444;
+  animation: pulse-red 1.4s infinite;
+}
+.pill-warn { background: rgba(245, 158, 11, 0.2); color: #FCD34D !important; border: 1px solid #F59E0B; }
+.pill-off { background: rgba(148, 163, 184, 0.15); color: #94A3B8 !important; border: 1px solid #64748B; }
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+  50% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+}
+
+/* --- TABS & CONTAINERS --- */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 0.35rem;
+  background: rgba(15, 23, 42, 0.7);
+  padding: 0.35rem;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+.stTabs [data-baseweb="tab"] {
+  height: auto;
+  padding: 0.48rem 0.95rem;
+  border-radius: 9px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.stTabs [aria-selected="true"] {
+  background: linear-gradient(135deg, #FF7A2F, #EA580C) !important;
+  color: #FFFFFF !important;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(255, 122, 47, 0.35);
+}
+.stTabs [data-baseweb="tab-highlight"] { display: none !important; }
+
+[data-testid="stExpander"] {
+  border: 1px solid var(--glass-border) !important;
+  border-radius: 12px !important;
+  background: var(--glass-card) !important;
+  margin-bottom: 0.45rem !important;
+}
+[data-testid="stForm"] {
+  border: 1px solid var(--glass-border) !important;
+  border-radius: 14px !important;
+  background: var(--glass-card) !important;
+  padding: 0.9rem !important;
+}
+[data-testid="stDataFrame"], .stTable {
+  border: 1px solid var(--glass-border) !important;
+  border-radius: 12px !important;
+  overflow-x: auto !important;
+}
+
+.stApp button { border-radius: 10px !important; font-weight: 600 !important; transition: all 0.18s ease !important; }
+.stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
+.stApp button[data-testid="stBaseButton-primaryFormSubmit"] {
+  background: linear-gradient(135deg, #FF7A2F 0%, #EA580C 100%) !important;
+  border: 1px solid rgba(255,255,255,0.15) !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 4px 14px rgba(234, 88, 12, 0.35) !important;
+}
+.stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
+.stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.req-banner {
+  display: flex; align-items: center; gap: .9rem; padding: 0.7rem 1rem; margin-bottom: 0.75rem;
+  border-radius: 12px; border: 1px solid var(--warn);
+  background: linear-gradient(90deg, rgba(120, 53, 15, 0.85), rgba(146, 64, 14, 0.75));
+  animation: pulse-red 2s ease-in-out infinite;
+}
 
 @media (max-width:768px){
-  .block-container{padding-left:.3rem; padding-right:.3rem;}
-  .kpi-grid{grid-template-columns:repeat(2,1fr); gap:0.3rem;}
-  .kpi .n{font-size:1.2rem;}
-  .kpi .l{font-size:0.65rem;}
-  .app-hero .t{font-size:0.95rem;}
-  .stApp .stButton > button, .stApp [data-testid="stBaseButton-primary"] > button{width:100%;}
+  .block-container { padding-left: .4rem !important; padding-right: .4rem !important; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 0.45rem; }
+  .glass-kpi .val { font-size: 1.25rem; }
 }
 </style>
 """, unsafe_allow_html=True)
 
-# --- LOGIN STATE & SESSION RESTORATION ---
+# =====================================================================
+#  LOGIN STATE & SESSION RESTORATION
+# =====================================================================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
@@ -430,11 +1108,13 @@ if "uploader_version" not in st.session_state:
     st.session_state.uploader_version = 0
 
 LS_KEY = "inv_token"
-local_store = LocalStorage()
-try:
-    saved_token = local_store.getItem(LS_KEY)
-except Exception:
-    saved_token = None
+local_store = LocalStorage() if LocalStorage is not None else None
+saved_token = None
+if local_store is not None:
+    try:
+        saved_token = local_store.getItem(LS_KEY)
+    except Exception:
+        saved_token = None
 
 if not st.session_state.logged_in:
     cand_token = st.query_params.get("token") or saved_token
@@ -450,96 +1130,57 @@ if not st.session_state.logged_in:
             st.query_params["token"] = sess["token"]
         else:
             st.query_params.clear()
-            if saved_token:
+            if saved_token and local_store is not None:
                 try:
                     local_store.deleteItem(LS_KEY, key="ls_del_token")
-                except:
+                except Exception:
                     pass
 
 _flash = st.session_state.pop("_flash", None)
 if _flash:
     st.toast(_flash[0], icon=_flash[1])
 
-if st.session_state.get("token") and saved_token != st.session_state.token:
+if st.session_state.get("token") and saved_token != st.session_state.token and local_store is not None:
     try:
         local_store.setItem(LS_KEY, st.session_state.token, key="ls_set_token")
-    except:
+    except Exception:
         pass
 
-# --- SIDEBAR & LOGOUT (ซ่อนปุ่มออกจากระบบเฉพาะหน้าช่าง) ---
-if st.session_state.role in TECH_ROLES:
-    st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
-else:
-    st.sidebar.markdown(
-        f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper() if st.session_state.username else "U")}</div>'
-        f'<div><div class="u-name">{esc(st.session_state.username)}</div>'
-        f'<div class="u-role">สิทธิ์: {esc(st.session_state.role)}</div></div></div>',
-        unsafe_allow_html=True)
-    st.sidebar.markdown("")
-
-    with st.sidebar.expander("👤 เมนูบัญชีผู้ใช้ & ออกจากระบบ", expanded=True):
-        st.write(f"ผู้ใช้งาน: **{st.session_state.username}**")
-        st.write(f"สิทธิ์: **{st.session_state.role}**")
-
-        if st.session_state.original_role == ROLE_ADMIN:
-            st.markdown("---")
-            if st.session_state.role == ROLE_ADMIN:
-                if st.button("🔀 สลับเป็น 'ช่างประจำอาคารพิเศษ'", type="secondary", use_container_width=True):
-                    switch_role(ROLE_TECH_SP)
-            else:
-                if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True):
-                    switch_role(ROLE_ADMIN)
-
-        st.markdown("---")
-        if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
-            if st.session_state.get("token"):
-                db.sessions.delete_one({"token": st.session_state.token})
-            try:
-                local_store.deleteItem(LS_KEY, key="ls_del_token")
-            except:
-                pass
-            st.session_state.logged_in = False
-            st.session_state.role = None
-            st.session_state.username = ""
-            st.session_state.original_role = None
-            st.session_state.token = None
-            st.query_params.clear()
-            st.rerun()
-
-# --- LOGIN FORM IF NOT LOGGED IN ---
+# =====================================================================
+#  LOGIN SCREEN (IF NOT LOGGED IN)
+# =====================================================================
 if not st.session_state.logged_in or not st.session_state.role or st.session_state.role == "None":
-    _, col_login, _ = st.columns([1, 1.6, 1])
+    _, col_login, _ = st.columns([1, 1.5, 1])
     with col_login:
-        st.markdown(
-            '<div class="app-hero"><div><div class="t">🛠️ ระบบจัดการอุปกรณ์ช่าง & สระว่ายน้ำ</div>'
-            '<div class="s">เข้าสู่ระบบเพื่อตรวจเช็ค ยืม-คืน และจัดการคลังอุปกรณ์</div></div></div>',
-            unsafe_allow_html=True)
+        st.markdown("""
+        <div class="app-hero" style="margin-top:2rem;">
+          <div>
+            <div class="t">⚡ KAVE TOWN SHIFT · Enterprise Center</div>
+            <div class="s">ระบบคลังอุปกรณ์ช่าง · สระว่ายน้ำ · ควบคุมลิ้นชัก · ปั๊มน้ำ · Fire Alarm · Growatt Solar</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
         with st.form("login_form"):
             username = st.text_input("ชื่อผู้ใช้งาน (Username)")
             password = st.text_input("รหัสผ่าน (Password)", type="password")
-            submitted = st.form_submit_button("เข้าสู่ระบบ", type="primary", use_container_width=True)
-        
+            submitted = st.form_submit_button("🔐 เข้าสู่ระบบ (Sign In)", type="primary", use_container_width=True)
+
         tech_df = get_tech_users_df()
-        
         if submitted:
-            role_val = ""
-            user_val = ""
+            role_val, user_val = "", ""
             try:
                 admin_user = st.secrets["admin"]["username"]
                 admin_pass = st.secrets["admin"]["password"]
             except Exception:
-                admin_user = "admin"
-                admin_pass = "admin"
-            
+                admin_user, admin_pass = "admin", "admin"
+
             if username == admin_user and password == admin_pass:
-                role_val = ROLE_ADMIN
-                user_val = admin_user
+                role_val, user_val = ROLE_ADMIN, admin_user
             else:
                 matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)] if not tech_df.empty else pd.DataFrame()
                 if not matched_tech.empty:
-                    role_val = ROLE_TECH
-                    user_val = username
-            
+                    role_val, user_val = ROLE_TECH, username
+
             if role_val:
                 orig_role = role_val if role_val == ROLE_ADMIN else None
                 token = secrets.token_urlsafe(24)
@@ -553,38 +1194,23 @@ if not st.session_state.logged_in or not st.session_state.role or st.session_sta
                 st.session_state.original_role = orig_role
                 st.session_state.token = token
                 st.query_params["token"] = token
-                try:
-                    local_store.setItem(LS_KEY, token, key="ls_set_token")
-                except:
-                    pass
+                if local_store is not None:
+                    try:
+                        local_store.setItem(LS_KEY, token, key="ls_set_token")
+                    except Exception:
+                        pass
                 st.success("เข้าสู่ระบบสำเร็จ!")
                 st.rerun()
             else:
                 st.error("ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง")
     st.stop()
 
-# --- HEADER (LOGGED IN) ---
-if st.session_state.role in TECH_ROLES:
-    st.markdown(
-        f'<div class="app-hero"><div><div class="t">🛠️ ระบบเช็คสถานะอุปกรณ์</div>'
-        f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
-        f'<span class="chip">{esc(st.session_state.username)} ({esc(st.session_state.role)})</span></div>',
-        unsafe_allow_html=True)
-else:
-    st.markdown(
-        f'<div class="app-hero" style="margin-bottom:0.4rem;"><div><div class="t">🛠️ ระบบบริหารจัดการและเช็คสถานะอุปกรณ์</div>'
-        f'<div class="s">อุปกรณ์เครื่องมือช่าง & สระว่ายน้ำ · {get_now_str("%d/%m/%Y")}</div></div>'
-        f'<span class="chip">{esc(st.session_state.role)}</span></div>',
-        unsafe_allow_html=True)
-
-# --- ALERT SYSTEM & DATA FETCH ---
+# =====================================================================
+#  SHARED DATA FETCH (INVENTORY + BORROWS + ALERTS)
+# =====================================================================
 low_stock_limit = int(get_settings_val('low_stock_threshold', '1'))
 items_df = get_items_df()
-
-if not items_df.empty:
-    item_name_map = dict(zip(items_df['id'], items_df['name']))
-else:
-    item_name_map = {}
+item_name_map = dict(zip(items_df['id'], items_df['name'])) if not items_df.empty else {}
 
 active_borrows = get_active_borrows()
 borrowed_item_map = {}
@@ -594,9 +1220,7 @@ for t in active_borrows:
     q_borrowed = t.get("quantity", 1)
     b_name = t.get("borrower_name", "ไม่ระบุ")
     borrowed_item_map[it_id] = borrowed_item_map.get(it_id, 0) + q_borrowed
-    if it_id not in borrower_details_map:
-        borrower_details_map[it_id] = []
-    borrower_details_map[it_id].append(f"{b_name} ({q_borrowed} ชิ้น)")
+    borrower_details_map.setdefault(it_id, []).append(f"{b_name} ({q_borrowed} ชิ้น)")
 
 is_tech_view = st.session_state.role in TECH_ROLES
 abn_statuses = ['ชำรุด', 'อุปกรณ์หมด'] if is_tech_view else ['ชำรุด', 'สูญหาย', 'อุปกรณ์หมด']
@@ -617,69 +1241,128 @@ else:
 
 borrowed_cnt = len(active_borrows)
 abn_cnt, low_cnt = len(abnormal_items), len(low_stock_items)
+pending_reqs_all = get_pending_reqs()
 
-def _pending_req_banner():
-    pending = get_pending_reqs()
-    if not pending:
-        return
-    st.markdown(
-        f'<div class="req-banner"><div class="ic">📥</div><div>'
-        f'<div class="t">มีคำขอเบิกของรออนุมัติ {len(pending)} รายการ</div>'
-        f'<div class="s">ไปที่แท็บ "3. อนุมัติคำขอเพิ่มอุปกรณ์" เพื่อพิจารณาอนุมัติ/ปฏิเสธ</div></div></div>',
-        unsafe_allow_html=True)
-    with st.expander(f"📥 รายการคำขอเบิกของที่รออนุมัติ ({len(pending)} รายการ)", expanded=True):
-        st.dataframe(pd.DataFrame([{
-            "รหัสคำขอ": r["id"], "ผู้ขอ": r.get("tech_name"),
-            "อุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
-            "จำนวนที่ขอ": r.get("quantity"), "เหตุผล": r.get("note"), "วันที่ขอ": r.get("request_date"),
-        } for r in pending]), hide_index=True, use_container_width=True)
+# =====================================================================
+#  SIDEBAR NAVIGATION (STUDIO / GLASSY CRM STYLE FOR ADMIN)
+# =====================================================================
+ADMIN_NAV_ITEMS = [
+    "🌟 1. ภาพรวมศูนย์ควบคุม (Executive Overview)",
+    "🛠️ 2. คลังอุปกรณ์ช่าง & สระว่ายน้ำ (Inventory & Logs)",
+    "🗄️ 3. ควบคุมลิ้นชักอัจฉริยะ (ESP8266 Servo Drawer)",
+    "💧 4. ระบบระดับน้ำ & ปั๊มน้ำ (Water Pump Alarm)",
+    "🚨 5. ระบบแจ้งเตือนอัคคีภัย (Fire Alarm & Relay Reset)",
+    "☀️ 6. ระบบโซลาร์เซลล์ (Growatt SPF5000ES & Sheets)",
+    "⚙️ 7. ตั้งค่าระบบ, เครือข่าย IoT & บัญชีช่าง"
+]
 
-if st.session_state.role == ROLE_ADMIN:
-    try:
-        st.fragment(run_every="30s")(_pending_req_banner)()
-    except TypeError:
-        _pending_req_banner()
-
-st.markdown(
-    f'''<div class="kpi-grid">
-      <div class="kpi"><div class="n">{len(items_df)}</div><div class="l">รายการอุปกรณ์ทั้งหมด</div></div>
-      <div class="kpi" style="--c:{'var(--bad)' if abn_cnt else 'var(--ok)'}"><div class="n">{abn_cnt}</div><div class="l">{abn_label}</div></div>
-      <div class="kpi" style="--c:{'var(--warn)' if low_cnt else 'var(--ok)'}"><div class="n">{low_cnt}</div><div class="l">เหลือน้อยกว่าเกณฑ์</div></div>
-      <div class="kpi" style="--c:var(--teal)"><div class="n">{borrowed_cnt}</div><div class="l">กำลังถูกยืมอยู่</div></div>
-    </div>''', unsafe_allow_html=True)
-
-col_a1, col_a2 = st.columns(2)
-with col_a1:
-    if abn_cnt:
-        with st.expander(f"❌ {abn_title} ({abn_cnt} รายการ)"):
-            st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True,
-                         column_config={"name": "ชื่ออุปกรณ์", "category": "หมวดหมู่", "status": "สถานะ",
-                                        "quantity": st.column_config.NumberColumn("คงเหลือ", format="%d")})
-    else:
-        st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
-with col_a2:
-    if low_cnt:
-        with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อย ({low_cnt} รายการ)"):
-            st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True,
-                         column_config={"name": "ชื่ออุปกรณ์", "category": "หมวดหมู่",
-                                        "quantity": st.column_config.NumberColumn("คงเหลือ", format="%d")})
-    else:
-        st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
-
-if borrowed_cnt:
-    with st.expander(f"📤 อุปกรณ์ที่กำลังถูกยืม ({borrowed_cnt} รายการ)"):
-        st.dataframe(pd.DataFrame([{
-            "อุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
-            "จำนวนที่ยืม": t.get("quantity", 1),
-            "ผู้ยืม": t.get("borrower_name"),
-            "ผู้ให้ยืม": t.get("giver_name"),
-            "วันที่ยืม": t.get("borrow_date"),
-        } for t in active_borrows]), hide_index=True, use_container_width=True)
+if st.session_state.role in TECH_ROLES:
+    st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
 else:
-    st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
-st.markdown("")
+    with st.sidebar:
+        st.markdown("""
+        <div class="brand-box">
+          <div class="brand-logo">⚡</div>
+          <div>
+            <div class="brand-title">KAVE TOWN SHIFT</div>
+            <div class="brand-sub">Admin Command Studio V2</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-# --- SHARED BORROW / RETURN COMPONENT ---
+        st.markdown(
+            f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper() if st.session_state.username else "A")}</div>'
+            f'<div><div class="u-name">{esc(st.session_state.username)}</div>'
+            f'<div class="u-role">{esc(st.session_state.role)}</div></div></div>',
+            unsafe_allow_html=True
+        )
+
+        st.caption("🧭 MAIN STUDIO MODULES")
+        selected_admin_module = st.radio(
+            "เลือกส่วนงานที่ต้องการควบคุม",
+            ADMIN_NAV_ITEMS,
+            label_visibility="collapsed",
+            key="admin_sidebar_nav"
+        )
+
+        st.markdown("---")
+        st.caption("📡 REAL-TIME HARDWARE STATUS")
+        mqtt_badge = "🟢 MQTT ONLINE" if iot_mgr.connected else "🔴 MQTT OFFLINE"
+        servo_badge = "🔓 OPEN (UP)" if iot_mgr.servo_status == "UP" else "🔒 LOCKED (DOWN)"
+        fire_badge = "🚨 FIRE ALERT!" if iot_mgr.fire_status == "ALERT" else "🟢 FIRE CLEAR"
+        water_any_alarm = any(v == "ALARM" for v in iot_mgr.water_status.values())
+        water_badge = "🚨 PUMP ALARM!" if water_any_alarm else "🟢 PUMPS NORMAL"
+
+        st.markdown(f"""
+        <div style="font-size:0.78rem; line-height:1.85; background:rgba(15,23,42,0.65); padding:0.65rem 0.8rem; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">
+          <div><b>Broker:</b> {mqtt_badge}</div>
+          <div><b>Drawer:</b> {servo_badge}</div>
+          <div><b>Water:</b> {water_badge}</div>
+          <div><b>Fire:</b> {fire_badge}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("🔄 เชื่อมต่อ MQTT ใหม่ / Sync", use_container_width=True):
+            iot_mgr.connect()
+            st.toast("รีเฟรชการเชื่อมต่อ MQTT แล้ว", icon="📡")
+            st.rerun()
+
+        st.markdown("---")
+        with st.expander("👤 สลับสิทธิ์ / ออกจากระบบ", expanded=False):
+            if st.session_state.original_role == ROLE_ADMIN:
+                if st.session_state.role == ROLE_ADMIN:
+                    if st.button("🔀 สลับเป็น 'ช่างประจำอาคารพิเศษ'", use_container_width=True):
+                        switch_role(ROLE_TECH_SP)
+                else:
+                    if st.button("🔙 สลับกลับเป็น 'แอดมิน'", type="primary", use_container_width=True):
+                        switch_role(ROLE_ADMIN)
+            if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
+                if st.session_state.get("token"):
+                    db.sessions.delete_one({"token": st.session_state.token})
+                if local_store is not None:
+                    try:
+                        local_store.deleteItem(LS_KEY, key="ls_del_token")
+                    except Exception:
+                        pass
+                st.session_state.logged_in = False
+                st.session_state.role = None
+                st.session_state.username = ""
+                st.session_state.original_role = None
+                st.session_state.token = None
+                st.query_params.clear()
+                st.rerun()
+
+# =====================================================================
+#  TOP HERO STATUS BAR
+# =====================================================================
+mqtt_cls = "ok" if iot_mgr.connected else "bad"
+mqtt_txt = "MQTT: CONNECTED" if iot_mgr.connected else "MQTT: DISCONNECTED"
+fire_cls = "bad" if iot_mgr.fire_status == "ALERT" else "ok"
+fire_txt = f"FIRE: {iot_mgr.fire_status}"
+water_alarm_cnt = sum(1 for v in iot_mgr.water_status.values() if v == "ALARM")
+water_cls = "bad" if water_alarm_cnt > 0 else "ok"
+water_txt = f"WATER ALARM: {water_alarm_cnt}" if water_alarm_cnt else "WATER: NORMAL"
+servo_cls = "warn" if iot_mgr.servo_status == "UP" else "ok"
+servo_txt = f"DRAWER: {iot_mgr.servo_status}"
+
+st.markdown(f"""
+<div class="app-hero">
+  <div>
+    <div class="t">🛠️ KAVE TOWN SHIFT · SMART ENTERPRISE COMMAND CENTER</div>
+    <div class="s">ประจำวันที่ {get_now_str("%d/%m/%Y %H:%M")} · ผู้ใช้งาน: <b>{esc(st.session_state.username)}</b> ({esc(st.session_state.role)})</div>
+  </div>
+  <div class="badge-row">
+    <span class="status-pill-top {mqtt_cls}">📡 {mqtt_txt}</span>
+    <span class="status-pill-top {servo_cls}">🗄️ {servo_txt}</span>
+    <span class="status-pill-top {water_cls}">💧 {water_txt}</span>
+    <span class="status-pill-top {fire_cls}">🔥 {fire_txt}</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# =====================================================================
+#  SHARED BORROW / RETURN COMPONENT
+# =====================================================================
 def render_borrow_return_system():
     st.subheader("🔄 ระบบยืม-คืน เครื่องมือและอุปกรณ์")
     sub_borrow, sub_return, sub_history = st.tabs(["📝 ทำรายการยืม", "🔙 ทำรายการคืน", "📜 ประวัติยืม-คืน"])
@@ -697,7 +1380,7 @@ def render_borrow_return_system():
                 borrow_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายผู้ยืมหรือหลักฐานการยืม (ถ้ามี)", type=["jpg", "jpeg", "png"])
                 st.info(f"📌 ผู้ทำรายการ/ผู้ให้ยืม: **{st.session_state.username}** (บันทึกอัตโนมัติ)")
 
-                if st.form_submit_button("ยืนยันการยืมอุปกรณ์"):
+                if st.form_submit_button("ยืนยันการยืมอุปกรณ์", type="primary"):
                     selected_id = item_dict[sel_item_label]
                     cur = db.items.find_one({"id": selected_id}, {"_id": 0, "quantity": 1, "status": 1, "name": 1})
                     if not borrower_name.strip():
@@ -725,7 +1408,6 @@ def render_borrow_return_system():
     with sub_return:
         st.markdown("#### รายการที่กำลังถูกยืมอยู่")
         active_txs = get_active_borrows()
-
         if active_txs:
             for t in active_txs:
                 item_name = item_name_map.get(t["item_id"], "Unknown")
@@ -749,8 +1431,7 @@ def render_borrow_return_system():
                         with st.form(key=f"return_form_{t['id']}"):
                             st.info(f"📌 ผู้รับคืน: **{st.session_state.username}** (บันทึกอัตโนมัติ)")
                             ret_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายตอนคืนอุปกรณ์ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"ret_img_{t['id']}")
-
-                            if st.form_submit_button("✅ รับคืนอุปกรณ์รายการนี้"):
+                            if st.form_submit_button("✅ รับคืนอุปกรณ์รายการนี้", type="primary"):
                                 r_img_b64 = compress_image_to_base64(ret_img_file)
                                 db.transactions.update_one(
                                     {"id": t['id']},
@@ -780,8 +1461,9 @@ def render_borrow_return_system():
         } for t in all_txs])
         st.dataframe(tx_history, use_container_width=True, hide_index=True)
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์ช่าง (แยกประเภท เครื่องมือช่าง VS อุปกรณ์ช่างทั่วไป) ---
-@fragment
+# =====================================================================
+#  TECH UI INSPECTION LISTS (NO @fragment ISOLATION BUG ON SUBMIT)
+# =====================================================================
 def render_tool_inspection_list(tools_all_df):
     tech_search = st.text_input("🔍 ค้นหาอุปกรณ์ช่าง...", key="tech_search_box")
     tools_df = tools_all_df
@@ -792,54 +1474,44 @@ def render_tool_inspection_list(tools_all_df):
 
     with keyed_container("tech_check_list", height=520):
         for _, row in tools_df.iterrows():
-            rid = row['id']
-            current_status = row['status']
-            subcat = row.get('subcategory', '')
+            rid = int(row['id'])
+            current_status = str(row['status'])
+            subcat = str(row.get('subcategory', ''))
             borrow_qty = borrowed_item_map.get(rid, 0)
             borrower_info = ", ".join(borrower_details_map.get(rid, []))
 
             if borrow_qty > 0:
-                badge_color = "🔵"
-                status_text = f"[ถูกยืมโดย {borrower_info}]"
+                badge_color, status_text = "🔵", f"[ถูกยืมโดย {borrower_info}]"
             elif current_status == "ปกติ":
-                badge_color = "🟢"
-                status_text = "[ปกติ]"
+                badge_color, status_text = "🟢", "[ปกติ]"
             elif current_status.startswith("กำลังใช้งาน"):
-                badge_color = "🟡"
-                status_text = f"[{current_status}]"
+                badge_color, status_text = "🟡", f"[{current_status}]"
             elif current_status == "อุปกรณ์หมด":
-                badge_color = "🟠"
-                status_text = "[อุปกรณ์หมด]"
+                badge_color, status_text = "🟠", "[อุปกรณ์หมด]"
             else:
-                badge_color = "🔴"
-                status_text = f"[{current_status}]"
+                badge_color, status_text = "🔴", f"[{current_status}]"
 
             with st.expander(f"{badge_color} {row['name']} (คงเหลือ: {row['quantity']})  {status_text}"):
-                
-                # หากเป็น "อุปกรณ์ช่างทั่วไป" ให้สามารถระบุ/ปรับแก้จำนวนคงเหลือจริงหน้างานได้
                 if subcat == "อุปกรณ์ช่างทั่วไป":
                     st.number_input(
                         "ปรับจำนวนคงเหลือจริง *",
                         min_value=0,
                         value=int(row['quantity']),
+                        step=1,
                         key=f"gen_q_{rid}"
                     )
                 else:
-                    # หากเป็น "เครื่องมือช่าง" ใช้ระบบเลือกสถานะปกติ/ชำรุด/สูญหาย/กำลังใช้งาน ตามเดิม
                     base_st = current_status.split(" (")[0] if "(" in current_status else current_status
                     if borrow_qty > 0:
                         base_st = "ยืม"
-
                     status_options = ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด", "กำลังใช้งาน"]
                     def_idx = status_options.index(base_st) if base_st in status_options else 0
-
                     selected_status = st.selectbox(
                         "สถานะการตรวจสอบ *",
                         status_options,
                         index=def_idx,
                         key=f"status_sel_{rid}"
                     )
-
                     if selected_status != "ปกติ":
                         if selected_status == "กำลังใช้งาน":
                             detail_def = current_status.split("(")[1].replace(")", "") if "กำลังใช้งาน (" in current_status else ""
@@ -857,8 +1529,6 @@ def render_tool_inspection_list(tools_all_df):
                 else:
                     st.caption("*(ไม่มีรูปภาพประกอบ)*")
 
-# --- MODERN TECH UI: ตรวจสอบอุปกรณ์สระว่ายน้ำ ---
-@fragment
 def render_pool_list(pool_all_df):
     tech_pool_search = st.text_input("🔍 ค้นหาอุปกรณ์สระว่ายน้ำ...", key="tech_pool_search_box")
     pool_df = pool_all_df
@@ -869,15 +1539,15 @@ def render_pool_list(pool_all_df):
 
     with keyed_container("pool_check_list", height=520):
         for _, row in pool_df.iterrows():
-            rid = row['id']
+            rid = int(row['id'])
             with st.expander(f"🏊 {row['name']} (ปัจจุบัน: {row['quantity']} ชิ้น)"):
                 st.number_input(
                     "ปรับจำนวนคงเหลือจริง *",
                     min_value=0,
                     value=int(row['quantity']),
+                    step=1,
                     key=f"pool_q_{rid}"
                 )
-
                 img_bytes = get_item_image(rid)
                 if img_bytes:
                     with st.popover("📷 ดูรูปภาพอุปกรณ์"):
@@ -891,426 +1561,1033 @@ def clear_inspection_widget_state():
         if isinstance(k, str) and k.startswith(prefixes):
             del st.session_state[k]
 
-# --- DIVISION BY ROLE ---
+# =====================================================================
+#  ADMIN ROLE: 7 SEPARATE ENTERPRISE MODULES
+# =====================================================================
 if st.session_state.role == ROLE_ADMIN:
-    admin_menu = st.tabs([
-        "📋 1. จัดการอุปกรณ์ทั้งหมด",
-        "📊 2. รายงานการตรวจเช็ค",
-        "📥 3. อนุมัติคำขอเพิ่มอุปกรณ์",
-        "🔄 4. ยืม-คืน เครื่องมือ-อุปกรณ์",
-        "⚙️ 5. ตั้งค่าระบบ & รหัสช่าง"
-    ])
+    cfg_iot = get_iot_config()
 
-    with admin_menu[0]:
-        st.subheader("📋 จัดการอุปกรณ์ทั้งหมดในระบบ")
-        tab_list, tab_add_edit, tab_excel_import = st.tabs(["🔍 ดูรายการทั้งหมด", "➕ เพิ่ม/แก้ไขอุปกรณ์", "📥 นำเข้า/รีเซ็ตข้อมูล"])
+    # Pending Requisition Alert Banner
+    if pending_reqs_all:
+        st.markdown(
+            f'<div class="req-banner"><div style="font-size:1.6rem;">📥</div><div>'
+            f'<div style="font-weight:700; color:#FEF3C7;">มีคำขอเบิกของรออนุมัติ {len(pending_reqs_all)} รายการ</div>'
+            f'<div style="font-size:0.78rem; color:#FDE68A;">ไปที่เมนู "2. คลังอุปกรณ์ช่าง & สระว่ายน้ำ -> อนุมัติคำขอเพิ่มอุปกรณ์" เพื่อพิจารณา</div></div></div>',
+            unsafe_allow_html=True
+        )
 
-        with tab_list:
-            c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
-            search_kw = c_f1.text_input("🔍 ค้นหาชื่ออุปกรณ์...", placeholder="พิมพ์ชื่ออุปกรณ์เพื่อค้นหา")
-            cat_filter = c_f2.selectbox("กรองตามหมวดหลัก", ["ทั้งหมด", "อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
-            status_filter = c_f3.selectbox("กรองตามสถานะ", ["ทั้งหมด", "ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"])
+    # -----------------------------------------------------------------
+    # MODULE 1: EXECUTIVE OVERVIEW (Glassy CRM & Admin Dashboard V2)
+    # -----------------------------------------------------------------
+    if selected_admin_module.startswith("🌟 1."):
+        st.subheader("🌟 ภาพรวมศูนย์ควบคุมอัจฉริยะ (Executive Command & Audit Overview)")
 
-            filtered_df = items_df.copy()
-            if not filtered_df.empty:
-                if search_kw.strip():
-                    filtered_df = filtered_df[filtered_df['name'].str.contains(search_kw.strip(), case=False, na=False)]
-                if cat_filter != "ทั้งหมด":
-                    filtered_df = filtered_df[filtered_df['category'] == cat_filter]
-                if status_filter != "ทั้งหมด":
-                    filtered_df = filtered_df[filtered_df['status'] == status_filter]
+        sol = st.session_state.get("last_solar_data", {})
+        soc_disp = f"{int(sol['soc'])}%" if sol.get("ok") else "--%"
+        pv_disp = f"{int(sol['pvP'])} W" if sol.get("ok") else "-- W"
 
-            st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ (💡 คลิกเลือกแถวในตารางด้านล่าง เพื่อเปิดหน้าต่างแก้ไขข้อมูลทันที)")
+        st.markdown(f"""
+        <div class="kpi-grid">
+          <div class="glass-kpi" style="--c:#00F2FE;">
+            <div class="top"><span class="lbl">รายการอุปกรณ์ทั้งหมด</span><span>🛠️</span></div>
+            <div class="val">{len(items_df)}</div>
+            <div class="sub">ชำรุด/ผิดปกติ: <b style="color:{'#EF4444' if abn_cnt else '#10B981'}">{abn_cnt}</b> · เหลือน้อย: <b style="color:{'#F59E0B' if low_cnt else '#10B981'}">{low_cnt}</b></div>
+          </div>
+          <div class="glass-kpi" style="--c:#FF7A2F;">
+            <div class="top"><span class="lbl">กำลังถูกยืม / รออนุมัติเบิก</span><span>📦</span></div>
+            <div class="val">{borrowed_cnt} / {len(pending_reqs_all)}</div>
+            <div class="sub">ยืมอยู่ {borrowed_cnt} รายการ · รออนุมัติ {len(pending_reqs_all)} รายการ</div>
+          </div>
+          <div class="glass-kpi" style="--c:{'#F59E0B' if iot_mgr.servo_status=='UP' else '#10B981'};">
+            <div class="top"><span class="lbl">สถานะลิ้นชัก (ESP8266 Servo)</span><span>🗄️</span></div>
+            <div class="val">{iot_mgr.servo_status}</div>
+            <div class="sub">อัปเดตล่าสุด: {iot_mgr.servo_last_update}</div>
+          </div>
+          <div class="glass-kpi" style="--c:{'#EF4444' if water_alarm_cnt else '#10B981'};">
+            <div class="top"><span class="lbl">ระบบปั๊มน้ำ (Water Alarm)</span><span>💧</span></div>
+            <div class="val">{'ALARM ('+str(water_alarm_cnt)+')' if water_alarm_cnt else 'NORMAL'}</div>
+            <div class="sub">ออนไลน์ {sum(1 for v in iot_mgr.water_online.values() if v)}/5 จุดตรวจวัด</div>
+          </div>
+          <div class="glass-kpi" style="--c:{'#EF4444' if iot_mgr.fire_status=='ALERT' else '#10B981'};">
+            <div class="top"><span class="lbl">ระบบอัคคีภัย (Fire Alarm)</span><span>🚨</span></div>
+            <div class="val">{iot_mgr.fire_status}</div>
+            <div class="sub">{esc(iot_mgr.fire_location[:28])}</div>
+          </div>
+          <div class="glass-kpi" style="--c:#8B5CF6;">
+            <div class="top"><span class="lbl">โซลาร์เซลล์ (SPF5000ES)</span><span>☀️</span></div>
+            <div class="val">{soc_disp}</div>
+            <div class="sub">PV Input: {pv_disp}</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-            cols_show = ['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']
-            show_df = filtered_df[cols_show].copy() if not filtered_df.empty else pd.DataFrame(columns=cols_show)
-            if not show_df.empty:
-                show_df['alert_zero'] = show_df['alert_zero'].astype(bool)
+        # Quick Action Control Strip
+        st.markdown("#### ⚡ แผงควบคุมด่วนสำหรับแอดมิน (Quick Hardware & System Controls)")
+        qa1, qa2, qa3, qa4, qa5 = st.columns(5)
+        if qa1.button("🔓 เปิดลิ้นชัก (Servo UP)", type="primary", use_container_width=True):
+            iot_mgr.publish(cfg_iot["topic_servo_cmd"], "UP")
+            st.toast("ส่งคำสั่ง UP ไปที่ esp8266/servo แล้ว", icon="🔓")
+            st.rerun()
+        if qa2.button("🔒 ล็อกลิ้นชัก (Servo DOWN)", use_container_width=True):
+            iot_mgr.publish(cfg_iot["topic_servo_cmd"], "DOWN")
+            st.toast("ส่งคำสั่ง DOWN ไปที่ esp8266/servo แล้ว", icon="🔒")
+            st.rerun()
+        if qa3.button("📡 เช็กสถานะปั๊มน้ำ (CheckClients)", use_container_width=True):
+            iot_mgr.publish(cfg_iot["topic_check_clients"], "CheckClients")
+            iot_mgr.publish(cfg_iot["topic_water"], "CheckClients")
+            st.toast("ส่งคำสั่ง CheckClients แล้ว", icon="💧")
+            st.rerun()
+        if qa4.button("⚡ สั่ง Reset Relay ไฟไหม้", use_container_width=True):
+            iot_mgr.publish(cfg_iot["topic_fire_relay"], "reset")
+            iot_mgr.handle_message(cfg_iot["topic_fire"], "RESET CLEAR")
+            st.toast("ส่งคำสั่ง reset ไปที่ nodemcu/control/relay แล้ว", icon="🚨")
+            st.rerun()
+        if qa5.button("☀️ ดึงค่า Growatt Solar ล่าสุด", use_container_width=True):
+            with st.spinner("กำลังดึงข้อมูลจาก Growatt Server..."):
+                st.session_state.last_solar_data = fetch_growatt_realtime(sync_sheets=False)
+            st.rerun()
 
-            table_event = st.dataframe(
-                show_df, use_container_width=True, hide_index=True, height=350,
-                on_select="rerun", selection_mode="single-row",
-                key=f"items_tbl_{st.session_state.get('items_tbl_ver', 0)}",
-                column_config={
-                    "id": st.column_config.NumberColumn("รหัส", width="small"),
-                    "name": st.column_config.TextColumn("ชื่ออุปกรณ์", width="large"),
-                    "category": "หมวดหมู่หลัก", "subcategory": "หมวดย่อย",
-                    "quantity": st.column_config.NumberColumn("จำนวน", format="%d", width="small"),
-                    "status": "สถานะ",
-                    "alert_zero": st.column_config.CheckboxColumn("เตือนที่ 0", width="small"),
-                    "note": "หมายเหตุ",
-                }
+        st.markdown("---")
+        col_ov1, col_ov2 = st.columns([1.2, 1])
+        with col_ov1:
+            st.markdown("#### 💧 สถานะปั๊มน้ำและจุดตรวจจับน้ำท่วม (5 จุด)")
+            p_cols = st.columns(5)
+            p_labels = [("A", "อาคาร A"), ("B", "อาคาร B"), ("C", "อาคาร C"), ("D", "อาคาร D"), ("UNDERGROUND", "สระว่ายน้ำใต้ดิน")]
+            for idx, (pk, pname) in enumerate(p_labels):
+                st_val = iot_mgr.water_status.get(pk, "NORMAL")
+                on_val = iot_mgr.water_online.get(pk, True)
+                pill_c = "pill-off" if not on_val else ("pill-alarm" if st_val == "ALARM" else "pill-normal")
+                pill_t = "OFFLINE" if not on_val else st_val
+                p_cols[idx].markdown(
+                    f'<div class="iot-card"><div class="hd">{pname}</div>'
+                    f'<div class="bd"><span class="nm">{pk if pk!="UNDERGROUND" else "Pool"}</span>'
+                    f'<span class="pill {pill_c}">{pill_t}</span></div></div>',
+                    unsafe_allow_html=True
+                )
+
+            st.markdown("#### 🔥 สถานะโซนแจ้งเตือนอัคคีภัย (Fire Alarm Zones)")
+            f_cols = st.columns(4)
+            f_labels = [("A", "อาคาร A"), ("B", "อาคาร B"), ("C", "อาคาร C"), ("D", "อาคาร D")]
+            for idx, (fk, fname) in enumerate(f_labels):
+                fst = iot_mgr.fire_zones.get(fk, "NORMAL")
+                fc = "pill-alarm" if fst == "ALERT" else "pill-normal"
+                f_cols[idx].markdown(
+                    f'<div class="iot-card"><div class="hd">Fire Zone</div>'
+                    f'<div class="bd"><span class="nm">{fname}</span>'
+                    f'<span class="pill {fc}">{fst}</span></div></div>',
+                    unsafe_allow_html=True
+                )
+
+        with col_ov2:
+            st.markdown("#### 📋 สรุปรายการอุปกรณ์ที่ต้องดูแลทันที")
+            if abn_cnt:
+                with st.expander(f"❌ {abn_title} ({abn_cnt} รายการ)", expanded=True):
+                    st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
+            else:
+                st.success("✅ อุปกรณ์ช่างและสระว่ายน้ำทุกชิ้นอยู่ในสภาพปกติ")
+
+            if low_cnt:
+                with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์ ({low_cnt} รายการ)", expanded=True):
+                    st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
+            else:
+                st.success("✅ สต็อกอุปกรณ์ทั่วไปมีจำนวนเพียงพอทุกรายการ")
+
+            if borrowed_cnt:
+                with st.expander(f"📤 อุปกรณ์ที่กำลังถูกยืม ({borrowed_cnt} รายการ)", expanded=False):
+                    st.dataframe(pd.DataFrame([{
+                        "อุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
+                        "จำนวน": t.get("quantity", 1),
+                        "ผู้ยืม": t.get("borrower_name"),
+                        "วันที่ยืม": t.get("borrow_date"),
+                    } for t in active_borrows]), hide_index=True, use_container_width=True)
+
+    # -----------------------------------------------------------------
+    # MODULE 2: INVENTORY, INSPECTIONS, REQUISITIONS & BORROW/RETURN
+    # -----------------------------------------------------------------
+    elif selected_admin_module.startswith("🛠️ 2."):
+        admin_inv_tabs = st.tabs([
+            "📋 2.1 จัดการอุปกรณ์ทั้งหมด",
+            "🧑‍🔧 2.2 ตรวจเช็ค/ปรับสต็อกหน้างาน (Admin Direct)",
+            "📊 2.3 รายงานการตรวจเช็ค",
+            "📥 2.4 อนุมัติคำขอเพิ่มอุปกรณ์",
+            "🔄 2.5 ยืม-คืน เครื่องมือ-อุปกรณ์"
+        ])
+
+        with admin_inv_tabs[0]:
+            tab_list, tab_add_edit, tab_excel_import = st.tabs(["🔍 ดูและแก้ไขด่วนในตาราง", "➕ เพิ่ม/แก้ไขอุปกรณ์", "📥 นำเข้า/รีเซ็ตข้อมูลตั้งต้น"])
+
+            with tab_list:
+                c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
+                search_kw = c_f1.text_input("🔍 ค้นหาชื่ออุปกรณ์...", placeholder="พิมพ์ชื่ออุปกรณ์เพื่อค้นหา")
+                cat_filter = c_f2.selectbox("กรองตามหมวดหลัก", ["ทั้งหมด", "อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
+                status_filter = c_f3.selectbox("กรองตามสถานะ", ["ทั้งหมด", "ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"])
+
+                filtered_df = items_df.copy()
+                if not filtered_df.empty:
+                    if search_kw.strip():
+                        filtered_df = filtered_df[filtered_df['name'].str.contains(search_kw.strip(), case=False, na=False)]
+                    if cat_filter != "ทั้งหมด":
+                        filtered_df = filtered_df[filtered_df['category'] == cat_filter]
+                    if status_filter != "ทั้งหมด":
+                        filtered_df = filtered_df[filtered_df['status'] == status_filter]
+
+                st.caption(f"แสดงรายการอุปกรณ์ทั้งหมด {len(filtered_df)} จาก {len(items_df)} รายการ (💡 คลิกเลือกแถวในตารางเพื่อเปิดหน้าต่างแก้ไขทันที)")
+
+                cols_show = ['id', 'name', 'category', 'subcategory', 'quantity', 'status', 'alert_zero', 'note']
+                show_df = filtered_df[cols_show].copy() if not filtered_df.empty else pd.DataFrame(columns=cols_show)
+                if not show_df.empty:
+                    show_df['alert_zero'] = show_df['alert_zero'].astype(bool)
+
+                table_event = st.dataframe(
+                    show_df, use_container_width=True, hide_index=True, height=360,
+                    on_select="rerun", selection_mode="single-row",
+                    key=f"items_tbl_{st.session_state.get('items_tbl_ver', 0)}",
+                    column_config={
+                        "id": st.column_config.NumberColumn("รหัส", width="small"),
+                        "name": st.column_config.TextColumn("ชื่ออุปกรณ์", width="large"),
+                        "category": "หมวดหมู่หลัก", "subcategory": "หมวดย่อย",
+                        "quantity": st.column_config.NumberColumn("จำนวน", format="%d", width="small"),
+                        "status": "สถานะ",
+                        "alert_zero": st.column_config.CheckboxColumn("เตือนที่ 0", width="small"),
+                        "note": "หมายเหตุ",
+                    }
+                )
+
+                selected_rows = table_event.get("selection", {}).get("rows", [])
+                if selected_rows and selected_rows[0] < len(filtered_df):
+                    st.session_state.quick_edit_id = int(filtered_df.iloc[selected_rows[0]]['id'])
+
+                if st.session_state.get("quick_edit_id"):
+                    qe_id = st.session_state.quick_edit_id
+                    qe_row = db.items.find_one({"id": qe_id}, {"_id": 0, "image": 0})
+                    if qe_row:
+                        st.markdown("---")
+                        with st.expander(f"📌 แก้ไขข้อมูลอุปกรณ์: #{qe_row['id']} - {qe_row['name']}", expanded=True):
+                            with st.form(f"quick_edit_form_{qe_id}"):
+                                qe_name = st.text_input("ชื่ออุปกรณ์", value=qe_row['name'])
+                                qe_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if qe_row['category'] == "อุปกรณ์ช่าง" else 1)
+                                if qe_category == "อุปกรณ์ช่าง":
+                                    sub_idx = 0 if qe_row.get('subcategory') == "เครื่องมือช่าง" else 1
+                                    qe_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
+                                else:
+                                    qe_subcat = "เคมีภัณฑ์"
+                                    st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
+
+                                qe_quantity = st.number_input("จำนวน", min_value=0, value=int(qe_row['quantity']))
+                                status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
+                                qe_status = st.selectbox("สถานะ", status_list, index=status_list.index(qe_row['status']) if qe_row['status'] in status_list else 0)
+                                qe_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(qe_row.get('alert_zero', 0)))
+                                qe_note = st.text_area("หมายเหตุ", value=nz(qe_row.get('note')))
+
+                                cur_img = get_item_image(qe_id)
+                                if cur_img:
+                                    st.image(cur_img, width=150, caption="รูปภาพปัจจุบัน")
+                                qe_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"qe_file_{qe_id}")
+
+                                col_qe1, col_qe2, col_qe3 = st.columns([1, 1, 2])
+                                if col_qe1.form_submit_button("💾 บันทึกการแก้ไข", type="primary"):
+                                    upd = {"name": qe_name, "category": qe_category, "subcategory": qe_subcat,
+                                           "quantity": qe_quantity, "orig_quantity": qe_quantity, "status": qe_status,
+                                           "alert_zero": 1 if qe_alert_zero else 0, "note": qe_note}
+                                    if qe_file is not None:
+                                        upd["image"] = compress_image_to_base64(qe_file)
+                                    db.items.update_one({"id": qe_id}, {"$set": upd})
+                                    refresh_items(images=qe_file is not None)
+                                    close_quick_edit()
+                                    done("อัปเดตข้อมูลสำเร็จ!")
+                                if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
+                                    db.items.delete_one({"id": qe_id})
+                                    refresh_items(images=True)
+                                    close_quick_edit()
+                                    done("ลบเรียบร้อยแล้ว!")
+                                if col_qe3.form_submit_button("❌ ปิดหน้าต่าง"):
+                                    close_quick_edit()
+                                    st.rerun()
+
+            with tab_add_edit:
+                sub_a, sub_e, sub_bulk = st.tabs(["➕ เพิ่มอุปกรณ์ใหม่", "✏️ แก้ไข/ลบ รายการ", "🖼️ อัปโหลดรูปภาพแบบกลุ่ม"])
+                with sub_a:
+                    with st.form("add_item_form_new", clear_on_submit=True):
+                        name = st.text_input("ชื่ออุปกรณ์ *")
+                        category = st.selectbox("หมวดหมู่หลัก *", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
+                        if category == "อุปกรณ์ช่าง":
+                            subcategory = st.selectbox("หมวดหมู่ย่อย *", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"])
+                        else:
+                            subcategory = "เคมีภัณฑ์"
+                            st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
+
+                        quantity = st.number_input("จำนวน (ชิ้น)", min_value=1, value=1)
+                        status = st.selectbox("สภาพเริ่มต้น", ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด"])
+                        alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0")
+                        note = st.text_area("หมายเหตุ")
+                        uploaded_file = st.file_uploader("อัปโหลดรูปภาพอุปกรณ์", type=["jpg", "jpeg", "png"])
+
+                        if st.form_submit_button("บันทึกอุปกรณ์ใหม่", type="primary"):
+                            if name.strip():
+                                new_id = get_next_sequence("items_id")
+                                db.items.insert_one({
+                                    "id": new_id, "name": name, "category": category, "subcategory": subcategory,
+                                    "quantity": quantity, "orig_quantity": quantity, "status": status,
+                                    "alert_zero": 1 if alert_zero else 0, "note": note,
+                                    "image": compress_image_to_base64(uploaded_file)
+                                })
+                                refresh_items(images=uploaded_file is not None)
+                                done("เพิ่มอุปกรณ์สำเร็จ!")
+                            else:
+                                st.error("กรุณากรอกชื่ออุปกรณ์")
+
+                with sub_e:
+                    if not items_df.empty:
+                        selected_item_id = st.selectbox("เลือกอุปกรณ์ที่ต้องการแก้ไข", items_df['id'].astype(str) + " - " + items_df['name'])
+                        if selected_item_id:
+                            item_id_int = int(selected_item_id.split(" - ")[0])
+                            current_item = items_df[items_df['id'] == item_id_int].iloc[0]
+                            with st.form(f"edit_form_{item_id_int}"):
+                                e_name = st.text_input("ชื่ออุปกรณ์", value=current_item['name'])
+                                e_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if current_item['category'] == "อุปกรณ์ช่าง" else 1)
+                                if e_category == "อุปกรณ์ช่าง":
+                                    sub_idx = 0 if current_item['subcategory'] == "เครื่องมือช่าง" else 1
+                                    e_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
+                                else:
+                                    e_subcat = "เคมีภัณฑ์"
+                                e_quantity = st.number_input("จำนวน", min_value=0, value=int(current_item['quantity']))
+                                status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
+                                e_status = st.selectbox("สถานะ", status_list, index=status_list.index(current_item['status']) if current_item['status'] in status_list else 0)
+                                e_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(current_item.get('alert_zero', 0)))
+                                e_note = st.text_area("หมายเหตุ", value=nz(current_item['note']))
+                                cur_img = get_item_image(item_id_int)
+                                if cur_img:
+                                    st.image(cur_img, width=150, caption="รูปภาพปัจจุบัน")
+                                e_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"file_{item_id_int}")
+
+                                col_e1, col_e2 = st.columns(2)
+                                if col_e1.form_submit_button("บันทึกการแก้ไข", type="primary"):
+                                    upd = {"name": e_name, "category": e_category, "subcategory": e_subcat,
+                                           "quantity": e_quantity, "orig_quantity": e_quantity, "status": e_status,
+                                           "alert_zero": 1 if e_alert_zero else 0, "note": e_note}
+                                    if e_file is not None:
+                                        upd["image"] = compress_image_to_base64(e_file)
+                                    db.items.update_one({"id": item_id_int}, {"$set": upd})
+                                    refresh_items(images=e_file is not None)
+                                    done("อัปเดตข้อมูลสำเร็จ!")
+                                if col_e2.form_submit_button("ลบอุปกรณ์นี้", type="secondary"):
+                                    db.items.delete_one({"id": item_id_int})
+                                    refresh_items(images=True)
+                                    done("ลบเรียบร้อยแล้ว!")
+
+                with sub_bulk:
+                    st.markdown("### 📁 อัปโหลดรูปภาพอุปกรณ์แบบกลุ่ม (ตามชื่อไฟล์รหัสอุปกรณ์ เช่น `1.jpg`, `2.png`)")
+                    bulk_files = st.file_uploader("เลือกไฟล์รูปภาพทั้งหมด", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="bulk_img_files")
+                    if bulk_files:
+                        if st.button("🚀 ยืนยันจับคู่และอัปโหลดรูปภาพเข้าระบบ", type="primary"):
+                            valid_ids = set(items_df['id'].tolist()) if not items_df.empty else set()
+                            ops = []
+                            with st.spinner("กำลังบีบอัดและอัปโหลดรูปภาพ..."):
+                                for img_f in bulk_files:
+                                    pure_name = img_f.name.rsplit('.', 1)[0]
+                                    if pure_name.isdigit() and int(pure_name) in valid_ids:
+                                        ops.append(pymongo.operations.UpdateOne(
+                                            {"id": int(pure_name)}, {"$set": {"image": compress_image_to_base64(img_f)}}))
+                                if ops:
+                                    db.items.bulk_write(ops, ordered=False)
+                            refresh_items(images=True)
+                            done(f"อัปเดตรูปภาพตามชื่อไฟล์สำเร็จทั้งหมด {len(ops)} รายการ!")
+
+            with tab_excel_import:
+                st.markdown("### ⚡ โหลดชุดข้อมูลตั้งต้นทั้งหมด (ลำดับใหม่)")
+                st.warning("การคลิกปุ่มนี้จะล้างข้อมูลอุปกรณ์เดิมและโหลดรายการตั้งต้น 79 รายการใหม่ทั้งหมด")
+                if st.button("🚀 รีเซ็ตและโหลดอุปกรณ์ทั้งหมดตามรายการตั้งต้น", type="primary"):
+                    db.items.delete_many({})
+                    db.items.insert_many(build_default_docs())
+                    db.counters.update_one({"_id": "items_id"}, {"$set": {"seq": len(DEFAULT_INITIAL_ITEMS)}}, upsert=True)
+                    refresh_items(images=True)
+                    done("นำเข้าอุปกรณ์และลำดับใหม่สำเร็จ!")
+
+        # 2.2 Admin Direct Inspection & Stock Adjust (No 4-photo restriction for Admin if desired)
+        with admin_inv_tabs[1]:
+            st.markdown("#### 🧑‍🔧 ตรวจเช็คสภาพและปรับแก้จำนวนอุปกรณ์โดยแอดมิน (ไม่ต้องสลับหน้า)")
+            adm_cat = st.radio("เลือกหมวดหมู่", ["🔧 หมวดอุปกรณ์ช่าง", "🏊 หมวดอุปกรณ์สระว่ายน้ำ"], horizontal=True, key="adm_insp_cat")
+            if adm_cat == "🔧 หมวดอุปกรณ์ช่าง":
+                tools_all_df = items_df[items_df['category'] == 'อุปกรณ์ช่าง'] if not items_df.empty else pd.DataFrame()
+                if not tools_all_df.empty:
+                    render_tool_inspection_list(tools_all_df)
+                    if st.button("💾 บันทึกการตรวจเช็ค/ปรับจำนวนอุปกรณ์ช่าง (สิทธิ์แอดมิน)", type="primary", use_container_width=True):
+                        bulk_ops, summaries = [], []
+                        row_map = tools_all_df.set_index('id')
+                        for _, row in tools_all_df.iterrows():
+                            rid = int(row['id'])
+                            subcat = str(row.get('subcategory', ''))
+                            orig_q = int(row['orig_quantity'])
+                            item_name = row['name']
+                            if subcat == "อุปกรณ์ช่างทั่วไป":
+                                new_q = int(st.session_state.get(f"gen_q_{rid}", row['quantity']))
+                                bulk_ops.append(pymongo.operations.UpdateOne(
+                                    {"id": rid}, {"$set": {"quantity": new_q, "orig_quantity": new_q, "status": "ปกติ"}}
+                                ))
+                                if new_q != int(row['quantity']):
+                                    summaries.append(f"{item_name}: ปรับสต็อกเหลือ {new_q} ชิ้น")
+                            else:
+                                sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
+                                detail = st.session_state.get(f"issue_detail_{rid}", "") or ""
+                                qty_issue = int(st.session_state.get(f"issue_qty_{rid}", 1) or 1)
+                                if sel_st != "ปกติ":
+                                    final_st = f"กำลังใช้งาน ({detail})" if (sel_st == "กำลังใช้งาน" and detail.strip()) else sel_st
+                                    new_q = 0 if sel_st == "อุปกรณ์หมด" else max(0, orig_q - qty_issue)
+                                    bulk_ops.append(pymongo.operations.UpdateOne(
+                                        {"id": rid}, {"$set": {"status": final_st, "quantity": new_q}}
+                                    ))
+                                    summaries.append(f"{item_name}: {final_st}")
+                                else:
+                                    bulk_ops.append(pymongo.operations.UpdateOne(
+                                        {"id": rid}, {"$set": {"status": "ปกติ", "quantity": orig_q}}
+                                    ))
+                        if bulk_ops:
+                            db.items.bulk_write(bulk_ops, ordered=False)
+                        db.inspections.insert_one({
+                            "id": get_next_sequence("inspections_id"),
+                            "tech_name": f"{st.session_state.username} (Admin)",
+                            "category": "อุปกรณ์ช่าง",
+                            "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
+                            "session_num": 1,
+                            "details": "Admin Direct Update | " + (", ".join(summaries) if summaries else "ปกติทุกรายการ"),
+                            "photos": ""
+                        })
+                        refresh_items()
+                        get_inspections_list.clear()
+                        clear_inspection_widget_state()
+                        done("บันทึกการปรับแก้สถานะและจำนวนอุปกรณ์ช่างเรียบร้อยแล้ว!")
+            else:
+                pool_all_df = items_df[items_df['category'] == 'อุปกรณ์สระว่ายน้ำ'] if not items_df.empty else pd.DataFrame()
+                if not pool_all_df.empty:
+                    render_pool_list(pool_all_df)
+                    if st.button("💾 บันทึกจำนวนอุปกรณ์สระว่ายน้ำ (สิทธิ์แอดมิน)", type="primary", use_container_width=True):
+                        bulk_pool_ops, pool_summaries = [], []
+                        row_map = pool_all_df.set_index('id')
+                        for item_id in pool_all_df['id']:
+                            rid = int(item_id)
+                            q_val = int(st.session_state.get(f"pool_q_{rid}", row_map.loc[rid, 'quantity']))
+                            old_q = int(row_map.loc[rid, 'quantity'])
+                            if q_val != old_q:
+                                bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": rid}, {"$set": {"quantity": q_val, "orig_quantity": q_val}}))
+                                pool_summaries.append(f"{row_map.loc[rid, 'name']}: ปรับจาก {old_q} เหลือ {q_val}")
+                        if bulk_pool_ops:
+                            db.items.bulk_write(bulk_pool_ops, ordered=False)
+                        db.inspections.insert_one({
+                            "id": get_next_sequence("inspections_id"),
+                            "tech_name": f"{st.session_state.username} (Admin)",
+                            "category": "อุปกรณ์สระว่ายน้ำ",
+                            "inspection_date": get_now_str("%Y-%m-%d %H:%M:%S"),
+                            "session_num": 1,
+                            "details": "Admin Pool Update | " + (", ".join(pool_summaries) if pool_summaries else "ไม่มีการเปลี่ยนจำนวน"),
+                            "photos": ""
+                        })
+                        refresh_items()
+                        get_inspections_list.clear()
+                        clear_inspection_widget_state()
+                        done("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
+
+        # 2.3 Inspection Reports
+        with admin_inv_tabs[2]:
+            st.subheader("📊 รายงานการตรวจเช็คสภาพอุปกรณ์")
+            report_type = st.radio("เลือกมุมมองรายงาน", ["รายวัน (Daily)", "รายเดือน (Monthly)", "รายปี (Yearly)", "ประวัติทั้งหมด"], horizontal=True)
+            inspections_df = pd.DataFrame(get_inspections_list())
+
+            if not inspections_df.empty:
+                inspections_df['inspection_date'] = pd.to_datetime(inspections_df['inspection_date'])
+                now_dt = get_now_th()
+                if report_type == "รายวัน (Daily)":
+                    target_date = st.date_input("เลือกวันที่", value=now_dt.date())
+                    filtered_insp = inspections_df[inspections_df['inspection_date'].dt.date == target_date]
+                elif report_type == "รายเดือน (Monthly)":
+                    col_m1, col_m2 = st.columns(2)
+                    selected_month = col_m1.selectbox("เดือน", list(range(1, 13)), index=now_dt.month - 1)
+                    selected_year = col_m2.number_input("ปี (ค.ศ.)", value=now_dt.year)
+                    filtered_insp = inspections_df[(inspections_df['inspection_date'].dt.month == selected_month) & (inspections_df['inspection_date'].dt.year == selected_year)]
+                elif report_type == "รายปี (Yearly)":
+                    selected_year = st.number_input("ปี ค.ศ.", value=now_dt.year)
+                    filtered_insp = inspections_df[inspections_df['inspection_date'].dt.year == selected_year]
+                else:
+                    filtered_insp = inspections_df
+
+                st.dataframe(
+                    filtered_insp[['id', 'tech_name', 'category', 'inspection_date', 'session_num', 'details']],
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "id": st.column_config.NumberColumn("รหัส", width="small"),
+                        "tech_name": "ผู้ตรวจ", "category": "หมวดหมู่",
+                        "inspection_date": st.column_config.DatetimeColumn("วันที่ตรวจ", format="DD/MM/YYYY HH:mm"),
+                        "session_num": st.column_config.NumberColumn("รอบ", width="small"),
+                        "details": st.column_config.TextColumn("รายละเอียด", width="large"),
+                    }
+                )
+
+                st.markdown("---")
+                st.markdown("#### 📸 ดูรายละเอียดและรูปถ่ายหน้างานของการตรวจเช็ค")
+                for _, row in filtered_insp.head(30).iterrows():
+                    date_str_show = row['inspection_date'].strftime("%Y-%m-%d %H:%M:%S")
+                    with st.expander(f"📌 {date_str_show} | ผู้ตรวจ: {row['tech_name']} | หมวด: {row['category']} (รอบที่ {row['session_num']})"):
+                        st.write(f"📝 **รายละเอียดการตรวจ:** {row['details']}")
+                        if st.checkbox("🖼️ โหลดรูปถ่าย", key=f"load_photos_{row['id']}"):
+                            photo_imgs = get_inspection_photos(int(row['id']))
+                            if photo_imgs:
+                                cols_p = st.columns(min(len(photo_imgs), 4))
+                                for idx, p_img in enumerate(photo_imgs):
+                                    cols_p[idx % 4].image(p_img, caption=f"รูปที่ {idx + 1}", use_container_width=True)
+                            else:
+                                st.info("*(ไม่ได้อัปโหลดรูปถ่ายรวม)*")
+            else:
+                st.info("ยังไม่มีประวัติการตรวจเช็คในระบบ")
+
+        # 2.4 Requisition Approvals
+        with admin_inv_tabs[3]:
+            st.subheader("📥 จัดการคำขอเพิ่มอุปกรณ์เข้าคลัง")
+            sub_req_pending, sub_req_history = st.tabs(["📥 คำขอที่รออนุมัติ", "📜 ประวัติการอนุมัติคำขอ"])
+            with sub_req_pending:
+                current_qty_map = dict(zip(items_df['id'], items_df['quantity'])) if not items_df.empty else {}
+                if pending_reqs_all:
+                    for req in pending_reqs_all:
+                        item_name = item_name_map.get(req["item_id"], "Unknown")
+                        current_stock = current_qty_map.get(req["item_id"], 0)
+                        with st.container():
+                            st.write(f"🆔 **รหัสคำขอ:** #{req['id']} | 👤 **ผู้ขอเพิ่ม:** {req['tech_name']} | 📅 **วันที่ขอ:** {req['request_date']}")
+                            st.write(f"📦 **อุปกรณ์:** {item_name} | **จำนวนที่ขอเพิ่ม:** +{req['quantity']} ชิ้น (คงเหลือปัจจุบัน: {current_stock})")
+                            st.write(f"📝 **หมายเหตุ/เหตุผล:** {req['note']}")
+                            col_app1, col_app2 = st.columns(2)
+                            if col_app1.button("✅ อนุมัติ (เพิ่มจำนวนเข้าคลัง)", key=f"approve_{req['id']}", type="primary"):
+                                res = db.requisition_requests.update_one(
+                                    {"id": req['id'], "status": "รออนุมัติ"},
+                                    {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}})
+                                if res.modified_count:
+                                    db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity']), "orig_quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
+                                refresh_items()
+                                clear_req_cache()
+                                done(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
+                            if col_app2.button("❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
+                                db.requisition_requests.update_one({"id": req['id'], "status": "รออนุมัติ"}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": get_now_str()}})
+                                clear_req_cache()
+                                done(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว", icon="⚠️")
+                            st.markdown("---")
+                else:
+                    st.info("ไม่มีคำขอเพิ่มอุปกรณ์ที่รอการอนุมัติในขณะนี้")
+
+            with sub_req_history:
+                req_history_list = get_req_history()
+                if req_history_list:
+                    st.dataframe(pd.DataFrame([{
+                        "รหัส": r["id"], "ผู้ขอ": r.get("tech_name"),
+                        "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
+                        "จำนวนที่ขอ": r.get("quantity"), "หมายเหตุ": r.get("note"),
+                        "วันที่ขอ": r.get("request_date"), "วันที่อนุมัติ": r.get("approval_date"),
+                        "สถานะ": r.get("status")
+                    } for r in req_history_list]), use_container_width=True, hide_index=True)
+                else:
+                    st.info("ยังไม่มีประวัติการอนุมัติคำขอ")
+
+        # 2.5 Borrow / Return
+        with admin_inv_tabs[4]:
+            render_borrow_return_system()
+
+    # -----------------------------------------------------------------
+    # MODULE 3: ESP8266 SMART DRAWER SERVO CONTROL (`esp8266 ลิ้นชัก.txt`)
+    # -----------------------------------------------------------------
+    elif selected_admin_module.startswith("🗄️ 3."):
+        st.subheader("🗄️ ระบบควบคุมลิ้นชักอัจฉริยะ (ESP8266 Servo Controller)")
+        st.caption(f"เชื่อมโยงกับบอร์ด ESP8266 (Pin D4 / GPIO2) ผ่าน HiveMQ Cloud TLS · Command Topic: `{cfg_iot['topic_servo_cmd']}` · Status Topic: `{cfg_iot['topic_servo_status']}`")
+
+        s_col1, s_col2 = st.columns([1.2, 1.8])
+        with s_col1:
+            is_up = iot_mgr.servo_status == "UP"
+            st.markdown(f"""
+            <div class="glass-kpi" style="--c:{'#10B981' if is_up else '#3B82F6'}; padding:1.4rem;">
+              <div class="top"><span class="lbl">CURRENT SERVO POSITION</span><span>{'🔓' if is_up else '🔒'}</span></div>
+              <div class="val" style="font-size:2.1rem;">{'UP (เปิดลิ้นชัก 0°)' if is_up else 'DOWN (ล็อก 180°)'}</div>
+              <div class="sub">อัปเดตสถานะล่าสุด: {iot_mgr.servo_last_update}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            b_up, b_down = st.columns(2)
+            if b_up.button("🔓 สั่งเปิดลิ้นชัก (Publish 'UP')", type="primary", use_container_width=True):
+                iot_mgr.publish(cfg_iot["topic_servo_cmd"], "UP")
+                db.iot_logs.insert_one({
+                    "datetime": get_now_str(), "system": "SERVO",
+                    "location": "Admin Remote", "status": "UP",
+                    "raw": f"Admin {st.session_state.username} sent UP"
+                })
+                done("ส่งคำสั่ง 'UP' (หมุนเซอร์โวไปที่ 0°) เรียบร้อยแล้ว!")
+
+            if b_down.button("🔒 สั่งล็อก/ปิดลิ้นชัก (Publish 'DOWN')", use_container_width=True):
+                iot_mgr.publish(cfg_iot["topic_servo_cmd"], "DOWN")
+                db.iot_logs.insert_one({
+                    "datetime": get_now_str(), "system": "SERVO",
+                    "location": "Admin Remote", "status": "DOWN",
+                    "raw": f"Admin {st.session_state.username} sent DOWN"
+                })
+                done("ส่งคำสั่ง 'DOWN' (หมุนเซอร์โวไปที่ 180°) เรียบร้อยแล้ว!")
+
+        with s_col2:
+            st.markdown("#### 📜 ประวัติการสั่งงานและสถานะตอบกลับจาก ESP8266")
+            servo_db_logs = list(db.iot_logs.find({"system": "SERVO"}, {"_id": 0}).sort("datetime", -1).limit(50))
+            if servo_db_logs:
+                st.dataframe(pd.DataFrame(servo_db_logs), use_container_width=True, hide_index=True)
+            else:
+                st.info("ยังไม่มีประวัติการสั่งเปิด-ปิดลิ้นชัก")
+
+    # -----------------------------------------------------------------
+    # MODULE 4: WATER LEVEL & PUMP ALARM (`Server API-MQTT.txt` + `index-Firealarm.txt`)
+    # -----------------------------------------------------------------
+    elif selected_admin_module.startswith("💧 4."):
+        st.subheader("💧 ระบบตรวจจับระดับน้ำและปั๊มน้ำ (Water Level & Pump Alarm System)")
+        st.caption(f"เชื่อมโยงกับ NodeMCU Server & จอ TFT · Topic: `{cfg_iot['topic_water']}` และ `Water alarm/status/#` พร้อมแจ้งเตือนเข้ากลุ่ม LINE OA")
+
+        # Real-time 5 Pump Cards
+        p_cols = st.columns(5)
+        pump_meta = [
+            ("A", "Transferpump A", "อาคาร A ห้องปั๊มน้ำ"),
+            ("B", "Transferpump B", "อาคาร B ห้องปั๊มน้ำ"),
+            ("C", "Transferpump C", "อาคาร C ห้องปั๊มน้ำ"),
+            ("D", "Transferpump D", "อาคาร D ห้องปั๊มน้ำ"),
+            ("UNDERGROUND", "Pool Ug Pump", "ห้องปั๊มสระว่ายน้ำใต้ดิน"),
+        ]
+        for idx, (pk, title, desc) in enumerate(pump_meta):
+            st_val = iot_mgr.water_status.get(pk, "NORMAL")
+            on_val = iot_mgr.water_online.get(pk, True)
+            pill_c = "pill-off" if not on_val else ("pill-alarm" if st_val == "ALARM" else "pill-normal")
+            pill_t = "OFFLINE" if not on_val else st_val
+            p_cols[idx].markdown(
+                f'<div class="iot-card"><div class="hd">{title}</div>'
+                f'<div class="bd"><span class="nm">{desc}</span>'
+                f'<span class="pill {pill_c}">{pill_t}</span></div></div>',
+                unsafe_allow_html=True
             )
 
-            selected_rows = table_event.get("selection", {}).get("rows", [])
-            if selected_rows and selected_rows[0] < len(filtered_df):
-                st.session_state.quick_edit_id = int(filtered_df.iloc[selected_rows[0]]['id'])
+        w_act1, w_act2, w_act3 = st.columns([1.2, 1.2, 1.6])
+        if w_act1.button("📡 ส่งคำสั่ง CheckClients (ตรวจสอบสถานะออนไลน์ทุกจุด)", type="primary", use_container_width=True):
+            iot_mgr.publish(cfg_iot["topic_check_clients"], "CheckClients")
+            iot_mgr.publish(cfg_iot["topic_water"], "CheckClients")
+            done("ส่งคำสั่ง CheckClients ไปยัง MQTT แล้ว")
 
-            if st.session_state.get("quick_edit_id"):
-                qe_id = st.session_state.quick_edit_id
-                qe_row = db.items.find_one({"id": qe_id}, {"_id": 0, "image": 0})
-                if qe_row:
-                    st.markdown("---")
-                    with st.expander(f"📌 หน้าต่างแก้ไขข้อมูลอุปกรณ์: #{qe_row['id']} - {qe_row['name']}", expanded=True):
-                        with st.form(f"quick_edit_form_{qe_id}"):
-                            qe_name = st.text_input("ชื่ออุปกรณ์", value=qe_row['name'])
-                            qe_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if qe_row['category'] == "อุปกรณ์ช่าง" else 1)
+        with w_act2:
+            sim_pump = st.selectbox("จำลอง/เปลี่ยนสถานะปั๊ม (สำหรับทดสอบหรือสั่งการด้วยมือ)", [
+                "TransferpumpA Normal", "TransferpumpA Alarm",
+                "TransferpumpB Normal", "TransferpumpB Alarm",
+                "TransferpumpC Normal", "TransferpumpC Alarm",
+                "TransferpumpD Normal", "TransferpumpD Alarm",
+                "Underground pump Normal", "Underground pump Alarm"
+            ])
+        if w_act3.button("🚀 ส่งสถานะเข้า MQTT & แจ้งเตือน LINE OA", use_container_width=True):
+            iot_mgr.publish(cfg_iot["topic_water"], sim_pump)
+            line_msg_map = {
+                "TransferpumpA Alarm": "Flood Alert⚠️ : อาคารA ห้องปั้มน้ำผิดปกติ❌",
+                "TransferpumpA Normal": "อาคารA ห้องปั้มน้ำสถานะ : ปกติ✅",
+                "TransferpumpB Alarm": "Flood Alert⚠️ : อาคารB ห้องปั้มน้ำผิดปกติ❌",
+                "TransferpumpB Normal": "อาคารB ห้องปั้มน้ำสถานะ : ปกติ✅",
+                "TransferpumpC Alarm": "Flood Alert⚠️ : อาคารC ห้องปั้มน้ำผิดปกติ❌",
+                "TransferpumpC Normal": "อาคารC ห้องปั้มน้ำสถานะ : ปกติ✅",
+                "TransferpumpD Alarm": "Flood Alert⚠️ : อาคารD ห้องปั้มน้ำผิดปกติ❌",
+                "TransferpumpD Normal": "อาคารD ห้องปั้มน้ำสถานะ : ปกติ✅",
+                "Underground pump Alarm": "Flood Alert⚠️ : ห้องปั้มสระว่ายน้ำใต้ดินผิดปกติ❌",
+                "Underground pump Normal": "ห้องปั้มสระว่ายน้ำใต้ดิน สถานะ : ปกติ✅",
+            }
+            ok_l, info_l = send_line_push(line_msg_map.get(sim_pump, sim_pump))
+            done(f"ส่ง MQTT '{sim_pump}' แล้ว (LINE Push: {info_l})")
 
-                            if qe_category == "อุปกรณ์ช่าง":
-                                sub_idx = 0 if qe_row.get('subcategory') == "เครื่องมือช่าง" else 1
-                                qe_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
-                            else:
-                                qe_subcat = "เคมีภัณฑ์"
-                                st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
+        st.markdown("---")
+        # Analytics & CSV Import/Export (Matching index-Firealarm.txt)
+        st.markdown("#### 📊 สถิติและประวัติการแจ้งเตือนระดับน้ำ (Water Alarm Incident Analytics)")
+        water_logs = list(db.iot_logs.find({"system": "WATER"}, {"_id": 0}).sort("datetime", -1).limit(1000))
+        w_df = pd.DataFrame(water_logs)
 
-                            qe_quantity = st.number_input("จำนวน", min_value=0, value=int(qe_row['quantity']))
-                            status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
-                            qe_status = st.selectbox("สถานะ", status_list, index=status_list.index(qe_row['status']) if qe_row['status'] in status_list else 0)
-                            qe_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(qe_row.get('alert_zero', 0)))
-                            qe_note = st.text_area("หมายเหตุ", value=nz(qe_row.get('note')))
+        col_up_w, col_dl_w = st.columns(2)
+        with col_up_w:
+            up_w_csv = st.file_uploader("📂 นำเข้าไฟล์ `log.csv` จากการ์ด SD ของบอร์ด ESP32-TFT (ถ้ามี)", type=["csv"], key="up_water_csv")
+            if up_w_csv is not None and st.button("📥 บันทึกข้อมูลจาก log.csv ลงฐานข้อมูล", key="btn_imp_w"):
+                csv_df = pd.read_csv(up_w_csv)
+                ins = []
+                for _, r in csv_df.iterrows():
+                    ins.append({
+                        "datetime": str(r.get("DateTime", get_now_str())),
+                        "system": "WATER",
+                        "location": str(r.get("Location", "A")).strip().upper(),
+                        "status": str(r.get("Status", "NORMAL")).strip().upper(),
+                        "raw": "Imported from SD log.csv"
+                    })
+                if ins:
+                    db.iot_logs.insert_many(ins)
+                done(f"นำเข้าข้อมูลประวัติระดับน้ำ {len(ins)} รายการสำเร็จ!")
 
-                            cur_img = get_item_image(qe_id)
-                            if cur_img:
-                                st.image(cur_img, width=150, caption="รูปภาพปัจจุบัน")
-                            qe_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"qe_file_{qe_id}")
+        if not w_df.empty:
+            with col_dl_w:
+                csv_bytes = w_df[["datetime", "location", "status"]].rename(
+                    columns={"datetime": "DateTime", "location": "Location", "status": "Status"}
+                ).to_csv(index=False).encode("utf-8")
+                st.download_button("📥 ดาวน์โหลดประวัติ Water Log (CSV)", data=csv_bytes, file_name="water_log.csv", mime="text/csv", use_container_width=True)
 
-                            col_qe1, col_qe2, col_qe3 = st.columns([1, 1, 2])
-                            if col_qe1.form_submit_button("💾 บันทึกการแก้ไข", type="primary"):
-                                upd = {"name": qe_name, "category": qe_category, "subcategory": qe_subcat,
-                                       "quantity": qe_quantity, "orig_quantity": qe_quantity, "status": qe_status,
-                                       "alert_zero": 1 if qe_alert_zero else 0, "note": qe_note}
-                                if qe_file is not None:
-                                    upd["image"] = compress_image_to_base64(qe_file)
-                                db.items.update_one({"id": qe_id}, {"$set": upd})
-                                refresh_items(images=qe_file is not None)
-                                close_quick_edit()
-                                done("อัปเดตข้อมูลสำเร็จ!")
-                            if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
-                                db.items.delete_one({"id": qe_id})
-                                refresh_items(images=True)
-                                close_quick_edit()
-                                done("ลบเรียบร้อยแล้ว!")
-                            if col_qe3.form_submit_button("❌ ปิดหน้าต่าง"):
-                                close_quick_edit()
-                                st.rerun()
-
-        with tab_add_edit:
-            sub_a, sub_e, sub_bulk = st.tabs(["➕ เพิ่มอุปกรณ์ใหม่", "✏️ แก้ไข/ลบ รายการ", "🖼️ อัปโหลดรูปภาพแบบกลุ่ม"])
-            with sub_a:
-                with st.form("add_item_form_new", clear_on_submit=True):
-                    name = st.text_input("ชื่ออุปกรณ์ *")
-                    category = st.selectbox("หมวดหมู่หลัก *", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"])
-                    if category == "อุปกรณ์ช่าง":
-                        subcategory = st.selectbox("หมวดหมู่ย่อย *", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"])
-                    else:
-                        subcategory = "เคมีภัณฑ์"
-                        st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
-
-                    quantity = st.number_input("จำนวน (ชิ้น)", min_value=1, value=1)
-                    status = st.selectbox("สภาพเริ่มต้น", ["ปกติ", "ชำรุด", "สูญหาย", "อุปกรณ์หมด"])
-                    alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0 (ค่าเริ่มต้นเตือนที่ 1)")
-                    note = st.text_area("หมายเหตุ")
-                    uploaded_file = st.file_uploader("อัปโหลดรูปภาพอุปกรณ์", type=["jpg", "jpeg", "png"])
-
-                    if st.form_submit_button("บันทึกอุปกรณ์ใหม่"):
-                        if name.strip():
-                            new_id = get_next_sequence("items_id")
-                            db.items.insert_one({
-                                "id": new_id, "name": name, "category": category, "subcategory": subcategory,
-                                "quantity": quantity, "orig_quantity": quantity, "status": status, "alert_zero": 1 if alert_zero else 0,
-                                "note": note, "image": compress_image_to_base64(uploaded_file)
-                            })
-                            refresh_items(images=uploaded_file is not None)
-                            done("เพิ่มอุปกรณ์สำเร็จ!")
-                        else:
-                            st.error("กรุณากรอกชื่ออุปกรณ์")
-
-            with sub_e:
-                if not items_df.empty:
-                    selected_item_id = st.selectbox("เลือกอุปกรณ์ที่ต้องการแก้ไข", items_df['id'].astype(str) + " - " + items_df['name'])
-                    if selected_item_id:
-                        item_id_int = int(selected_item_id.split(" - ")[0])
-                        current_item = items_df[items_df['id'] == item_id_int].iloc[0]
-
-                        with st.form(f"edit_form_{item_id_int}"):
-                            e_name = st.text_input("ชื่ออุปกรณ์", value=current_item['name'])
-                            e_category = st.selectbox("หมวดหมู่หลัก", ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"], index=0 if current_item['category'] == "อุปกรณ์ช่าง" else 1)
-
-                            if e_category == "อุปกรณ์ช่าง":
-                                sub_idx = 0 if current_item['subcategory'] == "เครื่องมือช่าง" else 1
-                                e_subcat = st.selectbox("หมวดหมู่ย่อย", ["เครื่องมือช่าง", "อุปกรณ์ช่างทั่วไป"], index=sub_idx)
-                            else:
-                                e_subcat = "เคมีภัณฑ์"
-                                st.info("📌 หมวดหมู่ย่อยถูกกำหนดเป็น: **เคมีภัณฑ์** โดยอัตโนมัติ")
-
-                            e_quantity = st.number_input("จำนวน", min_value=0, value=int(current_item['quantity']))
-                            status_list = ["ปกติ", "ชำรุด", "สูญหาย", "ยืม", "อุปกรณ์หมด"]
-                            e_status = st.selectbox("สถานะ", status_list, index=status_list.index(current_item['status']) if current_item['status'] in status_list else 0)
-                            e_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(current_item.get('alert_zero', 0)))
-                            e_note = st.text_area("หมายเหตุ", value=nz(current_item['note']))
-
-                            cur_img = get_item_image(item_id_int)
-                            if cur_img:
-                                st.image(cur_img, width=150, caption="รูปภาพปัจจุบัน")
-                            e_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"file_{item_id_int}")
-
-                            col_e1, col_e2 = st.columns(2)
-                            if col_e1.form_submit_button("บันทึกการแก้ไข", type="primary"):
-                                upd = {"name": e_name, "category": e_category, "subcategory": e_subcat,
-                                       "quantity": e_quantity, "orig_quantity": e_quantity, "status": e_status,
-                                       "alert_zero": 1 if e_alert_zero else 0, "note": e_note}
-                                if e_file is not None:
-                                    upd["image"] = compress_image_to_base64(e_file)
-                                db.items.update_one({"id": item_id_int}, {"$set": upd})
-                                refresh_items(images=e_file is not None)
-                                done("อัปเดตข้อมูลสำเร็จ!")
-                            if col_e2.form_submit_button("ลบอุปกรณ์นี้", type="secondary"):
-                                db.items.delete_one({"id": item_id_int})
-                                refresh_items(images=True)
-                                done("ลบเรียบร้อยแล้ว!")
-
-            with sub_bulk:
-                st.markdown("### 📁 อัปโหลดรูปภาพอุปกรณ์แบบกลุ่ม (ตามชื่อไฟล์รหัสอุปกรณ์)")
-                st.write("ตั้งชื่อไฟล์รูปภาพตามรหัสอุปกรณ์ เช่น `1.jpg` สำหรับ ปลั๊กโรลElecton, `2.png` สำหรับ สว่านแบตMakita ฯลฯ แล้วเลือกไฟล์ทั้งหมดพร้อมกันได้เลย")
-
-                bulk_files = st.file_uploader("เลือกไฟล์รูปภาพทั้งหมด", type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="bulk_img_files")
-                if bulk_files:
-                    st.info(f"เลือกไฟล์ทั้งหมด: **{len(bulk_files)} รูป**")
-                    if st.button("🚀 ยืนยันจับคู่และอัปโหลดรูปภาพเข้าระบบ", type="primary"):
-                        valid_ids = set(items_df['id'].tolist()) if not items_df.empty else set()
-                        ops = []
-                        with st.spinner("กำลังบีบอัดและอัปโหลดรูปภาพ..."):
-                            for img_f in bulk_files:
-                                pure_name = img_f.name.rsplit('.', 1)[0]
-                                if pure_name.isdigit() and int(pure_name) in valid_ids:
-                                    ops.append(pymongo.operations.UpdateOne(
-                                        {"id": int(pure_name)}, {"$set": {"image": compress_image_to_base64(img_f)}}))
-                            if ops:
-                                db.items.bulk_write(ops, ordered=False)
-                        refresh_items(images=True)
-                        done(f"อัปเดตรูปภาพตามชื่อไฟล์สำเร็จทั้งหมด {len(ops)} รายการ!")
-
-        with tab_excel_import:
-            st.markdown("### ⚡ โหลดชุดข้อมูลตั้งต้นทั้งหมด (ลำดับใหม่)")
-            st.write("การคลิกปุ่มนี้จะล้างข้อมูลเดิมและโหลดรายการพร้อมลำดับใหม่ทั้งหมด")
-            if st.button("🚀 รีเซ็ตและโหลดอุปกรณ์ทั้งหมดตามรายการใหม่", type="primary"):
-                db.items.delete_many({})
-                db.items.insert_many(build_default_docs())
-                db.counters.update_one({"_id": "items_id"}, {"$set": {"seq": len(DEFAULT_INITIAL_ITEMS)}}, upsert=True)
-                refresh_items(images=True)
-                done("นำเข้าอุปกรณ์และลำดับใหม่สำเร็จ!")
-
-    with admin_menu[1]:
-        st.subheader("📊 รายการตรวจเช็คสภาพอุปกรณ์")
-        report_type = st.radio("เลือกมุมมองรายงาน", ["รายวัน (Daily)", "รายเดือน (Monthly)", "รายปี (Yearly)", "ประวัติทั้งหมด"], horizontal=True)
-        inspections_df = pd.DataFrame(get_inspections_list())
-
-        if not inspections_df.empty:
-            inspections_df['inspection_date'] = pd.to_datetime(inspections_df['inspection_date'])
-            now_dt = get_now_th()
-            if report_type == "รายวัน (Daily)":
-                target_date = st.date_input("เลือกวันที่", value=now_dt.date())
-                filtered_insp = inspections_df[inspections_df['inspection_date'].dt.date == target_date]
-            elif report_type == "รายเดือน (Monthly)":
-                col_m1, col_m2 = st.columns(2)
-                selected_month = col_m1.selectbox("เดือน", list(range(1, 13)), index=now_dt.month - 1)
-                selected_year = col_m2.number_input("ปี (ค.ศ.)", value=now_dt.year)
-                filtered_insp = inspections_df[(inspections_df['inspection_date'].dt.month == selected_month) & (inspections_df['inspection_date'].dt.year == selected_year)]
-            elif report_type == "รายปี (Yearly)":
-                selected_year = st.number_input("ปี ค.ศ.", value=now_dt.year)
-                filtered_insp = inspections_df[inspections_df['inspection_date'].dt.year == selected_year]
+            alarms_only = w_df[w_df["status"] == "ALARM"]
+            c_m1, c_m2, c_m3 = st.columns(3)
+            c_m1.metric("จำนวนการเกิด Water Alarm ทั้งหมด", f"{len(alarms_only)} ครั้ง")
+            top_loc = alarms_only["location"].value_counts().idxmax() if not alarms_only.empty else "-"
+            c_m2.metric("จุดเสี่ยงแจ้งเตือนสูงสุด", top_loc)
+            if not alarms_only.empty:
+                hours = pd.to_datetime(alarms_only["datetime"], errors="coerce").dt.hour.dropna()
+                peak_h = f"{int(hours.mode()[0]):02d}:00 น." if not hours.empty else "-"
             else:
-                filtered_insp = inspections_df
+                peak_h = "-"
+            c_m3.metric("ช่วงเวลาที่เกิดเหตุบ่อยสุด", peak_h)
 
-            st.dataframe(
-                filtered_insp[['id', 'tech_name', 'category', 'inspection_date', 'session_num', 'details']],
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "id": st.column_config.NumberColumn("รหัส", width="small"),
-                    "tech_name": "ผู้ตรวจ", "category": "หมวดหมู่",
-                    "inspection_date": st.column_config.DatetimeColumn("วันที่ตรวจ", format="DD/MM/YYYY HH:mm"),
-                    "session_num": st.column_config.NumberColumn("รอบ", width="small"),
-                    "details": st.column_config.TextColumn("รายละเอียด", width="large"),
-                })
+            if not alarms_only.empty:
+                ch1, ch2 = st.columns(2)
+                with ch1:
+                    st.caption("1. จำนวนครั้งที่เกิด Alarm แยกตามจุดตรวจ")
+                    st.bar_chart(alarms_only["location"].value_counts())
+                with ch2:
+                    st.caption("2. แนวโน้มการเกิด Alarm ตามวันที่")
+                    alarms_only_dt = pd.to_datetime(alarms_only["datetime"], errors="coerce").dt.date.value_counts().sort_index()
+                    st.line_chart(alarms_only_dt)
 
-            st.markdown("---")
-            st.markdown("#### 📸 ดูรายละเอียดและรูปถ่ายหน้างานของการตรวจเช็ค")
-            st.caption("แสดงสูงสุด 30 รายการล่าสุดของตัวกรองนี้ · ติ๊ก 'โหลดรูปถ่าย' เพื่อดึงรูปเฉพาะรายการที่ต้องการ")
-            for _, row in filtered_insp.head(30).iterrows():
-                date_str_show = row['inspection_date'].strftime("%Y-%m-%d %H:%M:%S")
-                with st.expander(f"📌 {date_str_show} | ผู้ตรวจ: {row['tech_name']} | หมวด: {row['category']} (รอบที่ {row['session_num']})"):
-                    st.write(f"📝 **รายละเอียดการตรวจ:** {row['details']}")
-                    if st.checkbox("🖼️ โหลดรูปถ่าย", key=f"load_photos_{row['id']}"):
-                        photo_imgs = get_inspection_photos(int(row['id']))
-                        if photo_imgs:
-                            st.write(f"จำนวนรูปถ่ายทั้งหมด: **{len(photo_imgs)} รูป**")
-                            cols_p = st.columns(min(len(photo_imgs), 4))
-                            for idx, p_img in enumerate(photo_imgs):
-                                cols_p[idx % 4].image(p_img, caption=f"รูปที่ {idx + 1}", use_container_width=True)
-                        else:
-                            st.info("*(การตรวจเช็ครอบนี้ไม่ได้อัปโหลดรูปถ่ายรวม)*")
+            st.dataframe(w_df[["datetime", "location", "status", "raw"]], use_container_width=True, hide_index=True)
         else:
-            st.info("ยังไม่มีประวัติการตรวจเช็คจากช่างในระบบ")
+            st.info("ยังไม่มีข้อมูลประวัติระดับน้ำในฐานข้อมูล (ระบบจะบันทึกอัตโนมัติเมื่อมีสัญญาณ MQTT หรือสามารถอัปโหลดไฟล์ `log.csv` จาก SD Card ได้)")
 
-    with admin_menu[2]:
-        st.subheader("📥 จัดการคำขอเพิ่มอุปกรณ์เข้าคลัง")
-        sub_req_pending, sub_req_history = st.tabs(["📥 คำขอที่รออนุมัติ", "📜 ประวัติการอนุมัติคำขอ"])
+    # -----------------------------------------------------------------
+    # MODULE 5: FIRE ALARM & RELAY RESET (`FireAlarmAPI.txt` + `Server ESP-TFT2.8-Firealarm.txt`)
+    # -----------------------------------------------------------------
+    elif selected_admin_module.startswith("🚨 5."):
+        st.subheader("🚨 ระบบแจ้งเตือนอัคคีภัยและรีเซ็ตรีเลย์ (Fire Alarm & Remote Relay Control)")
+        st.caption(f"เชื่อมโยงกับบอร์ด ESP32 Fire Alarm (PCF8574 I2C 7 โมดูล `0x20-0x26`) · Alarm Topic: `{cfg_iot['topic_fire']}` · Relay Reset Topic: `{cfg_iot['topic_fire_relay']}`")
 
-        with sub_req_pending:
-            pending_reqs = get_pending_reqs()
-            current_qty_map = dict(zip(items_df['id'], items_df['quantity'])) if not items_df.empty else {}
+        f_top1, f_top2 = st.columns([2, 1])
+        with f_top1:
+            is_alert = iot_mgr.fire_status == "ALERT"
+            st.markdown(f"""
+            <div class="glass-kpi" style="--c:{'#EF4444' if is_alert else '#10B981'}; padding:1.2rem;">
+              <div class="top"><span class="lbl">MAIN FIRE ALARM STATUS</span><span>🔥</span></div>
+              <div class="val" style="color:{'#EF4444' if is_alert else '#10B981'} !important;">
+                {'🚨 FIRE ALERT! ตรวจพบสัญญาณเตือนภัย' if is_alert else '✅ NORMAL (CLEAR) สถานะปกติ'}
+              </div>
+              <div class="sub">ตำแหน่งล่าสุด: <b>{esc(iot_mgr.fire_location)}</b></div>
+            </div>
+            """, unsafe_allow_html=True)
 
-            if pending_reqs:
-                for req in pending_reqs:
-                    item_name = item_name_map.get(req["item_id"], "Unknown")
-                    current_stock = current_qty_map.get(req["item_id"], 0)
+        with f_top2:
+            st.markdown("#### ⚡ ควบคุมรีเลย์ตู้ไฟ (Remote Reset)")
+            if st.button("⚡ สั่ง RESET RELAY อาราม (MQTT 'reset')", type="primary", use_container_width=True):
+                iot_mgr.publish(cfg_iot["topic_fire_relay"], "reset")
+                iot_mgr.handle_message(cfg_iot["topic_fire"], "RESET CLEAR")
+                done("ส่งคำสั่ง 'reset' ไปยังหัวข้อ nodemcu/control/relay เรียบร้อยแล้ว!")
 
-                    with st.container():
-                        st.write(f"🆔 **รหัสคำขอ:** #{req['id']} | 👤 **ผู้ขอเพิ่ม:** {req['tech_name']} | 📅 **วันที่ขอ:** {req['request_date']}")
-                        st.write(f"📦 **อุปกรณ์:** {item_name} | **จำนวนที่ขอเพิ่ม:** +{req['quantity']} ชิ้น (คงเหลือในคลังปัจจุบัน: {current_stock})")
-                        st.write(f"📝 **หมายเหตุ/เหตุผล:** {req['note']}")
+            if st.button("🔔 ทดสอบส่งแจ้งเตือนสถานะปกติเข้า LINE OA", use_container_width=True):
+                ok_l, info_l = send_line_push("✅ ALARM CLEAR! สถานะปกติ (ทดสอบจากระบบ Admin Portal)")
+                done(f"ส่งข้อความเข้ากลุ่ม LINE แล้ว ({info_l})")
 
-                        col_app1, col_app2 = st.columns(2)
-                        if col_app1.button("✅ อนุมัติ (เพิ่มจำนวนเข้าคลัง)", key=f"approve_{req['id']}"):
-                            res = db.requisition_requests.update_one(
-                                {"id": req['id'], "status": "รออนุมัติ"},
-                                {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}})
-                            if res.modified_count:
-                                db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity']), "orig_quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
-                            refresh_items()
-                            clear_req_cache()
-                            done(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
+        # Zone Status Cards (Buildings A-D, Club, Library, ST, Unknown)
+        z_cols = st.columns(4)
+        z_items = [
+            ("A", "อาคาร A (ชั้น 1-8 โซน 1-3)"),
+            ("B", "อาคาร B (ชั้น 1-8 โซน 1-3)"),
+            ("C", "อาคาร C (ชั้น 1-8 โซน 1-3)"),
+            ("D", "อาคาร D (ชั้น 1-8 โซน 1-3)"),
+            ("CLUB", "สโมสร / Pavilion"),
+            ("LIBRARY", "ห้องสมุด (Library)"),
+            ("ST", "บันไดหนีไฟ (A/B/C/D-ST1,2)"),
+            ("UNKNOWN", "ไม่ระบุโซน (Unspecified)"),
+        ]
+        for idx, (zk, zlabel) in enumerate(z_items):
+            zst = iot_mgr.fire_zones.get(zk, "NORMAL")
+            zc = "pill-alarm" if zst == "ALERT" else "pill-normal"
+            z_cols[idx % 4].markdown(
+                f'<div class="iot-card" style="margin-bottom:0.6rem;"><div class="hd">{zk} ZONE</div>'
+                f'<div class="bd"><span class="nm" style="font-size:0.88rem;">{zlabel}</span>'
+                f'<span class="pill {zc}">{zst}</span></div></div>',
+                unsafe_allow_html=True
+            )
 
-                        if col_app2.button("❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
-                            db.requisition_requests.update_one({"id": req['id'], "status": "รออนุมัติ"}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": get_now_str()}})
-                            clear_req_cache()
-                            done(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว", icon="⚠️")
-                        st.markdown("---")
+        with st.expander("🧪 จำลองการเกิดเหตุเพลิงไหม้รายโซน (สำหรับทดสอบระบบและแจ้งเตือน LINE OA)"):
+            sim_c1, sim_c2, sim_c3 = st.columns([1.2, 1.2, 1])
+            sim_bldg = sim_c1.selectbox("เลือกอาคาร / สถานที่", [
+                "อาคาร A ชั้น 1 โซน 1", "อาคาร A ชั้น 4 โซน 2",
+                "อาคาร B ชั้น 2 โซน 1", "อาคาร C ชั้น 5 โซน 3",
+                "อาคาร D ชั้น 3 โซน 1", "สถานที่: สโมสร",
+                "สถานที่: ห้องสมุด", "สถานที่: A-ST1", "ตรวจพบสัญญาณอาราม (ไม่ระบุโซน)"
+            ])
+            send_to_line_too = sim_c2.checkbox("ส่งแจ้งเตือนเข้ากลุ่ม LINE OA ด้วย", value=False)
+            if sim_c3.button("🚨 ส่งสัญญาณทดสอบ Fire Alarm", type="primary", use_container_width=True):
+                alert_msg = f"🚨 ALARM ALERT!\n- {sim_bldg}"
+                iot_mgr.publish(cfg_iot["topic_fire"], alert_msg)
+                if send_to_line_too:
+                    send_line_push(alert_msg)
+                done(f"จำลองสัญญาณเตือนภัย: {sim_bldg}")
+
+        st.markdown("---")
+        st.markdown("#### 📊 สถิติและประวัติสัญญาณแจ้งเตือนอัคคีภัย (Fire Alarm Log History)")
+        fire_logs = list(db.iot_logs.find({"system": "FIRE"}, {"_id": 0}).sort("datetime", -1).limit(1000))
+        f_df = pd.DataFrame(fire_logs)
+
+        col_up_f, col_dl_f = st.columns(2)
+        with col_up_f:
+            up_f_csv = st.file_uploader("📂 นำเข้าไฟล์ `fire_log.csv` จากการ์ด SD ของบอร์ด ESP32-TFT (ถ้ามี)", type=["csv"], key="up_fire_csv")
+            if up_f_csv is not None and st.button("📥 บันทึกข้อมูลจาก fire_log.csv ลงฐานข้อมูล", key="btn_imp_f"):
+                csv_df = pd.read_csv(up_f_csv)
+                ins = []
+                for _, r in csv_df.iterrows():
+                    ins.append({
+                        "datetime": str(r.get("DateTime", get_now_str())),
+                        "system": "FIRE",
+                        "location": str(r.get("Location", "-")).strip(),
+                        "status": str(r.get("Status", "CLEAR")).strip().upper(),
+                        "raw": "Imported from SD fire_log.csv"
+                    })
+                if ins:
+                    db.iot_logs.insert_many(ins)
+                done(f"นำเข้าข้อมูลประวัติอัคคีภัย {len(ins)} รายการสำเร็จ!")
+
+        if not f_df.empty:
+            with col_dl_f:
+                f_csv_bytes = f_df[["datetime", "location", "status"]].rename(
+                    columns={"datetime": "DateTime", "location": "Location", "status": "Status"}
+                ).to_csv(index=False).encode("utf-8")
+                st.download_button("📥 ดาวน์โหลดประวัติ Fire Log (CSV)", data=f_csv_bytes, file_name="fire_log.csv", mime="text/csv", use_container_width=True)
+
+            st.dataframe(f_df[["datetime", "location", "status"]], use_container_width=True, hide_index=True)
+        else:
+            st.info("ยังไม่มีประวัติสัญญาณแจ้งเตือนอัคคีภัยในฐานข้อมูล")
+
+    # -----------------------------------------------------------------
+    # MODULE 6: GROWATT SPF5000ES SOLAR MONITOR (`Growatt-sheet.txt`)
+    # -----------------------------------------------------------------
+    elif selected_admin_module.startswith("☀️ 6."):
+        st.subheader("☀️ ระบบมอนิเตอร์โซลาร์เซลล์ (Growatt SPF5000ES & Google Sheets Sync)")
+        st.caption(f"อินเวอร์เตอร์ Serial Number: `{cfg_iot['growatt_sn']}` · บัญชี Growatt: `{cfg_iot['growatt_user']}` · รองรับการส่งข้อมูลขึ้น Google Sheets อัตโนมัติ")
+
+        g_col1, g_col2, _ = st.columns([1.2, 1.4, 1.4])
+        if g_col1.button("🔄 ดึงข้อมูลเรียลไทม์จาก Growatt Cloud", type="primary", use_container_width=True):
+            with st.spinner("กำลังล็อกอินและดึงข้อมูลจากเซิร์ฟเวอร์ Growatt..."):
+                st.session_state.last_solar_data = fetch_growatt_realtime(sync_sheets=False)
+        if g_col2.button("📤 ดึงข้อมูล + บันทึกลง Google Sheets ทันที", use_container_width=True):
+            with st.spinner("กำลังดึงข้อมูลและส่งไปยัง Google Apps Script Web App..."):
+                st.session_state.last_solar_data = fetch_growatt_realtime(sync_sheets=True)
+
+        sol = st.session_state.get("last_solar_data")
+        if not sol:
+            # Load latest from DB if available
+            last_sol_doc = db.iot_logs.find_one({"system": "SOLAR"}, {"_id": 0}, sort=[("datetime", -1)])
+            if last_sol_doc and last_sol_doc.get("data"):
+                sol = last_sol_doc["data"]
+
+        if sol and sol.get("ok"):
+            if sol.get("sheets_synced"):
+                st.success(f"✅ อัปเดตข้อมูลล่าสุดเมื่อ {sol['updated']} (Server: {sol.get('host')}) และบันทึกลง Google Sheets เรียบร้อยแล้ว!")
             else:
-                st.info("ไม่มีคำขอเพิ่มอุปกรณ์ที่รอการอนุมัติในขณะนี้")
+                st.info(f"📡 ข้อมูลล่าสุดเมื่อ: **{sol['updated']}** · อุณหภูมิอินเวอร์เตอร์: **{sol['invTemp']} °C**")
 
-        with sub_req_history:
-            st.markdown("#### 📜 ประวัติการอนุมัติคำขอเพิ่มอุปกรณ์")
-            req_history_list = get_req_history()
-            req_history_df = pd.DataFrame([{
-                "รหัส": r["id"], "ผู้ขอ": r.get("tech_name"),
-                "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
-                "จำนวนที่ขอ": r.get("quantity"), "หมายเหตุ": r.get("note"),
-                "วันที่ขอ": r.get("request_date"), "วันที่อนุมัติ": r.get("approval_date"),
-                "สถานะ": r.get("status")
-            } for r in req_history_list])
-            if not req_history_df.empty:
-                st.dataframe(req_history_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("ยังไม่มีประวัติการอนุมัติคำขอ")
-
-    with admin_menu[3]:
-        render_borrow_return_system()
-
-    with admin_menu[4]:
-        st.subheader("⚙️ ตั้งค่าระบบและบัญชีช่าง")
-
-        st.markdown("#### ⚠️ ตั้งค่าเกณฑ์แจ้งเตือนอุปกรณ์ทั่วไปใกล้หมด")
-        with st.form("low_stock_setting_form"):
-            new_threshold = st.number_input("แจ้งเตือนเมื่อจำนวนน้อยกว่าหรือเท่ากับ (ชิ้น)", min_value=0, value=low_stock_limit)
-            if st.form_submit_button("บันทึกค่าเกณฑ์การแจ้งเตือน"):
-                set_settings_val('low_stock_threshold', new_threshold)
-                done("บันทึกค่าการแจ้งเตือนสำเร็จ!")
-
-        st.markdown("---")
-        st.markdown("#### 🔄 ตั้งค่าและเพิ่มโควต้าการตรวจเช็คประจำวัน (นับรวมทุกคน)")
-        current_base_quota = int(get_settings_val('global_daily_quota', '3'))
-
-        with st.form("global_quota_form"):
-            new_base_quota = st.number_input("กำหนดโควต้ารอบตรวจมาตรฐานต่อวัน (รอบ)", min_value=1, value=current_base_quota)
-            reset_date = st.date_input("เลือกวันที่ต้องการเพิ่มรอบตรวจพิเศษ", value=get_now_th().date())
-            date_str = reset_date.strftime("%Y-%m-%d")
-            current_extra = int(get_settings_val(f"extra_quota_{date_str}", '0'))
-            add_more_quota = st.number_input("ระบุจำนวนรอบที่ต้องการเพิ่มให้ตรวจอีกสำหรับวันนี้ (รอบพิเศษ)", min_value=0, value=current_extra)
-
-            if st.form_submit_button("บันทึกการตั้งค่าโควต้า"):
-                set_settings_val('global_daily_quota', new_base_quota)
-                set_settings_val(f"extra_quota_{date_str}", add_more_quota)
-                done("บันทึกการตั้งค่าโควต้าเรียบร้อยแล้ว!")
+            # 4 Card Layout matching CYD 2.8" TFT UI in Growatt-sheet.txt
+            st.markdown(f"""
+            <div class="kpi-grid">
+              <div class="glass-kpi" style="--c:#10B981;">
+                <div class="top"><span class="lbl">🔋 BATTERY (SOC & VOLTAGE)</span><span>{sol['batMode']}</span></div>
+                <div class="val">{int(sol['soc'])}% <span style="font-size:1rem; color:#94A3B8;">({sol['vBat']} V)</span></div>
+                <div class="sub">กำลังไฟแบตเตอรี่: <b>{int(sol['batP'])} W</b> ({sol['batMode']})</div>
+              </div>
+              <div class="glass-kpi" style="--c:#F59E0B;">
+                <div class="top"><span class="lbl">☀️ SOLAR (PV INPUT)</span><span>PV1</span></div>
+                <div class="val">{int(sol['pvP'])} W</div>
+                <div class="sub">แรงดันแผง: <b>{sol['pvV']} V</b> · กระแสชาร์จ: <b>{sol['pvI']} A</b></div>
+              </div>
+              <div class="glass-kpi" style="--c:#FF7A2F;">
+                <div class="top"><span class="lbl">🏠 AC LOAD (OUTPUT)</span><span>{sol['loadPct']}%</span></div>
+                <div class="val">{int(sol['load'])} W</div>
+                <div class="sub">สัดส่วนโหลดใช้งาน: <b>{sol['loadPct']}%</b></div>
+              </div>
+              <div class="glass-kpi" style="--c:#00F2FE;">
+                <div class="top"><span class="lbl">⚡ GRID IN (AC INPUT)</span><span>{int(sol['gridV'])} V</span></div>
+                <div class="val">{int(sol['gridP'])} W</div>
+                <div class="sub">แรงดันไฟการไฟฟ้า: <b>{int(sol['gridV'])} V</b> · Temp: <b>{sol['invTemp']}°C</b></div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+        elif sol and not sol.get("ok"):
+            st.warning(f"⚠️ ไม่สามารถดึงข้อมูลจาก Growatt ได้ในขณะนี้: {sol.get('error')}")
+        else:
+            st.info("💡 กดปุ่ม **'🔄 ดึงข้อมูลเรียลไทม์จาก Growatt Cloud'** ด้านบนเพื่อแสดงสถานะแบตเตอรี่ แผงโซลาร์ โหลดใช้งาน และไฟการไฟฟ้า")
 
         st.markdown("---")
-        st.markdown("#### 🛠️ จัดการบัญชีช่าง (สร้าง / แก้ไข / นำเข้าจากไฟล์ .txt / ลบ)")
-        st.markdown("**📋 รายชื่อบัญชีช่างทั้งหมดในระบบ**")
-        all_techs_df = get_tech_users_df()
-        if not all_techs_df.empty:
-            st.dataframe(all_techs_df[['id', 'username']].rename(columns={'id': 'รหัส', 'username': 'ชื่อผู้ใช้งาน (Username)'}), use_container_width=True, hide_index=True)
-        st.markdown("---")
+        st.markdown("#### 📈 ประวัติการบันทึกค่าพลังงานโซลาร์เซลล์ (Solar Telemetry Logs)")
+        sol_logs = list(db.iot_logs.find({"system": "SOLAR"}, {"_id": 0}).sort("datetime", -1).limit(200))
+        if sol_logs:
+            sol_rows = []
+            for s in sol_logs:
+                d = s.get("data", {})
+                sol_rows.append({
+                    "วัน-เวลา": s.get("datetime"),
+                    "SOC (%)": d.get("soc"),
+                    "แรงดันแบต (V)": d.get("vBat"),
+                    "สถานะแบต": d.get("batMode"),
+                    "กำลังแผง PV (W)": d.get("pvP"),
+                    "กระแส PV (A)": d.get("pvI"),
+                    "โหลด AC (W)": d.get("load"),
+                    "โหลด (%)": d.get("loadPct"),
+                    "ไฟ Grid (W)": d.get("gridP"),
+                    "อุณหภูมิ (°C)": d.get("invTemp")
+                })
+            sol_df = pd.DataFrame(sol_rows)
+            st.dataframe(sol_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("ยังไม่มีประวัติการดึงค่าพลังงานในฐานข้อมูล")
 
-        col_t1, col_t2 = st.columns(2)
-        with col_t1:
-            st.markdown("**➕ เพิ่มบัญชีช่างใหม่ (รายบุคคล)**")
-            with st.form("add_tech_form", clear_on_submit=True):
-                new_t_user = st.text_input("Username ช่าง")
-                new_t_pass = st.text_input("Password ช่าง", type="password")
-                if st.form_submit_button("สร้างบัญชีช่าง"):
-                    if new_t_user.strip() and new_t_pass.strip():
-                        if not db.tech_users.find_one({"username": new_t_user}, {"_id": 1}):
-                            t_id = get_next_sequence("tech_users_id")
-                            db.tech_users.insert_one({"id": t_id, "username": new_t_user, "password": new_t_pass})
-                            get_tech_users_df.clear()
-                            done(f"สร้างบัญชีช่าง '{new_t_user}' สำเร็จ!")
-                        else:
-                            st.error("Username นี้มีอยู่ในระบบแล้ว")
-                    else:
-                        st.error("กรุณากรอกข้อมูลให้ครบถ้วน")
+    # -----------------------------------------------------------------
+    # MODULE 7: SYSTEM SETTINGS, IOT CREDENTIALS & TECH ACCOUNTS
+    # -----------------------------------------------------------------
+    elif selected_admin_module.startswith("⚙️ 7."):
+        st.subheader("⚙️ ตั้งค่าระบบ, เครือข่ายฮาร์ดแวร์ IoT และบัญชีช่าง")
+        set_tab1, set_tab2, set_tab3, set_tab4 = st.tabs([
+            "🔧 7.1 เกณฑ์แจ้งเตือน & โควต้าตรวจประจำวัน",
+            "👷 7.2 จัดการบัญชีช่าง (เพิ่ม/แก้ไข/นำเข้า .txt)",
+            "📡 7.3 ตั้งค่า MQTT, LINE OA & Growatt Solar",
+            "🖥️ 7.4 MQTT Live Monitor (Raw Feed)"
+        ])
 
+        with set_tab1:
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                st.markdown("#### ⚠️ ตั้งค่าเกณฑ์แจ้งเตือนอุปกรณ์ทั่วไปใกล้หมด")
+                with st.form("low_stock_setting_form"):
+                    new_threshold = st.number_input("แจ้งเตือนเมื่อจำนวนน้อยกว่าหรือเท่ากับ (ชิ้น)", min_value=0, value=low_stock_limit)
+                    if st.form_submit_button("บันทึกค่าเกณฑ์การแจ้งเตือน", type="primary"):
+                        set_settings_val('low_stock_threshold', new_threshold)
+                        done("บันทึกค่าการแจ้งเตือนสำเร็จ!")
+            with col_s2:
+                st.markdown("#### 🔄 ตั้งค่าและเพิ่มโควต้าการตรวจเช็คประจำวัน (นับรวมทุกคน)")
+                current_base_quota = int(get_settings_val('global_daily_quota', '3'))
+                with st.form("global_quota_form"):
+                    new_base_quota = st.number_input("กำหนดโควต้ารอบตรวจมาตรฐานต่อวัน (รอบ)", min_value=1, value=current_base_quota)
+                    reset_date = st.date_input("เลือกวันที่ต้องการเพิ่มรอบตรวจพิเศษ", value=get_now_th().date())
+                    date_str = reset_date.strftime("%Y-%m-%d")
+                    current_extra = int(get_settings_val(f"extra_quota_{date_str}", '0'))
+                    add_more_quota = st.number_input("ระบุจำนวนรอบพิเศษสำหรับวันนี้", min_value=0, value=current_extra)
+                    if st.form_submit_button("บันทึกการตั้งค่าโควต้า", type="primary"):
+                        set_settings_val('global_daily_quota', new_base_quota)
+                        set_settings_val(f"extra_quota_{date_str}", add_more_quota)
+                        done("บันทึกการตั้งค่าโควต้าเรียบร้อยแล้ว!")
+
+        with set_tab2:
+            all_techs_df = get_tech_users_df()
+            if not all_techs_df.empty:
+                st.dataframe(all_techs_df[['id', 'username']].rename(columns={'id': 'รหัส', 'username': 'ชื่อผู้ใช้งาน (Username)'}), use_container_width=True, hide_index=True)
             st.markdown("---")
-            st.markdown("**✏️ แก้ไข / ลบบัญชีช่างรายบุคคล**")
-            tech_list_df = get_tech_users_df()
-            if not tech_list_df.empty:
-                selected_tech_id = st.selectbox("เลือกบัญชีช่าง", tech_list_df['id'].astype(str) + " - " + tech_list_df['username'])
-                if selected_tech_id:
-                    t_id_int = int(selected_tech_id.split(" - ")[0])
-                    t_row = tech_list_df[tech_list_df['id'] == t_id_int].iloc[0]
-                    with st.form(f"edit_tech_{t_id_int}"):
-                        edit_u = st.text_input("Username", value=t_row['username'])
-                        edit_p = st.text_input("Password ใหม่", value=t_row['password'])
-                        col_tu1, col_tu2 = st.columns(2)
-                        if col_tu1.form_submit_button("บันทึกการแก้ไข"):
-                            db.tech_users.update_one({"id": t_id_int}, {"$set": {"username": edit_u, "password": edit_p}})
-                            get_tech_users_df.clear()
-                            done("อัปเดตบัญชีช่างสำเร็จ!")
-                        if col_tu2.form_submit_button("ลบบัญชีนี้"):
-                            if db.tech_users.count_documents({}) <= 1:
-                                st.error("ต้องเหลือบัญชีช่างไว้อย่างน้อย 1 บัญชี")
-                            else:
-                                db.tech_users.delete_one({"id": t_id_int})
+            col_t1, col_t2 = st.columns(2)
+            with col_t1:
+                st.markdown("**➕ เพิ่มบัญชีช่างใหม่ (รายบุคคล)**")
+                with st.form("add_tech_form", clear_on_submit=True):
+                    new_t_user = st.text_input("Username ช่าง")
+                    new_t_pass = st.text_input("Password ช่าง", type="password")
+                    if st.form_submit_button("สร้างบัญชีช่าง", type="primary"):
+                        if new_t_user.strip() and new_t_pass.strip():
+                            if not db.tech_users.find_one({"username": new_t_user}, {"_id": 1}):
+                                t_id = get_next_sequence("tech_users_id")
+                                db.tech_users.insert_one({"id": t_id, "username": new_t_user, "password": new_t_pass})
                                 get_tech_users_df.clear()
-                                done("ลบบัญชีช่างเรียบร้อยแล้ว!")
-
-        with col_t2:
-            st.markdown("**📁 นำเข้ารายชื่อช่างจากไฟล์ .txt**")
-            st.write("อัปโหลดไฟล์ `.txt` ที่มีรูปแบบ `username = \"...\"` และ `password = \"...\"` เช่นไฟล์ `tech.txt`")
-            uploaded_tech_txt = st.file_uploader("เลือกไฟล์รายชื่อช่าง (.txt)", type=["txt"])
-
-            if uploaded_tech_txt is not None:
-                content_str = uploaded_tech_txt.getvalue().decode("utf-8")
-                parsed_techs = parse_tech_txt_content(content_str)
-                st.info(f"ตรวจพบข้อมูลช่างในไฟล์จำนวน: **{len(parsed_techs)} บัญชี**")
-
-                if parsed_techs:
-                    preview_df = pd.DataFrame(parsed_techs, columns=["Username", "Password"])
-                    preview_df["Password"] = "••••••••"
-                    st.dataframe(preview_df, use_container_width=True, hide_index=True)
-
-                    if st.button("🚀 ยืนยันนำเข้าบัญชีช่างทั้งหมดลงฐานข้อมูล", type="primary"):
-                        existing_users = {d["username"] for d in db.tech_users.find({}, {"username": 1, "_id": 0})}
-                        success_count, dup_count = 0, 0
-                        for u, p in parsed_techs:
-                            if u in existing_users:
-                                dup_count += 1
+                                done(f"สร้างบัญชีช่าง '{new_t_user}' สำเร็จ!")
                             else:
-                                db.tech_users.insert_one({"id": get_next_sequence("tech_users_id"), "username": u, "password": p})
-                                existing_users.add(u)
-                                success_count += 1
-                        get_tech_users_df.clear()
-                        done(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ/มีอยู่แล้ว {dup_count} บัญชี)")
+                                st.error("Username นี้มีอยู่ในระบบแล้ว")
+                        else:
+                            st.error("กรุณากรอกข้อมูลให้ครบถ้วน")
 
+                st.markdown("---")
+                st.markdown("**✏️ แก้ไข / ลบบัญชีช่างรายบุคคล**")
+                tech_list_df = get_tech_users_df()
+                if not tech_list_df.empty:
+                    selected_tech_id = st.selectbox("เลือกบัญชีช่าง", tech_list_df['id'].astype(str) + " - " + tech_list_df['username'])
+                    if selected_tech_id:
+                        t_id_int = int(selected_tech_id.split(" - ")[0])
+                        t_row = tech_list_df[tech_list_df['id'] == t_id_int].iloc[0]
+                        with st.form(f"edit_tech_{t_id_int}"):
+                            edit_u = st.text_input("Username", value=t_row['username'])
+                            edit_p = st.text_input("Password ใหม่", value=t_row['password'])
+                            col_tu1, col_tu2 = st.columns(2)
+                            if col_tu1.form_submit_button("บันทึกการแก้ไข", type="primary"):
+                                db.tech_users.update_one({"id": t_id_int}, {"$set": {"username": edit_u, "password": edit_p}})
+                                get_tech_users_df.clear()
+                                done("อัปเดตบัญชีช่างสำเร็จ!")
+                            if col_tu2.form_submit_button("ลบบัญชีนี้"):
+                                if db.tech_users.count_documents({}) <= 1:
+                                    st.error("ต้องเหลือบัญชีช่างไว้อย่างน้อย 1 บัญชี")
+                                else:
+                                    db.tech_users.delete_one({"id": t_id_int})
+                                    get_tech_users_df.clear()
+                                    done("ลบบัญชีช่างเรียบร้อยแล้ว!")
+
+            with col_t2:
+                st.markdown("**📁 นำเข้ารายชื่อช่างจากไฟล์ .txt**")
+                uploaded_tech_txt = st.file_uploader("เลือกไฟล์รายชื่อช่าง (.txt)", type=["txt"])
+                if uploaded_tech_txt is not None:
+                    content_str = uploaded_tech_txt.getvalue().decode("utf-8")
+                    parsed_techs = parse_tech_txt_content(content_str)
+                    st.info(f"ตรวจพบข้อมูลช่างในไฟล์จำนวน: **{len(parsed_techs)} บัญชี**")
+                    if parsed_techs:
+                        preview_df = pd.DataFrame(parsed_techs, columns=["Username", "Password"])
+                        preview_df["Password"] = "••••••••"
+                        st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                        if st.button("🚀 ยืนยันนำเข้าบัญชีช่างทั้งหมดลงฐานข้อมูล", type="primary"):
+                            existing_users = {d["username"] for d in db.tech_users.find({}, {"username": 1, "_id": 0})}
+                            success_count, dup_count = 0, 0
+                            for u, p in parsed_techs:
+                                if u in existing_users:
+                                    dup_count += 1
+                                else:
+                                    db.tech_users.insert_one({"id": get_next_sequence("tech_users_id"), "username": u, "password": p})
+                                    existing_users.add(u)
+                                    success_count += 1
+                            get_tech_users_df.clear()
+                            done(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ {dup_count} บัญชี)")
+
+        with set_tab3:
+            st.markdown("#### 📡 ตั้งค่าการเชื่อมต่อ HiveMQ Cloud, LINE OA และ Growatt Solar")
+            with st.form("iot_config_form"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    m_srv = st.text_input("MQTT Broker Host (HiveMQ Cloud)", value=cfg_iot["mqtt_server"])
+                    m_port = st.number_input("MQTT TLS Port", value=int(cfg_iot["mqtt_port"]))
+                    m_user = st.text_input("MQTT Username", value=cfg_iot["mqtt_user"])
+                    m_pass = st.text_input("MQTT Password", value=cfg_iot["mqtt_pass"], type="password")
+                    l_tok = st.text_input("LINE OA Channel Access Token", value=cfg_iot["line_token"], type="password")
+                    l_gid = st.text_input("LINE Group / User ID", value=cfg_iot["line_group_id"])
+                with c2:
+                    g_user = st.text_input("Growatt Username", value=cfg_iot["growatt_user"])
+                    g_pass = st.text_input("Growatt Password", value=cfg_iot["growatt_pass"], type="password")
+                    g_sn = st.text_input("Growatt Device SN (SPF5000ES)", value=cfg_iot["growatt_sn"])
+                    g_url = st.text_input("Google Apps Script Web App URL", value=cfg_iot["google_webapp_url"])
+                    t_servo = st.text_input("Servo Command Topic", value=cfg_iot["topic_servo_cmd"])
+                    t_relay = st.text_input("Fire Relay Reset Topic", value=cfg_iot["topic_fire_relay"])
+
+                if st.form_submit_button("💾 บันทึกการตั้งค่าฮาร์ดแวร์และเชื่อมต่อใหม่", type="primary"):
+                    new_map = {
+                        "mqtt_server": m_srv, "mqtt_port": int(m_port), "mqtt_user": m_user, "mqtt_pass": m_pass,
+                        "line_token": l_tok, "line_group_id": l_gid, "growatt_user": g_user, "growatt_pass": g_pass,
+                        "growatt_sn": g_sn, "google_webapp_url": g_url, "topic_servo_cmd": t_servo, "topic_fire_relay": t_relay
+                    }
+                    for k, v in new_map.items():
+                        set_settings_val(f"iot_{k}", v)
+                    iot_mgr.connect()
+                    done("บันทึกการตั้งค่า IoT และรีสตาร์ทการเชื่อมต่อ MQTT เรียบร้อยแล้ว!")
+
+        with set_tab4:
+            st.markdown("#### 🖥️ มอนิเตอร์ข้อความ MQTT แบบสด (Live MQTT Broker Feed)")
+            with st.form("custom_mqtt_pub"):
+                cp1, cp2, cp3 = st.columns([1.2, 1.5, 0.8])
+                custom_topic = cp1.text_input("Topic", value="esp8266/servo")
+                custom_payload = cp2.text_input("Payload / Message", value="UP")
+                if cp3.form_submit_button("📤 Publish", type="primary", use_container_width=True):
+                    iot_mgr.publish(custom_topic, custom_payload)
+                    st.toast(f"Published to {custom_topic}: {custom_payload}", icon="📡")
+                    st.rerun()
+
+            if iot_mgr.raw_mqtt_feed:
+                st.dataframe(pd.DataFrame(iot_mgr.raw_mqtt_feed), use_container_width=True, hide_index=True)
+            else:
+                st.info("ยังไม่มีข้อความ MQTT เข้ามาในเซสชันนี้")
+
+# =====================================================================
+#  TECH ROLE VIEW (UNCHANGED WORKFLOW + FIXED NUMBER INPUT SYNC)
+# =====================================================================
 elif st.session_state.role in TECH_ROLES:
     if st.session_state.role == ROLE_TECH_SP:
         col_banner, col_btn_back = st.columns([3, 1])
@@ -1320,6 +2597,15 @@ elif st.session_state.role in TECH_ROLES:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
                 switch_role(ROLE_ADMIN)
 
+    st.markdown(f"""
+    <div class="kpi-grid">
+      <div class="glass-kpi" style="--c:#00F2FE;"><div class="top"><span class="lbl">รายการอุปกรณ์ทั้งหมด</span></div><div class="val">{len(items_df)}</div></div>
+      <div class="glass-kpi" style="--c:{'#EF4444' if abn_cnt else '#10B981'};"><div class="top"><span class="lbl">{abn_label}</span></div><div class="val">{abn_cnt}</div></div>
+      <div class="glass-kpi" style="--c:{'#F59E0B' if low_cnt else '#10B981'};"><div class="top"><span class="lbl">เหลือน้อยกว่าเกณฑ์</span></div><div class="val">{low_cnt}</div></div>
+      <div class="glass-kpi" style="--c:#FF7A2F;"><div class="top"><span class="lbl">กำลังถูกยืมอยู่</span></div><div class="val">{borrowed_cnt}</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
     tech_main_tab = st.tabs(["📋 ตรวจสอบอุปกรณ์", "📦 เบิกอุปกรณ์", "🔄 ระบบยืม-คืน อุปกรณ์"])
 
     with tech_main_tab[2]:
@@ -1327,8 +2613,6 @@ elif st.session_state.role in TECH_ROLES:
 
     with tech_main_tab[1]:
         st.markdown("### 📦 คำขอเพิ่มสต็อก (อุปกรณ์ช่างทั่วไป & อุปกรณ์สระว่ายน้ำ)")
-        st.write("ค้นหาและเลือกอุปกรณ์ช่างทั่วไป หรืออุปกรณ์สระว่ายน้ำที่ต้องการเพิ่มจำนวนเข้าคลัง ระบบจะส่งคำขอไปยังผู้ออกแบบ/ดูแลระบบเพื่อรออนุมัติบวกสต็อก")
-
         tools_requisition_df = items_df[
             ((items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['subcategory'] == 'อุปกรณ์ช่างทั่วไป')) |
             (items_df['category'] == 'อุปกรณ์สระว่ายน้ำ')
@@ -1346,7 +2630,7 @@ elif st.session_state.role in TECH_ROLES:
                 req_qty = st.number_input("จำนวนที่ต้องการเพิ่มเข้าคลัง *", min_value=1, value=1)
                 req_note = st.text_area("หมายเหตุ / เหตุผลที่ขอเพิ่ม *")
 
-                if st.form_submit_button("📤 ส่งคำขอเบิกของ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)"):
+                if st.form_submit_button("📤 ส่งคำขอเบิกของ (รอผู้ออกแบบ/ดูแลระบบอนุมัติ)", type="primary"):
                     if req_note.strip():
                         req_selected_id = item_dict[sel_req_label]
                         db.requisition_requests.insert_one({
@@ -1365,14 +2649,13 @@ elif st.session_state.role in TECH_ROLES:
         st.markdown("---")
         st.markdown("#### 📜 ประวัติคำขอเบิกของของคุณ")
         my_reqs_list = get_my_reqs(st.session_state.username)
-        my_requests = pd.DataFrame([{
-            "รหัส": r["id"], "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
-            "จำนวนที่ขอ": r.get("quantity"), "หมายเหตุ": r.get("note"),
-            "วันที่ขอ": r.get("request_date"), "วันที่อนุมัติ": r.get("approval_date"),
-            "สถานะ": r.get("status")
-        } for r in my_reqs_list])
-        if not my_requests.empty:
-            st.dataframe(my_requests, use_container_width=True, hide_index=True)
+        if my_reqs_list:
+            st.dataframe(pd.DataFrame([{
+                "รหัส": r["id"], "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
+                "จำนวนที่ขอ": r.get("quantity"), "หมายเหตุ": r.get("note"),
+                "วันที่ขอ": r.get("request_date"), "วันที่อนุมัติ": r.get("approval_date"),
+                "สถานะ": r.get("status")
+            } for r in my_reqs_list]), use_container_width=True, hide_index=True)
         else:
             st.info("ยังไม่มีประวัติการส่งคำขอเบิกของ")
 
@@ -1383,7 +2666,6 @@ elif st.session_state.role in TECH_ROLES:
 
         if tech_category_choice == "🔧 หมวดอุปกรณ์ช่าง":
             st.markdown("### 🔧 หมวดอุปกรณ์ช่าง")
-
             global_count = get_inspection_count("อุปกรณ์ช่าง", today_str)
             base_quota = int(get_settings_val('global_daily_quota', '3'))
             extra_quota = int(get_settings_val(f"extra_quota_{today_str}", '0'))
@@ -1393,11 +2675,9 @@ elif st.session_state.role in TECH_ROLES:
                 st.error("⚠️ ครบโควตารอบการตรวจสำหรับวันนี้แล้ว (กรุณาติดต่อผู้ออกแบบ/ดูแลระบบเพื่อเพิ่มรอบตรวจพิเศษ)")
             else:
                 tools_all_df = items_df[(items_df['category'] == 'อุปกรณ์ช่าง') & (items_df['orig_quantity'] > 0)] if not items_df.empty else pd.DataFrame()
-
                 if not tools_all_df.empty:
                     render_tool_inspection_list(tools_all_df)
 
-                    st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
                     st.info("💡 สามารถกดเลือกหรือถ่ายรูปให้ครบทั้ง 4 รูปพร้อมกันในช่องอัปโหลดด้านล่างนี้ได้เลยครับ")
 
@@ -1420,20 +2700,16 @@ elif st.session_state.role in TECH_ROLES:
                     if st.button(f"💾 ยืนยันส่งผลตรวจ (รอบที่ {global_count + 1})", type="primary", use_container_width=True):
                         item_reports = {}
                         for _, row in tools_all_df.iterrows():
-                            rid = row['id']
-                            subcat = row.get('subcategory', '')
+                            rid = int(row['id'])
+                            subcat = str(row.get('subcategory', ''))
                             if subcat == "อุปกรณ์ช่างทั่วไป":
                                 q_val = int(st.session_state.get(f"gen_q_{rid}", row['quantity']))
-                                item_reports[rid] = {
-                                    "type": "general",
-                                    "quantity": q_val
-                                }
+                                item_reports[rid] = {"type": "general", "quantity": q_val}
                             else:
                                 sel_st = st.session_state.get(f"status_sel_{rid}", "ปกติ")
-                                is_flagged = sel_st != "ปกติ"
                                 item_reports[rid] = {
                                     "type": "tool",
-                                    "flagged": is_flagged,
+                                    "flagged": sel_st != "ปกติ",
                                     "status": sel_st,
                                     "detail": st.session_state.get(f"issue_detail_{rid}", "") or "",
                                     "qty": int(st.session_state.get(f"issue_qty_{rid}", 1) or 1),
@@ -1454,14 +2730,12 @@ elif st.session_state.role in TECH_ROLES:
                         else:
                             with st.spinner("กำลังบันทึกผลการตรวจ..."):
                                 photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in photo_files]
-                                flagged_summaries = []
-                                bulk_operations = []
+                                flagged_summaries, bulk_operations = [], []
                                 row_map = tools_all_df.set_index('id')
 
                                 for item_id, data in item_reports.items():
                                     orig_q = int(row_map.loc[item_id, 'orig_quantity'])
                                     item_name = row_map.loc[item_id, 'name']
-
                                     if data["type"] == "general":
                                         new_q = data["quantity"]
                                         bulk_operations.append(pymongo.operations.UpdateOne(
@@ -1470,16 +2744,11 @@ elif st.session_state.role in TECH_ROLES:
                                             flagged_summaries.append(f"{item_name}: ปรับสต็อกเหลือ {new_q} ชิ้น")
                                     else:
                                         if data["flagged"]:
-                                            final_st = data["status"]
-                                            if data["status"] == "กำลังใช้งาน" and data["detail"].strip():
-                                                final_st = f"กำลังใช้งาน ({data['detail']})"
-                                            if data["status"] == "อุปกรณ์หมด":
-                                                new_q = 0
-                                            else:
-                                                new_q = max(0, orig_q - data["qty"])
+                                            final_st = f"กำลังใช้งาน ({data['detail']})" if (data["status"] == "กำลังใช้งาน" and data["detail"].strip()) else data["status"]
+                                            new_q = 0 if data["status"] == "อุปกรณ์หมด" else max(0, orig_q - data["qty"])
                                             bulk_operations.append(pymongo.operations.UpdateOne(
                                                 {"id": item_id}, {"$set": {"status": final_st, "quantity": new_q}}))
-                                            detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "") + (f" [{data['status']} {data['qty']} ชิ้น]" if data['qty'] > 1 and data['status'] != "อุปกรณ์หมด" else "")
+                                            detail_txt = f"{item_name}: {data['status']}" + (f" ({data['detail']})" if data['detail'] else "")
                                             flagged_summaries.append(detail_txt)
                                         else:
                                             bulk_operations.append(pymongo.operations.UpdateOne(
@@ -1507,17 +2776,13 @@ elif st.session_state.role in TECH_ROLES:
                             done("บันทึกผลการตรวจสอบเรียบร้อยแล้ว!")
                 else:
                     st.info("ไม่มีอุปกรณ์ช่างให้ตรวจสอบในขณะนี้")
-
         else:
             st.markdown("### 🏊 หมวดอุปกรณ์สระว่ายน้ำ")
-
             pool_all_df = items_df[items_df['category'] == 'อุปกรณ์สระว่ายน้ำ'] if not items_df.empty else pd.DataFrame()
             if not pool_all_df.empty:
                 render_pool_list(pool_all_df)
 
                 st.markdown("### 📸 รูปถ่ายอุปกรณ์ที่ตรวจเช็ค")
-                st.info("💡 สามารถกดเลือกหรือถ่ายรูปให้ครบทั้ง 4 รูปพร้อมกันในช่องอัปโหลดด้านล่างนี้ได้เลยครับ")
-
                 pool_photo_files = st.file_uploader(
                     "เลือก / ถ่ายรูปภาพสระว่ายน้ำรวม (ครบ 4 รูป)",
                     type=["jpg", "jpeg", "png"],
@@ -1540,19 +2805,19 @@ elif st.session_state.role in TECH_ROLES:
                     else:
                         with st.spinner("กำลังบันทึกข้อมูล..."):
                             photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in pool_photo_files]
-                            pool_summaries = []
-                            bulk_pool_ops = []
+                            pool_summaries, bulk_pool_ops = [], []
                             row_map = pool_all_df.set_index('id')
 
                             for item_id in pool_all_df['id']:
-                                key = f"pool_q_{item_id}"
+                                rid = int(item_id)
+                                key = f"pool_q_{rid}"
                                 if key not in st.session_state:
                                     continue
                                 q_val = int(st.session_state[key])
-                                old_q = int(row_map.loc[item_id, 'quantity'])
+                                old_q = int(row_map.loc[rid, 'quantity'])
                                 if q_val != old_q:
-                                    bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": item_id}, {"$set": {"quantity": q_val, "orig_quantity": q_val}}))
-                                    pool_summaries.append(f"{row_map.loc[item_id, 'name']}: ปรับจาก {old_q} เหลือ {q_val}")
+                                    bulk_pool_ops.append(pymongo.operations.UpdateOne({"id": rid}, {"$set": {"quantity": q_val, "orig_quantity": q_val}}))
+                                    pool_summaries.append(f"{row_map.loc[rid, 'name']}: ปรับจาก {old_q} เหลือ {q_val}")
 
                             if bulk_pool_ops:
                                 db.items.bulk_write(bulk_pool_ops, ordered=False)
