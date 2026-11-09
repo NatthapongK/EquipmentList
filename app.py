@@ -58,25 +58,38 @@ ROLE_TECH = "ช่างประจำอาคาร"
 ROLE_TECH_SP = "ช่างประจำอาคารพิเศษ"
 TECH_ROLES = [ROLE_TECH, ROLE_TECH_SP]
 
-# --- DEFAULT HARDWARE & IOT CREDENTIALS (For Admin Only) ---
-DEFAULT_IOT_CONFIG = {
-    "mqtt_server": "dcb4e8c8b1594e88aef914771ce94103.s1.eu.hivemq.cloud",
-    "mqtt_port": 8883,
-    "mqtt_user": "32bit7k",
-    "mqtt_pass": "aA0891148075",
-    "topic_servo_cmd": "esp8266/servo",
-    "topic_servo_status": "esp8266/servo/status",
-    "topic_water": "Water alarm",
-    "topic_check_clients": "CheckClients",
-    "topic_fire": "Firealarm",
-    "topic_fire_relay": "nodemcu/control/relay",
-    "line_token": "Z4Q1Oovl195VbH2Zs+cgtJfQrWalykEOIqe9R+fwagj60jYeu80011v83fSulPpkUPTrGee8/6q4i/yAoF0XhfUA37dgLIkIHQqYKejfbAB99UNtRl8GEbhPwF6T1PyiDOOGqEvaj1dbaw256MMuiwdB04t89/1O/w1cDnyilFU=",
-    "line_group_id": "C663efc381970da04d51c09f2bda9c3a4",
-    "growatt_user": "32bit7k",
-    "growatt_pass": "aA0891148075",
-    "growatt_sn": "RKG7BL404R",
-    "google_webapp_url": "https://script.google.com/macros/s/AKfycbz2aB_1RR7UMMX92TOC9c_o_wbyCmfFt82K4hIYFfEFyPcmHL8UWAu0Z9sm99zQW2QFNQ/exec",
-}
+# --- IOT CONFIGURATION FUNCTION (Single Source of Truth) ---
+def get_iot_config():
+    try:
+        secret_iot = st.secrets.get("iot", {})
+    except Exception:
+        secret_iot = {}
+
+    cfg = {
+        "mqtt_server": secret_iot.get("mqtt_server", ""),
+        "mqtt_user": secret_iot.get("mqtt_user", ""),
+        "mqtt_pass": secret_iot.get("mqtt_pass", ""),
+        "line_token": secret_iot.get("line_token", ""),
+        "line_group_id": secret_iot.get("line_group_id", ""),
+        "growatt_user": secret_iot.get("growatt_user", ""),
+        "growatt_pass": secret_iot.get("growatt_pass", ""),
+        "growatt_sn": secret_iot.get("growatt_sn", ""),
+        "google_webapp_url": secret_iot.get("google_webapp_url", ""),
+        "mqtt_port": 8883,
+        "topic_servo_cmd": "esp8266/servo",
+        "topic_servo_status": "esp8266/servo/status",
+        "topic_water": "Water alarm",
+        "topic_check_clients": "CheckClients",
+        "topic_fire": "Firealarm",
+        "topic_fire_relay": "nodemcu/control/relay",
+    }
+
+    for k in list(cfg.keys()):
+        saved = get_settings_val(f"iot_{k}", None)
+        if saved is not None and saved != "None":
+            cfg[k] = int(saved) if isinstance(cfg[k], int) and str(saved).isdigit() else saved
+
+    return cfg
 
 # รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
@@ -228,14 +241,6 @@ def get_settings_val(key, default="1"):
 def set_settings_val(key, val):
     db.settings.update_one({"key": key}, {"$set": {"value": str(val)}}, upsert=True)
     get_settings_val.clear()
-
-def get_iot_config():
-    cfg = DEFAULT_IOT_CONFIG.copy()
-    for k, v in DEFAULT_IOT_CONFIG.items():
-        saved = get_settings_val(f"iot_{k}", None)
-        if saved is not None and saved != "None":
-            cfg[k] = int(saved) if isinstance(v, int) and str(saved).isdigit() else saved
-    return cfg
 
 # =====================================================================
 #  REAL-TIME MQTT & IOT BACKGROUND ENGINE (ADMIN ONLY)
@@ -739,10 +744,9 @@ def get_inspections_list(limit=1000):
     return list(db.inspections.find({}, {"_id": 0, "photos": 0}).sort("id", -1).limit(limit))
 
 def get_latest_reductions(inspections):
-    """คืนรายการอุปกรณ์ที่ถูกปรับลดจำนวนในการตรวจเช็คล่าสุดของแต่ละหมวด (ช่าง / สระว่ายน้ำ)"""
     rows = []
     for cat in ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"]:
-        latest = next((r for r in inspections if r.get("category") == cat), None)  # รายการเรียงใหม่สุดก่อนอยู่แล้ว
+        latest = next((r for r in inspections if r.get("category") == cat), None)
         if not latest:
             continue
         found = []
@@ -754,7 +758,6 @@ def get_latest_reductions(inspections):
                 except (KeyError, TypeError, ValueError):
                     continue
         else:
-            # ข้อมูลเก่าที่ยังไม่มีฟิลด์ changes: ดึงจากข้อความ "ชื่อ: ปรับจาก X เหลือ Y" (เฉพาะสระว่ายน้ำ)
             txt = str(latest.get("details", "")).split("|")[-1].replace("การเปลี่ยนแปลง:", "")
             for part in txt.split(", "):
                 m = re.match(r"^\s*(.*?):\s*ปรับจาก (\d+) เหลือ (\d+)\s*$", part)
@@ -847,7 +850,7 @@ def switch_role(new_role):
     st.rerun()
 
 # =====================================================================
-#  ADMIN DASHBOARD V2 - COOL OCEAN GLASSMORPHISM UI (NO ORANGE SELECTED BG)
+#  UI STYLES & GLASSMORPHISM SETUP
 # =====================================================================
 st.markdown("""
 <style>
@@ -900,11 +903,10 @@ footer { visibility: hidden !important; display: none !important; }
   max-width: 1380px !important;
 }
 
-/* --- SIDEBAR: ADMIN DASHBOARD V2 FROSTED SLATE-BLUE --- */
 section[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, rgba(10, 21, 36, 0.92) 0%, rgba(7, 15, 27, 0.96) 100%) !important;
-  border-right: 1px solid var(--glass-border) !important;
-  backdrop-filter: blur(22px) !important;
+  background: linear-gradient(180deg, rgba(12, 32, 54, 0.62) 0%, rgba(6, 16, 30, 0.78) 100%) !important;
+  backdrop-filter: blur(28px) saturate(150%) !important;
+  border-right: 1px solid rgba(186, 230, 253, 0.22) !important;
 }
 
 .brand-box {
@@ -940,7 +942,6 @@ section[data-testid="stSidebar"] {
 .u-name { font-weight: 700; font-size: 0.9rem; color: #F8FAFC; }
 .u-role { font-size: 0.74rem; color: var(--muted); }
 
-/* Sidebar Radio Navigation - Clean Translucent Pill (No Orange!) */
 section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label {
   padding: 0.52rem 0.75rem !important;
   border-radius: 10px !important;
@@ -959,14 +960,13 @@ section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(i
   box-shadow: inset 3px 0 0 #38BDF8 !important;
 }
 
-/* --- TOP BAR / HERO CARD --- */
 .app-hero {
-  background: var(--glass-surface);
-  backdrop-filter: blur(20px);
-  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.13) 0%, rgba(125, 211, 252, 0.06) 38%, rgba(10, 30, 52, 0.26) 100%);
+  backdrop-filter: blur(30px) saturate(190%) brightness(1.06);
+  border-radius: 20px;
   padding: 0.85rem 1.2rem;
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow: 0 14px 44px rgba(0, 12, 32, 0.52);
   display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;
   margin-bottom: 0.85rem;
 }
@@ -983,7 +983,6 @@ section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(i
 .status-pill-top.bad { color: #F87171 !important; border-color: rgba(239, 68, 68, 0.45); background: rgba(239, 68, 68, 0.14); }
 .status-pill-top.info { color: #38BDF8 !important; border-color: rgba(56, 189, 248, 0.38); background: rgba(56, 189, 248, 0.10); }
 
-/* --- GLASSY KPI CARDS (Admin Dashboard V2 Style) --- */
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(195px, 1fr));
@@ -991,36 +990,36 @@ section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(i
   margin-bottom: 0.85rem;
 }
 .glass-kpi {
-  background: linear-gradient(145deg, rgba(22, 38, 60, 0.62) 0%, rgba(14, 25, 42, 0.76) 100%);
-  backdrop-filter: blur(18px);
-  border: 1px solid var(--glass-border);
-  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.13) 0%, rgba(125, 211, 252, 0.06) 38%, rgba(10, 30, 52, 0.26) 100%);
+  backdrop-filter: blur(30px) saturate(190%) brightness(1.06);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 20px;
   padding: 0.95rem 1.05rem;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: 0 14px 44px rgba(0, 12, 32, 0.52);
   transition: transform 0.18s ease, border-color 0.18s ease;
 }
 .glass-kpi:hover {
-  transform: translateY(-2px);
-  border-color: rgba(56, 189, 248, 0.38);
+  transform: translateY(-3px);
+  border-color: rgba(186, 230, 253, 0.65);
 }
 .glass-kpi .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
 .glass-kpi .lbl { font-size: 0.74rem; color: #94A3B8; font-weight: 600; }
 .glass-kpi .ic-badge {
   width: 1.85rem; height: 1.85rem; border-radius: 9px;
-  background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.24);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.26), rgba(56, 189, 248, 0.10));
+  border: 1px solid rgba(255, 255, 255, 0.34);
   display: flex; align-items: center; justify-content: center; font-size: 0.9rem;
 }
 .glass-kpi .val { font-size: 1.55rem; font-weight: 800; color: #FFFFFF; line-height: 1.15; }
 .glass-kpi .sub { font-size: 0.73rem; color: #94A3B8; margin-top: 0.28rem; }
 
-/* --- IOT STATUS CARDS --- */
 .iot-card {
-  background: var(--glass-surface);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--glass-border);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.13) 0%, rgba(125, 211, 252, 0.06) 38%, rgba(10, 30, 52, 0.26) 100%);
+  backdrop-filter: blur(30px) saturate(190%) brightness(1.06);
+  border: 1px solid rgba(255, 255, 255, 0.24);
   border-radius: 14px;
   padding: 0.85rem 1rem;
-  box-shadow: 0 4px 18px rgba(0,0,0,0.2);
+  box-shadow: 0 14px 44px rgba(0, 12, 32, 0.52);
 }
 .iot-card .hd { font-size: 0.71rem; color: var(--muted); text-transform: uppercase; font-weight: 700; margin-bottom: 0.4rem; }
 .iot-card .bd { display: flex; justify-content: space-between; align-items: center; }
@@ -1041,13 +1040,12 @@ section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(i
   50% { box-shadow: 0 0 0 7px rgba(239, 68, 68, 0); }
 }
 
-/* --- TABS (NO ORANGE BACKGROUND! Clean Frosted Glass Pill + Cyan Indicator) --- */
 .stTabs [data-baseweb="tab-list"] {
   gap: 0.35rem;
-  background: rgba(11, 22, 36, 0.68);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(10, 30, 52, 0.30));
   padding: 0.32rem;
-  border-radius: 12px;
-  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
   overflow-x: auto;
   flex-wrap: nowrap;
 }
@@ -1071,291 +1069,50 @@ section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(i
   color: #FFFFFF !important;
   border: 1px solid transparent !important;
   font-weight: 600 !important;
-  box-shadow: none !important;
-}
-.stTabs [data-baseweb="tab-highlight"] {
-  background-color: transparent !important;
-  display: none !important;
 }
 
-/* --- EXPANDERS, FORMS, TABLES & BUTTONS --- */
 [data-testid="stExpander"] {
-  border: 1px solid var(--glass-border) !important;
-  border-radius: 12px !important;
-  background: var(--glass-surface) !important;
-  backdrop-filter: blur(14px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.20) !important;
+  border-radius: 14px !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.13) 0%, rgba(125, 211, 252, 0.06) 38%, rgba(10, 30, 52, 0.26) 100%) !important;
+  backdrop-filter: blur(30px) !important;
   margin-bottom: 0.42rem !important;
 }
 [data-testid="stForm"] {
-  border: 1px solid var(--glass-border) !important;
+  border: 1px solid rgba(255, 255, 255, 0.20) !important;
   border-radius: 14px !important;
-  background: var(--glass-surface) !important;
-  backdrop-filter: blur(16px) !important;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.13) 0%, rgba(125, 211, 252, 0.06) 38%, rgba(10, 30, 52, 0.26) 100%) !important;
+  backdrop-filter: blur(30px) !important;
   padding: 0.9rem !important;
 }
 [data-testid="stDataFrame"], .stTable {
-  border: 1px solid var(--glass-border) !important;
-  border-radius: 12px !important;
-  overflow-x: auto !important;
+  border: 1px solid rgba(255, 255, 255, 0.20) !important;
+  border-radius: 14px !important;
+  background: rgba(255, 255, 255, 0.05) !important;
 }
 
 .stApp button {
   border-radius: 10px !important;
   font-weight: 600 !important;
-  border: 1px solid var(--glass-border) !important;
-  background: rgba(20, 35, 56, 0.72) !important;
+  border: 1px solid rgba(255, 255, 255, 0.26) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(125, 211, 252, 0.06) 55%, rgba(10, 30, 52, 0.34)) !important;
   transition: all 0.16s ease !important;
 }
 .stApp button:hover {
-  border-color: rgba(56, 189, 248, 0.45) !important;
-  background: rgba(28, 48, 76, 0.85) !important;
-}
-.stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
-.stApp button[data-testid="stBaseButton-primaryFormSubmit"] {
-  background: linear-gradient(135deg, #0EA5E9 0%, #0284C7 100%) !important;
-  border: 1px solid rgba(125, 211, 252, 0.35) !important;
-  color: #FFFFFF !important;
-  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.32) !important;
-}
-.stApp button[kind="primary"]:hover, .stApp button[data-testid="stBaseButton-primary"]:hover,
-.stApp button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
-  filter: brightness(1.08);
-  transform: translateY(-1px);
-}
-
-.req-banner {
-  display: flex; align-items: center; gap: .9rem; padding: 0.7rem 1rem; margin-bottom: 0.75rem;
-  border-radius: 12px; border: 1px solid rgba(56, 189, 248, 0.45);
-  background: linear-gradient(90deg, rgba(14, 116, 144, 0.35), rgba(15, 23, 42, 0.75));
-}
-
-/* =================================================================
-   OCEAN GLASSMORPHISM LAYER - ชั้นเสริมความเป็นกระจกใสสีมหาสมุทร
-   ================================================================= */
-:root {
-  --ocean-glass: linear-gradient(145deg, rgba(56, 189, 248, 0.10) 0%, rgba(14, 38, 64, 0.55) 45%, rgba(8, 24, 42, 0.62) 100%);
-  --ocean-edge: rgba(186, 230, 253, 0.22);
-  --ocean-glow: 0 10px 34px rgba(2, 20, 40, 0.45), 0 0 0 1px rgba(125, 211, 252, 0.05);
-  --ocean-shine: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 -1px 0 rgba(125, 211, 252, 0.05);
-}
-
-/* พื้นหลังน้ำทะเลลึก + ลูกแสงลอยช้าๆ เหมือนแสงใต้น้ำ */
-.stApp::before {
-  content: ""; position: fixed; inset: -10%; z-index: 0; pointer-events: none;
-  background:
-    radial-gradient(38% 32% at 12% 18%, rgba(34, 211, 238, 0.20), transparent 70%),
-    radial-gradient(34% 30% at 88% 12%, rgba(56, 189, 248, 0.18), transparent 70%),
-    radial-gradient(40% 34% at 70% 88%, rgba(20, 184, 166, 0.16), transparent 70%),
-    radial-gradient(30% 26% at 22% 82%, rgba(59, 130, 246, 0.14), transparent 70%);
-  filter: blur(18px);
-  animation: oceanDrift 28s ease-in-out infinite alternate;
-}
-@keyframes oceanDrift {
-  0%   { transform: translate3d(0, 0, 0) scale(1); }
-  100% { transform: translate3d(-2.5%, 2%, 0) scale(1.06); }
-}
-.block-container, section[data-testid="stSidebar"], header[data-testid="stHeader"] { position: relative; z-index: 1; }
-
-/* การ์ดกระจกใส: เบลอแรง + เส้นขอบสว่างด้านบน + เงาลึก */
-.app-hero, .glass-kpi, .iot-card, .user-card, .brand-box,
-[data-testid="stExpander"], [data-testid="stForm"], .req-banner {
-  background: var(--ocean-glass) !important;
-  backdrop-filter: blur(24px) saturate(165%) !important;
-  -webkit-backdrop-filter: blur(24px) saturate(165%) !important;
-  border: 1px solid var(--ocean-edge) !important;
-  box-shadow: var(--ocean-glow), var(--ocean-shine) !important;
-}
-.app-hero, .glass-kpi { border-radius: 20px !important; position: relative; overflow: hidden; }
-/* เงาสะท้อนผิวกระจกเฉียงมุมบนซ้าย */
-.app-hero::after, .glass-kpi::after {
-  content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(120deg, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0) 38%);
-}
-.glass-kpi:hover {
-  transform: translateY(-3px);
-  border-color: rgba(125, 211, 252, 0.50) !important;
-  box-shadow: 0 14px 38px rgba(2, 20, 40, 0.5), 0 0 22px rgba(56, 189, 248, 0.16), var(--ocean-shine) !important;
-}
-.glass-kpi .ic-badge {
-  background: linear-gradient(145deg, rgba(125, 211, 252, 0.22), rgba(14, 165, 233, 0.08)) !important;
-  border: 1px solid rgba(186, 230, 253, 0.30) !important;
-  backdrop-filter: blur(8px);
-}
-
-/* Sidebar กระจกฝ้า */
-section[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, rgba(12, 32, 54, 0.62) 0%, rgba(6, 16, 30, 0.78) 100%) !important;
-  backdrop-filter: blur(28px) saturate(150%) !important;
-  border-right: 1px solid var(--ocean-edge) !important;
-}
-
-/* แท็บ: แถบกระจกใส */
-.stTabs [data-baseweb="tab-list"] {
-  background: rgba(10, 26, 44, 0.45) !important;
-  backdrop-filter: blur(20px) saturate(150%) !important;
-  border: 1px solid var(--ocean-edge) !important;
-  border-radius: 14px !important;
-  box-shadow: var(--ocean-shine) !important;
-}
-
-/* ปุ่มกระจก + ปุ่มหลักไล่สีน้ำทะเลมีประกาย */
-.stApp button {
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.12), rgba(14, 38, 64, 0.55)) !important;
-  border: 1px solid var(--ocean-edge) !important;
-  backdrop-filter: blur(12px) !important;
-  box-shadow: var(--ocean-shine) !important;
-}
-.stApp button:hover {
-  border-color: rgba(125, 211, 252, 0.55) !important;
-  box-shadow: 0 0 18px rgba(56, 189, 248, 0.20), var(--ocean-shine) !important;
-}
-.stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
-.stApp button[data-testid="stBaseButton-primaryFormSubmit"] {
-  background: linear-gradient(135deg, rgba(34, 211, 238, 0.85) 0%, rgba(14, 165, 233, 0.90) 50%, rgba(37, 99, 235, 0.88) 100%) !important;
-  border: 1px solid rgba(186, 230, 253, 0.45) !important;
-  box-shadow: 0 6px 20px rgba(14, 165, 233, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
-}
-
-/* ช่องกรอกข้อมูล / Dropdown / ตาราง: กระจกใส */
-.stApp [data-baseweb="input"], .stApp [data-baseweb="base-input"], .stApp [data-baseweb="select"] > div,
-.stApp [data-baseweb="textarea"], .stApp textarea {
-  background: rgba(8, 22, 40, 0.50) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  border-radius: 12px !important;
-  backdrop-filter: blur(10px) !important;
-}
-.stApp [data-baseweb="input"]:focus-within, .stApp [data-baseweb="select"] > div:focus-within, .stApp textarea:focus {
-  border-color: rgba(125, 211, 252, 0.65) !important;
-  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14) !important;
-}
-[data-testid="stDataFrame"], .stTable {
-  border: 1px solid var(--ocean-edge) !important;
-  border-radius: 14px !important;
-  background: rgba(8, 22, 40, 0.35) !important;
-  box-shadow: var(--ocean-shine) !important;
-}
-[data-testid="stAlert"] {
-  border-radius: 14px !important;
-  backdrop-filter: blur(16px) saturate(150%) !important;
-  border: 1px solid var(--ocean-edge) !important;
-}
-
-/* =================================================================
-   GLASS PLUS - กระจกใสมากขึ้น: โปร่งแสงกว่าเดิม เห็นฉากหลังทะลุ มีประกายผิว
-   ================================================================= */
-:root {
-  --g-fill: linear-gradient(135deg, rgba(255, 255, 255, 0.13) 0%, rgba(125, 211, 252, 0.06) 38%, rgba(10, 30, 52, 0.26) 100%);
-  --g-edge: rgba(255, 255, 255, 0.24);
-  --g-shadow: 0 14px 44px rgba(0, 12, 32, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.38), inset 1px 0 0 rgba(255, 255, 255, 0.10), inset 0 -1px 0 rgba(125, 211, 252, 0.10), inset 0 0 28px rgba(125, 211, 252, 0.05);
-}
-
-/* ฉากหลังใต้น้ำสว่างขึ้น ให้กระจกมีอะไรให้เบลอ */
-.stApp::before {
-  background:
-    radial-gradient(34% 30% at 10% 14%, rgba(34, 211, 238, 0.34), transparent 70%),
-    radial-gradient(30% 28% at 90% 10%, rgba(56, 189, 248, 0.30), transparent 70%),
-    radial-gradient(38% 32% at 72% 90%, rgba(20, 184, 166, 0.28), transparent 70%),
-    radial-gradient(28% 26% at 18% 84%, rgba(59, 130, 246, 0.26), transparent 70%),
-    radial-gradient(22% 20% at 50% 48%, rgba(103, 232, 249, 0.14), transparent 70%) !important;
-  filter: blur(14px) !important;
-}
-/* ฟองอากาศโปร่งแสงลอยขึ้นช้าๆ */
-.stApp::after {
-  content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background:
-    radial-gradient(circle at 8% 88%, rgba(255,255,255,0.20) 0 1.5px, rgba(186,230,253,0.07) 2px 26px, transparent 27px),
-    radial-gradient(circle at 24% 62%, rgba(255,255,255,0.16) 0 1px, rgba(186,230,253,0.06) 1.5px 16px, transparent 17px),
-    radial-gradient(circle at 78% 74%, rgba(255,255,255,0.18) 0 1.5px, rgba(186,230,253,0.07) 2px 34px, transparent 35px),
-    radial-gradient(circle at 92% 38%, rgba(255,255,255,0.14) 0 1px, rgba(186,230,253,0.05) 1.5px 14px, transparent 15px),
-    radial-gradient(circle at 55% 20%, rgba(255,255,255,0.14) 0 1px, rgba(186,230,253,0.05) 1.5px 20px, transparent 21px);
-  animation: bubbleRise 40s linear infinite alternate;
-}
-@keyframes bubbleRise {
-  0%   { transform: translateY(3%); }
-  100% { transform: translateY(-4%); }
-}
-
-/* การ์ด/กล่องทั้งหมด: กระจกโปร่ง เบลอลึก ขอบสว่างเป็นประกาย */
-.app-hero, .glass-kpi, .iot-card, .user-card, .brand-box,
-[data-testid="stExpander"], [data-testid="stForm"], .req-banner {
-  background: var(--g-fill) !important;
-  backdrop-filter: blur(30px) saturate(190%) brightness(1.06) !important;
-  -webkit-backdrop-filter: blur(30px) saturate(190%) brightness(1.06) !important;
-  border: 1px solid var(--g-edge) !important;
-  border-top-color: rgba(255, 255, 255, 0.40) !important;
-  border-left-color: rgba(255, 255, 255, 0.30) !important;
-  box-shadow: var(--g-shadow) !important;
-}
-.app-hero::after, .glass-kpi::after {
-  background:
-    linear-gradient(115deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 26%, rgba(255, 255, 255, 0) 46%),
-    radial-gradient(120% 60% at 0% 0%, rgba(255, 255, 255, 0.10), transparent 60%) !important;
-}
-.glass-kpi:hover {
-  border-color: rgba(186, 230, 253, 0.65) !important;
-  box-shadow: 0 18px 48px rgba(0, 12, 32, 0.55), 0 0 28px rgba(103, 232, 249, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.45) !important;
-}
-.glass-kpi .ic-badge {
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.26), rgba(56, 189, 248, 0.10)) !important;
-  border: 1px solid rgba(255, 255, 255, 0.34) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.40) !important;
-}
-
-section[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(10, 30, 52, 0.46) 100%) !important;
-  backdrop-filter: blur(34px) saturate(190%) !important;
-  border-right: 1px solid rgba(255, 255, 255, 0.20) !important;
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.06) !important;
-}
-
-.stTabs [data-baseweb="tab-list"] {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(10, 30, 52, 0.30)) !important;
-  backdrop-filter: blur(26px) saturate(180%) !important;
-  border: 1px solid rgba(255, 255, 255, 0.22) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.30), 0 8px 26px rgba(0, 12, 32, 0.35) !important;
-}
-
-.stApp button {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(125, 211, 252, 0.06) 55%, rgba(10, 30, 52, 0.34)) !important;
-  border: 1px solid rgba(255, 255, 255, 0.26) !important;
-  backdrop-filter: blur(16px) saturate(170%) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34), 0 4px 14px rgba(0, 12, 32, 0.30) !important;
-}
-.stApp button:hover {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(125, 211, 252, 0.12) 55%, rgba(10, 30, 52, 0.30)) !important;
   border-color: rgba(186, 230, 253, 0.65) !important;
 }
 .stApp button[kind="primary"], .stApp button[data-testid="stBaseButton-primary"],
 .stApp button[data-testid="stBaseButton-primaryFormSubmit"] {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.34) 0%, rgba(56, 189, 248, 0.62) 40%, rgba(14, 116, 190, 0.74) 100%) !important;
   border: 1px solid rgba(255, 255, 255, 0.50) !important;
-  box-shadow: 0 8px 24px rgba(14, 165, 233, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
+  color: #FFFFFF !important;
+  box-shadow: 0 8px 24px rgba(14, 165, 233, 0.38) !important;
 }
 
-.stApp [data-baseweb="input"], .stApp [data-baseweb="base-input"], .stApp [data-baseweb="select"] > div,
-.stApp [data-baseweb="textarea"], .stApp textarea {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(8, 22, 40, 0.32)) !important;
-  border: 1px solid rgba(255, 255, 255, 0.20) !important;
-  backdrop-filter: blur(14px) saturate(160%) !important;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18) !important;
-}
-[data-testid="stDataFrame"], .stTable {
-  background: rgba(255, 255, 255, 0.05) !important;
-  border: 1px solid rgba(255, 255, 255, 0.20) !important;
-  backdrop-filter: blur(20px) saturate(160%) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 8px 26px rgba(0, 12, 32, 0.30) !important;
-}
-[data-testid="stAlert"] {
-  background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.02)) !important;
-  backdrop-filter: blur(22px) saturate(180%) !important;
-  border: 1px solid rgba(255, 255, 255, 0.22) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26) !important;
-}
-
-@media (max-width:768px){
-  .block-container { padding-left: .4rem !important; padding-right: .4rem !important; }
-  .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 0.45rem; }
-  .glass-kpi .val { font-size: 1.25rem; }
+.req-banner {
+  display: flex; align-items: center; gap: .9rem; padding: 0.7rem 1rem; margin-bottom: 0.75rem;
+  border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.20);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.13), rgba(14, 116, 144, 0.35));
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1759,7 +1516,7 @@ if st.session_state.role == ROLE_ADMIN:
         water_badge = "🚨 ALARM" if water_any_alarm else "🟢 NORMAL"
 
         st.markdown(f"""
-        <div style="font-size:0.77rem; line-height:1.85; background:rgba(15,23,42,0.55); padding:0.65rem 0.8rem; border-radius:12px; border:1px solid var(--glass-border);">
+        <div style="font-size:0.77rem; line-height:1.85; background:rgba(15,23,42,0.55); padding:0.65rem 0.8rem; border-radius:12px; border:1px solid rgba(255,255,255,0.20);">
           <div><b>MQTT Broker:</b> {mqtt_badge}</div>
           <div><b>Servo Drawer:</b> {servo_badge}</div>
           <div><b>Water Pumps:</b> {water_badge}</div>
@@ -1793,7 +1550,6 @@ if st.session_state.role == ROLE_ADMIN:
                 st.query_params.clear()
                 st.rerun()
 
-    # Admin Top Hero Banner
     cfg_iot = get_iot_config()
     mqtt_cls = "ok" if iot_mgr.connected else "bad"
     mqtt_txt = "MQTT: ONLINE" if iot_mgr.connected else "MQTT: OFFLINE"
@@ -1829,7 +1585,7 @@ if st.session_state.role == ROLE_ADMIN:
         )
 
     # -----------------------------------------------------------------
-    # MODULE 1: EXECUTIVE OVERVIEW (Admin Dashboard V2 Glass Grid)
+    # MODULE 1: EXECUTIVE OVERVIEW
     # -----------------------------------------------------------------
     if selected_admin_module.startswith("📊 1."):
         st.subheader("📊 ภาพรวมศูนย์ควบคุม (Executive Overview)")
@@ -1948,7 +1704,7 @@ if st.session_state.role == ROLE_ADMIN:
                     } for t in active_borrows]), hide_index=True, use_container_width=True)
 
     # -----------------------------------------------------------------
-    # MODULE 2: INVENTORY, INSPECTIONS, REQUISITIONS & BORROW/RETURN
+    # MODULE 2: INVENTORY & REQUISITIONS
     # -----------------------------------------------------------------
     elif selected_admin_module.startswith("🛠️ 2."):
         admin_inv_tabs = st.tabs([
@@ -2101,7 +1857,7 @@ if st.session_state.role == ROLE_ADMIN:
                                 e_status = st.selectbox("สถานะ", status_list, index=status_list.index(current_item['status']) if current_item['status'] in status_list else 0)
                                 e_alert_zero = st.checkbox("🔔 แจ้งเตือนเมื่อจำนวนเหลือ 0", value=bool(current_item.get('alert_zero', 0)))
                                 e_note = st.text_area("หมายเหตุ", value=nz(current_item['note']))
-                                cur_img = get_item_image(item_id_int)
+                                cur_img = get_image_store().get(item_id_int)
                                 if cur_img:
                                     st.image(cur_img, width=150, caption="รูปภาพปัจจุบัน")
                                 e_file = st.file_uploader("เปลี่ยนรูปภาพใหม่ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"file_{item_id_int}")
@@ -2250,7 +2006,6 @@ if st.session_state.role == ROLE_ADMIN:
                     target_date = st.date_input("เลือกวันที่", value=now_dt.date())
                     filtered_insp = inspections_df[inspections_df['inspection_date'].dt.date == target_date]
                 elif report_type == "รายสัปดาห์ (Weekly)":
-                    # เลือกวันใดก็ได้ในสัปดาห์ แล้วคำนวณช่วง จันทร์-อาทิตย์ ให้อัตโนมัติ
                     week_pick = st.date_input("เลือกวันใดก็ได้ในสัปดาห์ที่ต้องการ", value=now_dt.date(), key="rep_week_pick")
                     week_start = week_pick - timedelta(days=week_pick.weekday())
                     week_end = week_start + timedelta(days=6)
@@ -2687,7 +2442,7 @@ if st.session_state.role == ROLE_ADMIN:
             st.caption("ยังไม่มีประวัติการดึงค่าพลังงานในฐานข้อมูล")
 
     # -----------------------------------------------------------------
-    # MODULE 7: SYSTEM SETTINGS, IOT CREDENTIALS & TECH ACCOUNTS
+    # MODULE 7: SYSTEM SETTINGS
     # -----------------------------------------------------------------
     elif selected_admin_module.startswith("⚙️ 7."):
         st.subheader("⚙️ ตั้งค่าระบบ, เครือข่ายฮาร์ดแวร์ IoT และบัญชีช่าง")
@@ -2839,13 +2594,11 @@ if st.session_state.role == ROLE_ADMIN:
                 st.info("ยังไม่มีข้อความ MQTT เข้ามาในเซสชันนี้")
 
 # =====================================================================
-#  ROLE 2: TECH VIEW (PURE INVENTORY ONLY - NO MQTT/DRAWER/WATER/FIRE)
+#  ROLE 2: TECH VIEW (PURE INVENTORY ONLY)
 # =====================================================================
 elif st.session_state.role in TECH_ROLES:
-    # ซ่อน Sidebar ของช่างทั้งหมด
     st.markdown("<style>section[data-testid='stSidebar']{display:none !important;}</style>", unsafe_allow_html=True)
 
-    # ส่วนหัวของช่าง: ไม่มีป้าย MQTT, Drawer, Water, Fire ใดๆ ทั้งสิ้น
     st.markdown(f"""
     <div class="app-hero">
       <div>
@@ -2866,7 +2619,6 @@ elif st.session_state.role in TECH_ROLES:
             if st.button("🔙 สลับกลับเป็น 'ผู้ออกแบบ/ดูแลระบบ'", type="primary", use_container_width=True, key="banner_switch_back"):
                 switch_role(ROLE_ADMIN)
 
-    # KPI เฉพาะคลังอุปกรณ์เท่านั้น
     st.markdown(f"""
     <div class="kpi-grid">
       <div class="glass-kpi">
@@ -2898,7 +2650,6 @@ elif st.session_state.role in TECH_ROLES:
         else:
             st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 
-    # แจ้งเตือนรายการที่ถูกปรับลดจำนวนในการตรวจเช็คล่าสุด (ถ้าปกติทุกรายการ จะไม่แสดงอะไร)
     reduced_rows = get_latest_reductions(get_inspections_list())
     if reduced_rows:
         with st.expander(f"📉 การตรวจเช็คล่าสุดมีการปรับลดจำนวน ({len(reduced_rows)} รายการ)"):
@@ -3039,7 +2790,7 @@ elif st.session_state.role in TECH_ROLES:
                             with st.spinner("กำลังบันทึกผลการตรวจ..."):
                                 photos_b64 = [compress_image_to_base64(f, max_size=(1000, 1000), quality=70) for f in photo_files]
                                 flagged_summaries, bulk_operations = [], []
-                                changes_list = []  # เก็บรายการที่จำนวนลดลง เพื่อแจ้งเตือนในหน้าช่าง
+                                changes_list = []
                                 row_map = tools_all_df.set_index('id')
 
                                 for item_id, data in item_reports.items():
