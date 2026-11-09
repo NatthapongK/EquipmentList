@@ -1,7 +1,7 @@
-streamlit>=1.37.0
-pymongo
+streamlit>=1.35.0
+pymongo[srv]
 pandas
 Pillow
 streamlit-local-storage
-paho-mqtt
+paho-mqtt>=1.6.1
 requests
