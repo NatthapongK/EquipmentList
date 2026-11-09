@@ -3,3 +3,5 @@ pymongo
 pandas
 Pillow
 streamlit-local-storage
+paho-mqtt
+requests
