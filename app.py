@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pymongo
 import pymongo.operations
 import pandas as pd
@@ -831,6 +832,267 @@ def parse_tech_txt_content(text_content):
 
 def esc(text):
     return _html.escape(str(text))
+
+# =====================================================================
+#  ALARM ANALYTICS DASHBOARD (Water Alarm / Fire Alarm) - กราฟ Chart.js
+# =====================================================================
+ALARM_BUCKET_COLORS = ["#ef4444", "#f59e0b", "#3b82f6", "#8b5cf6", "#10b981"]
+WATER_ZONES = [("A", "Transferpump A"), ("B", "Transferpump B"), ("C", "Transferpump C"),
+               ("D", "Transferpump D"), ("UG", "Pool Ug Pump")]
+WATER_ZONE_NAME = dict(WATER_ZONES)
+FIRE_ZONE_NAME = {
+    "A": "อาคาร A", "B": "อาคาร B", "C": "อาคาร C", "D": "อาคาร D",
+    "CLUB": "สโมสร / Pavilion", "LIBRARY": "ห้องสมุด", "ST": "บันไดหนีไฟ (ST Zone)", "UNKNOWN": "ไม่สามารถระบุโซนได้",
+}
+FIRE_BUCKETS = [("A", "อาคาร A"), ("B", "อาคาร B"), ("C", "อาคาร C"), ("D", "อาคาร D"), ("OTHER", "สโมสร/บันได/อื่นๆ")]
+TH_MONTH_OPTS = ["ALL", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]
+TH_MONTH_NAME = {"ALL": "ทุกเดือน (All Months)", "01": "มกราคม", "02": "กุมภาพันธ์", "03": "มีนาคม", "04": "เมษายน",
+                 "05": "พฤษภาคม", "06": "มิถุนายน", "07": "กรกฎาคม", "08": "สิงหาคม", "09": "กันยายน",
+                 "10": "ตุลาคม", "11": "พฤศจิกายน", "12": "ธันวาคม"}
+
+def norm_water_loc(raw_loc):
+    """แปลงชื่อจุดตรวจน้ำจากหลายรูปแบบ (A / PUMP A / TransferpumpA / UNDERGROUND / PAVILION) ให้เป็น A,B,C,D,UG"""
+    u = str(raw_loc).upper().strip()
+    if any(k in u for k in ("UNDERGROUND", "PAVILION", "POOL")):
+        return "UG"
+    u = re.sub(r"TRANSFERPUMP|PUMP", "", u).strip()
+    return u if u in ("A", "B", "C", "D") else (u or "-")
+
+def classify_fire_zone(text):
+    """จัดข้อความตำแหน่ง Fire Alarm เข้าโซน A,B,C,D,CLUB,LIBRARY,ST,UNKNOWN"""
+    t = str(text)
+    u = t.upper()
+    for k in ("A", "B", "C", "D"):
+        if f"อาคาร {k}" in t or f"BUILDING {k}" in u or f"BLDG{k}" in u:
+            return k
+    if "สโมสร" in t or "CLUB" in u or "PAVILION" in u:
+        return "CLUB"
+    if "ห้องสมุด" in t or "LIBRARY" in u:
+        return "LIBRARY"
+    if "ST" in u or "บันไดหนีไฟ" in t:
+        return "ST"
+    return "UNKNOWN"
+
+def _alarm_charts_html(spec):
+    """สร้าง HTML กราฟ 4 ช่อง (Bar / Doughnut / Line / Hourly Bar) ด้วย Chart.js ตามแบบแดชบอร์ดตัวอย่าง"""
+    payload = json.dumps(spec, ensure_ascii=False).replace("</", "<\\/")
+    tpl = """
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;font-family:'IBM Plex Sans Thai','Segoe UI',system-ui,sans-serif;}
+  body{background:transparent;color:#f1f5f9;padding:2px;}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;}
+  @media (max-width:700px){.grid{grid-template-columns:1fr;}}
+  .card{background:linear-gradient(145deg,rgba(255,255,255,0.08),rgba(21,28,44,0.62));border:1px solid rgba(255,255,255,0.16);
+        border-radius:14px;padding:14px 16px;box-shadow:0 8px 26px rgba(0,10,30,0.35),inset 0 1px 0 rgba(255,255,255,0.18);}
+  .ttl{font-size:0.74rem;color:#cbd5e1;font-weight:600;margin-bottom:6px;}
+  .box{position:relative;height:250px;width:100%;}
+  #err{display:none;color:#fbbf24;font-size:0.85rem;padding:10px;}
+</style></head><body>
+<div id="err">⚠️ โหลด Chart.js ไม่สำเร็จ (ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อแสดงกราฟ)</div>
+<div class="grid">
+  <div class="card"><div class="ttl" id="t1"></div><div class="box"><canvas id="c1"></canvas></div></div>
+  <div class="card"><div class="ttl" id="t2"></div><div class="box"><canvas id="c2"></canvas></div></div>
+  <div class="card"><div class="ttl" id="t3"></div><div class="box"><canvas id="c3"></canvas></div></div>
+  <div class="card"><div class="ttl" id="t4"></div><div class="box"><canvas id="c4"></canvas></div></div>
+</div>
+<script>
+const S = __PAYLOAD__;
+['t1','t2','t3','t4'].forEach((id,i)=>{document.getElementById(id).textContent=S.titles[i];});
+if (typeof Chart === 'undefined') { document.getElementById('err').style.display='block'; }
+else {
+  Chart.defaults.color = '#94a3b8';
+  const grid = {color:'rgba(148,163,184,0.16)'};
+  const opts = (noScale) => ({
+    responsive:true, maintainAspectRatio:false,
+    plugins:{legend:{labels:{color:'#94a3b8',font:{size:11}}}},
+    scales: noScale ? {} : {
+      x:{ticks:{color:'#94a3b8',maxRotation:0,autoSkip:true},grid:grid},
+      y:{beginAtZero:true,ticks:{color:'#94a3b8',precision:0},grid:grid}
+    }
+  });
+  new Chart(document.getElementById('c1'),{type:'bar',
+    data:{labels:S.labels,datasets:[{label:S.l1,data:S.counts,backgroundColor:S.colors,borderRadius:6}]},options:opts(false)});
+  new Chart(document.getElementById('c2'),{type:'doughnut',
+    data:{labels:S.labels,datasets:[{data:S.counts,backgroundColor:S.colors,borderWidth:2,borderColor:'#151c2c'}]},options:opts(true)});
+  new Chart(document.getElementById('c3'),{type:'line',
+    data:{labels:S.dates,datasets:[{label:S.l3,data:S.dateCounts,borderColor:S.trendColor,backgroundColor:S.trendFill,fill:true,tension:0.3}]},options:opts(false)});
+  new Chart(document.getElementById('c4'),{type:'bar',
+    data:{labels:S.hours,datasets:[{label:S.l4,data:S.hourCounts,backgroundColor:S.hourColor,borderRadius:4}]},options:opts(false)});
+}
+</script></body></html>
+"""
+    return tpl.replace("__PAYLOAD__", payload)
+
+def render_alarm_dashboard(kind, df):
+    """แดชบอร์ดสถิติ Water Alarm (kind='water') / Fire Alarm (kind='fire'): ตัวกรอง + KPI 3 ใบ + กราฟ 4 ช่อง + ตารางประวัติ"""
+    is_fire = kind == "fire"
+    p = f"{kind}_dash"
+    if df is None or df.empty:
+        st.info("ยังไม่มีประวัติสัญญาณแจ้งเตือนอัคคีภัยในฐานข้อมูล" if is_fire else "ยังไม่มีข้อมูลประวัติระดับน้ำในฐานข้อมูล")
+        return
+
+    d = df.copy()
+    for col in ("datetime", "location", "status"):
+        if col not in d.columns:
+            d[col] = ""
+    d["dt"] = pd.to_datetime(d["datetime"], errors="coerce")
+    d = d.dropna(subset=["dt"]).copy()
+    if d.empty:
+        st.warning("พบข้อมูลแต่รูปแบบวัน-เวลาอ่านไม่ได้ (ต้องเป็น YYYY-MM-DD HH:MM:SS)")
+        return
+    d["year"] = d["dt"].dt.strftime("%Y")
+    d["month"] = d["dt"].dt.strftime("%m")
+    d["date"] = d["dt"].dt.strftime("%Y-%m-%d")
+    d["hour"] = d["dt"].dt.hour
+    d["status"] = d["status"].astype(str).str.upper().str.strip()
+    d["loc_text"] = d["location"].astype(str).str.replace(r"\s*\n\s*", " ", regex=True).str.strip()
+    d["zone"] = d["loc_text"].map(classify_fire_zone) if is_fire else d["location"].map(norm_water_loc)
+    inc_word = "ALERT" if is_fire else "ALARM"
+
+    # ---------- แถบตัวกรอง ----------
+    year_opts = ["ALL"] + sorted(d["year"].unique().tolist(), reverse=True)
+    zone_opts = ["ALL"] + (list(FIRE_ZONE_NAME.keys()) if is_fire else [z for z, _ in WATER_ZONES])
+    zone_name = FIRE_ZONE_NAME if is_fire else WATER_ZONE_NAME
+    status_opts = ["ALL", "ALERT", "CLEAR"] if is_fire else ["ALL", "ALARM", "NORMAL"]
+
+    def _reset_filters():
+        for k in ("year", "month", "zone", "status"):
+            st.session_state[f"{p}_{k}"] = "ALL"
+        st.session_state[f"{p}_search"] = ""
+
+    c1, c2, c3, c4, c5 = st.columns([1, 1.1, 1.3, 1, 0.9])
+    sel_year = c1.selectbox("กรองตามปี (Year)", year_opts, key=f"{p}_year",
+                            format_func=lambda v: "ทุกปี (All Years)" if v == "ALL" else v)
+    sel_month = c2.selectbox("กรองตามเดือน (Month)", TH_MONTH_OPTS, key=f"{p}_month",
+                             format_func=lambda v: TH_MONTH_NAME[v])
+    sel_zone = c3.selectbox("อาคาร/โซน (Zone)" if is_fire else "ตำแหน่ง (Location)", zone_opts, key=f"{p}_zone",
+                            format_func=lambda v: ("ทุกสถานที่ (All Areas)" if is_fire else "ทั้งหมด (All Pumps)") if v == "ALL" else zone_name.get(v, v))
+    sel_status = c4.selectbox("สถานะ (Status)", status_opts, key=f"{p}_status",
+                              format_func=lambda v: "ทุกสถานะ (All Status)" if v == "ALL" else v)
+    c5.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
+    c5.button("🔄 ล้างการกรอง", key=f"{p}_reset", on_click=_reset_filters, use_container_width=True)
+
+    f = d
+    if sel_year != "ALL":
+        f = f[f["year"] == sel_year]
+    if sel_month != "ALL":
+        f = f[f["month"] == sel_month]
+    if sel_zone != "ALL":
+        f = f[f["zone"] == sel_zone]
+    if sel_status != "ALL":
+        f = f[f["status"].str.contains(sel_status, na=False)]
+    inc = f[f["status"].str.contains(inc_word, na=False)]
+
+    # ---------- สรุปตัวเลข ----------
+    if is_fire:
+        bucket_keys = [k for k, _ in FIRE_BUCKETS]
+        bucket_names = [n for _, n in FIRE_BUCKETS]
+        bucket_series = inc["zone"].where(inc["zone"].isin(["A", "B", "C", "D"]), "OTHER")
+    else:
+        bucket_keys = [k for k, _ in WATER_ZONES]
+        bucket_names = [n for _, n in WATER_ZONES]
+        bucket_series = inc["zone"]
+    counts = [int((bucket_series == k).sum()) for k in bucket_keys]
+
+    if sum(counts) > 0:
+        top_i = max(range(len(counts)), key=lambda i: counts[i])
+        top_txt = f"{bucket_names[top_i]} ({counts[top_i]} ครั้ง)"
+    else:
+        top_txt = "-"
+    if not inc.empty:
+        hc = inc["hour"].value_counts()
+        ph, pn = int(hc.idxmax()), int(hc.max())
+        peak_txt = f"{ph:02d}:00 - {ph:02d}:59 น. ({pn} ครั้ง)"
+    else:
+        peak_txt = "-"
+
+    if is_fire:
+        kpis = [
+            ("จำนวนการเตือนภัย (FIRE INCIDENT COUNT)", str(len(inc)), "#ff334b", "จำนวนครั้งที่ตรวจพบอัคคีภัยตามตัวกรอง"),
+            ("อาคาร/โซนเสี่ยงสูงสุด (MOST TRIGGERED ZONE)", top_txt, "#f59e0b", "พื้นที่ที่ส่งสัญญาณอลามบ่อยที่สุด"),
+            ("ช่วงเวลาเกิดเหตุสูงสุด (PEAK ALARM HOUR)", peak_txt, "#8b5cf6", "ชั่วโมงในรอบวันที่เกิดเหตุบ่อยที่สุด"),
+        ]
+    else:
+        kpis = [
+            ("จำนวนการแจ้งเตือน (FILTERED WATER ALARMS)", str(len(inc)), "#00f2fe", "จำนวนครั้งที่เกิด Alarm ในช่วงที่เลือก"),
+            ("จุดเสี่ยงแจ้งเตือนสูงสุด (MOST FREQUENT)", top_txt, "#f59e0b", "ตำแหน่งที่มีอัตราการเกิด Alarm สูงสุด"),
+            ("ช่วงเวลาเสี่ยงสูง (PEAK ALARM HOUR)", peak_txt, "#8b5cf6", "ชั่วโมงในรอบวันที่เกิด Alarm ถี่ที่สุด"),
+        ]
+    cards = "".join(
+        f'<div class="glass-kpi"><div class="top"><span class="lbl">{esc(lbl)}</span></div>'
+        f'<div class="val" style="color:{col} !important;">{esc(val)}</div><div class="sub">{esc(sub)}</div></div>'
+        for lbl, val, col, sub in kpis
+    )
+    st.markdown(f'<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(250px,1fr));">{cards}</div>', unsafe_allow_html=True)
+
+    # ---------- กราฟ 4 ช่อง ----------
+    day_counts = inc["date"].value_counts().sort_index()
+    hour_counts = [int((inc["hour"] == h).sum()) for h in range(24)]
+    if is_fire:
+        titles = ["1. สถิติการเกิดเหตุแยกตามอาคาร (FIRE INCIDENTS BY BUILDING)",
+                  "2. สัดส่วน % การแจ้งเตือนแต่ละอาคาร (BUILDING ALARM DISTRIBUTION)",
+                  "3. แนวโน้มการแจ้งเตือนตามวัน (FIRE INCIDENTS TIMELINE)",
+                  "4. ช่วงเวลาการเกิด FIRE ALARM ในรอบวัน (PEAK HOUR ANALYSIS)"]
+        labels3 = ("จำนวนเหตุการณ์เตือนภัย", "จำนวนเหตุการณ์ต่อวัน", "ความถี่ Fire Alarm แต่ละชั่วโมง")
+        trend_c, trend_f, hour_c = "#ff416c", "rgba(255, 65, 108, 0.12)", "#ff4b2b"
+    else:
+        titles = ["1. จำนวนครั้งการแจ้งเตือนแยกตามจุด (WATER ALARM COUNT)",
+                  "2. สัดส่วนเปอร์เซ็นต์การเกิด ALARM (WATER ALARM DISTRIBUTION %)",
+                  "3. แนวโน้มการแจ้งเตือนตามช่วงเวลา (TIMELINE TREND)",
+                  "4. ช่วงเวลาการเกิด ALARM ในรอบวัน (PEAK HOUR 00:00 - 23:00)"]
+        labels3 = ("จำนวนครั้งที่แจ้งเตือน", "จำนวน Alarm ต่อวัน", "ความถี่การเกิด Alarm ในแต่ละชั่วโมง")
+        trend_c, trend_f, hour_c = "#00f2fe", "rgba(0, 242, 254, 0.12)", "#8b5cf6"
+    spec = {
+        "titles": titles, "labels": bucket_names, "counts": counts, "colors": ALARM_BUCKET_COLORS,
+        "l1": labels3[0], "l3": labels3[1], "l4": labels3[2],
+        "dates": day_counts.index.tolist(), "dateCounts": [int(v) for v in day_counts.values],
+        "hours": [f"{h:02d}:00" for h in range(24)], "hourCounts": hour_counts,
+        "trendColor": trend_c, "trendFill": trend_f, "hourColor": hour_c,
+    }
+    chart_html = _alarm_charts_html(spec)  # ข้อมูลในกราฟเป็นตัวเลข/ชื่อมาตรฐานเท่านั้น ไม่ใส่ข้อความดิบจาก MQTT
+    if hasattr(st, "iframe"):
+        st.iframe(chart_html, height=640)  # Streamlit รุ่นใหม่ (components.html ถูกเลิกใช้)
+    else:
+        components.html(chart_html, height=640, scrolling=True)
+
+    # ---------- ตารางประวัติ ----------
+    st.markdown(f"##### {'ประวัติบันทึกสัญญาณแจ้งเตือนอัคคีภัย (Fire Alarm Log History)' if is_fire else 'ประวัติการบันทึกระดับน้ำ (Water Level Incident History)'}")
+    t1, t2 = st.columns([3, 1.2])
+    q = t1.text_input("🔍 ค้นหาในตาราง", key=f"{p}_search", placeholder="พิมพ์วันที่ ตำแหน่ง หรือสถานะ...", label_visibility="collapsed")
+    full_csv = df[[c for c in ("datetime", "location", "status") if c in df.columns]].rename(
+        columns={"datetime": "DateTime", "location": "Location", "status": "Status"}
+    ).to_csv(index=False).encode("utf-8-sig")
+    t2.download_button("📥 โหลด Fire CSV" if is_fire else "📥 โหลด CSV ทั้งหมด", data=full_csv,
+                       file_name="fire_log.csv" if is_fire else "water_log.csv", mime="text/csv",
+                       key=f"{p}_dl", use_container_width=True)
+
+    t = f.sort_values("dt", ascending=False)
+    if is_fire:
+        disp = t["loc_text"]  # Fire: แสดงข้อความตำแหน่งเต็ม (อาคาร/ชั้น/โซน)
+    else:
+        disp = t["zone"].map(lambda z: zone_name.get(z, ""))  # Water: แสดงชื่อปั๊มมาตรฐาน
+        disp = disp.where(disp != "", t["loc_text"])
+    t = t.assign(disp=disp)
+    if q.strip():
+        ql = q.strip().lower()
+        mask = (t["datetime"].astype(str).str.lower().str.contains(ql, regex=False) |
+                t["disp"].str.lower().str.contains(ql, regex=False) |
+                t["status"].str.lower().str.contains(ql, regex=False))
+        t = t[mask]
+    shown = t.head(50)
+    if shown.empty:
+        st.info("ไม่พบประวัติการแจ้งเตือนตามเงื่อนไข")
+    else:
+        view = pd.DataFrame({
+            "วัน-เวลา (Date Time)": shown["datetime"].astype(str).values,
+            "อาคาร / ชั้น / โซน (Location Details)" if is_fire else "ตำแหน่ง (Location)": shown["disp"].values,
+            "สถานะ (Status)": [("🔴 " if inc_word in s_ else "🟢 ") + s_ for s_ in shown["status"]],
+        })
+        st.dataframe(view, hide_index=True, use_container_width=True)
+        st.caption(f"แสดง {len(shown)} จาก {len(t)} รายการล่าสุดตามตัวกรอง (สูงสุด 50 รายการ)")
+
 
 def keyed_container(key, **kwargs):
     try:
@@ -2492,12 +2754,11 @@ if st.session_state.role == ROLE_ADMIN:
 
         st.markdown("---")
         st.markdown("#### 📊 สถิติและประวัติการแจ้งเตือนระดับน้ำ (Water Alarm Incident Analytics)")
-        water_logs = list(db.iot_logs.find({"system": "WATER"}, {"_id": 0}).sort("datetime", -1).limit(1000))
+        water_logs = list(db.iot_logs.find({"system": "WATER"}, {"_id": 0, "datetime": 1, "location": 1, "status": 1}).sort("datetime", -1).limit(5000))
         w_df = pd.DataFrame(water_logs)
 
-        col_up_w, col_dl_w = st.columns(2)
-        with col_up_w:
-            up_w_csv = st.file_uploader("📂 นำเข้าไฟล์ `log.csv` จากการ์ด SD ของบอร์ด ESP32-TFT", type=["csv"], key="up_water_csv")
+        with st.expander("📂 นำเข้าไฟล์ `log.csv` จากการ์ด SD ของบอร์ด ESP32-TFT"):
+            up_w_csv = st.file_uploader("เลือกไฟล์ log.csv (คอลัมน์ DateTime, Location, Status)", type=["csv"], key="up_water_csv")
             if up_w_csv is not None and st.button("📥 บันทึกข้อมูลจาก log.csv ลงฐานข้อมูล", key="btn_imp_w"):
                 csv_df = pd.read_csv(up_w_csv)
                 ins = []
@@ -2513,38 +2774,7 @@ if st.session_state.role == ROLE_ADMIN:
                     db.iot_logs.insert_many(ins)
                 done(f"นำเข้าข้อมูลประวัติระดับน้ำ {len(ins)} รายการสำเร็จ!")
 
-        if not w_df.empty:
-            with col_dl_w:
-                csv_bytes = w_df[["datetime", "location", "status"]].rename(
-                    columns={"datetime": "DateTime", "location": "Location", "status": "Status"}
-                ).to_csv(index=False).encode("utf-8")
-                st.download_button("📥 ดาวน์โหลดประวัติ Water Log (CSV)", data=csv_bytes, file_name="water_log.csv", mime="text/csv", use_container_width=True)
-
-            alarms_only = w_df[w_df["status"] == "ALARM"]
-            c_m1, c_m2, c_m3 = st.columns(3)
-            c_m1.metric("จำนวนการเกิด Water Alarm ทั้งหมด", f"{len(alarms_only)} ครั้ง")
-            top_loc = alarms_only["location"].value_counts().idxmax() if not alarms_only.empty else "-"
-            c_m2.metric("จุดเสี่ยงแจ้งเตือนสูงสุด", top_loc)
-            if not alarms_only.empty:
-                hours = pd.to_datetime(alarms_only["datetime"], errors="coerce").dt.hour.dropna()
-                peak_h = f"{int(hours.mode()[0]):02d}:00 น." if not hours.empty else "-"
-            else:
-                peak_h = "-"
-            c_m3.metric("ช่วงเวลาที่เกิดเหตุบ่อยสุด", peak_h)
-
-            if not alarms_only.empty:
-                ch1, ch2 = st.columns(2)
-                with ch1:
-                    st.caption("1. จำนวนครั้งที่เกิด Alarm แยกตามจุดตรวจ")
-                    st.bar_chart(alarms_only["location"].value_counts())
-                with ch2:
-                    st.caption("2. แนวโน้มการเกิด Alarm ตามวันที่")
-                    alarms_only_dt = pd.to_datetime(alarms_only["datetime"], errors="coerce").dt.date.value_counts().sort_index()
-                    st.line_chart(alarms_only_dt)
-
-            st.dataframe(w_df[["datetime", "location", "status", "raw"]], use_container_width=True, hide_index=True)
-        else:
-            st.info("ยังไม่มีข้อมูลประวัติระดับน้ำในฐานข้อมูล")
+        render_alarm_dashboard("water", w_df)
 
     # -----------------------------------------------------------------
     # MODULE 5: FIRE ALARM & RELAY RESET
@@ -2615,13 +2845,12 @@ if st.session_state.role == ROLE_ADMIN:
                 done(f"จำลองสัญญาณเตือนภัย: {sim_bldg}")
 
         st.markdown("---")
-        st.markdown("#### 📊 ประวัติสัญญาณแจ้งเตือนอัคคีภัย (Fire Alarm Log History)")
-        fire_logs = list(db.iot_logs.find({"system": "FIRE"}, {"_id": 0}).sort("datetime", -1).limit(1000))
+        st.markdown("#### 📊 สถิติและประวัติสัญญาณแจ้งเตือนอัคคีภัย (Fire Alarm Incident Analytics)")
+        fire_logs = list(db.iot_logs.find({"system": "FIRE"}, {"_id": 0, "datetime": 1, "location": 1, "status": 1}).sort("datetime", -1).limit(5000))
         f_df = pd.DataFrame(fire_logs)
 
-        col_up_f, col_dl_f = st.columns(2)
-        with col_up_f:
-            up_f_csv = st.file_uploader("📂 นำเข้าไฟล์ `fire_log.csv` จากการ์ด SD", type=["csv"], key="up_fire_csv")
+        with st.expander("📂 นำเข้าไฟล์ `fire_log.csv` จากการ์ด SD"):
+            up_f_csv = st.file_uploader("เลือกไฟล์ fire_log.csv (คอลัมน์ DateTime, Location, Status)", type=["csv"], key="up_fire_csv")
             if up_f_csv is not None and st.button("📥 บันทึกข้อมูลจาก fire_log.csv ลงฐานข้อมูล", key="btn_imp_f"):
                 csv_df = pd.read_csv(up_f_csv)
                 ins = []
@@ -2637,16 +2866,7 @@ if st.session_state.role == ROLE_ADMIN:
                     db.iot_logs.insert_many(ins)
                 done(f"นำเข้าข้อมูลประวัติอัคคีภัย {len(ins)} รายการสำเร็จ!")
 
-        if not f_df.empty:
-            with col_dl_f:
-                f_csv_bytes = f_df[["datetime", "location", "status"]].rename(
-                    columns={"datetime": "DateTime", "location": "Location", "status": "Status"}
-                ).to_csv(index=False).encode("utf-8")
-                st.download_button("📥 ดาวน์โหลดประวัติ Fire Log (CSV)", data=f_csv_bytes, file_name="fire_log.csv", mime="text/csv", use_container_width=True)
-
-            st.dataframe(f_df[["datetime", "location", "status"]], use_container_width=True, hide_index=True)
-        else:
-            st.info("ยังไม่มีประวัติสัญญาณแจ้งเตือนอัคคีภัยในฐานข้อมูล")
+        render_alarm_dashboard("fire", f_df)
 
     # -----------------------------------------------------------------
     # MODULE 6: GROWATT SPF5000ES SOLAR MONITOR
