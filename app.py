@@ -925,6 +925,24 @@ def prep_solar_df(df, date_order="auto"):
         return None, "อ่านวัน-เวลาหรือค่าพลังงานจากชีตไม่ได้"
     return d, ""
 
+def get_solar_sheet_df():
+    """โหลดข้อมูลชีตโซลาร์ตามค่าที่ตั้งไว้ในกล่อง 'แหล่งข้อมูล' (หรือไฟล์ CSV ที่อัปโหลด) คืนค่า (DataFrame|None, ข้อความผิดพลาด)"""
+    sid = (st.session_state.get("solar_sheet_id") or SOLAR_SHEET_ID_DEFAULT).strip()
+    gid = (st.session_state.get("solar_sheet_gid") or SOLAR_SHEET_GID_DEFAULT).strip() or "0"
+    order = st.session_state.get("solar_date_order", "auto")
+    up = st.session_state.get("solar_csv_upload")
+    if up is not None:
+        try:
+            up.seek(0)
+            raw_df, err = pd.read_csv(up), ""
+        except Exception as e:
+            raw_df, err = None, str(e)
+    else:
+        raw_df, err = load_solar_sheet(sid, gid)
+    if raw_df is None:
+        return None, err
+    return prep_solar_df(raw_df, order)
+
 def _solar_charts_html(spec):
     """กราฟ Neon Glass: เกจครึ่งวงกลม 3 ตัว + Power Flow + แบตเตอรี่ + พลังงานรายชั่วโมง + สมดุลพลังงาน + PV vs Current"""
     payload = json.dumps(spec, ensure_ascii=False).replace("</", "<\\/")
@@ -933,6 +951,7 @@ def _solar_charts_html(spec):
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:'IBM Plex Sans Thai','Segoe UI',system-ui,sans-serif;}
+html,body{overflow:hidden;}
 body{background:transparent;color:#f1f5f9;padding:2px;}
 .row{display:grid;gap:14px;margin-bottom:14px;}
 .r3{grid-template-columns:repeat(3,1fr);}.r2{grid-template-columns:repeat(2,1fr);}.r1{grid-template-columns:1fr;}
@@ -1004,6 +1023,9 @@ new Chart(document.getElementById('c5'),{type:'scatter',data:{datasets:[{label:'
   options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{...tip,callbacks:{label:c=>c.raw.y+' W @ '+c.raw.x+' A'}}},
   scales:{x:{title:{display:true,text:'PV Current (A)',color:'#94a3b8'},ticks:{color:'#94a3b8'},grid:grid},y:{title:{display:true,text:'PV Power (W)',color:'#94a3b8'},ticks:{color:'#94a3b8'},grid:grid}}}});
 }
+function __fit(){try{const h=Math.ceil(document.body.getBoundingClientRect().height)+8;
+  if(window.frameElement){window.frameElement.style.height=h+'px';window.frameElement.setAttribute('height',h);}}catch(e){}}
+window.addEventListener('load',__fit);window.addEventListener('resize',__fit);setTimeout(__fit,250);setTimeout(__fit,1400);
 </script></body></html>
 """
     return tpl.replace("__PAYLOAD__", payload)
@@ -1040,7 +1062,6 @@ def render_solar_dashboard(d_all):
     i_pk = int(d["pv"].idxmax())
     i_ld = int(d["load"].idxmax())
     last = d.iloc[-1]
-    v0, v1 = float(d["vbat"].iloc[0]), float(last["vbat"])
 
     # ---- KPI cards (ตัวเลขนับขึ้นด้วย .cnt เมื่อเป็นจำนวนเต็ม) ----
     def kpi(lbl, icon, val_html, sub, color="#FFFFFF"):
@@ -1052,7 +1073,6 @@ def render_solar_dashboard(d_all):
         kpi("LOAD ENERGY (พลังงานที่ใช้)", "🏠", f'{tot_ld:.2f} kWh', f'เฉลี่ย {d["load"].mean():.0f} W · พุ่งสูงสุด {int(d.loc[i_ld, "load"])} W @ {d.loc[i_ld, "dt"].strftime("%H:%M")}', "#22D3EE"),
         kpi("SOLAR COVERAGE (แผงรองรับโหลด)", "🌞", f'<span class="cnt" style="--n:{int(round(coverage))}"></span>%', "สัดส่วนโหลดที่แผงจ่ายได้โดยตรง", "#34D399"),
         kpi("BATTERY NOW", "🔋", f'<span class="cnt" style="--n:{int(last["soc"])}"></span>% <span style="font-size:1rem;color:#94A3B8;">({last["vbat"]:.2f} V)</span>', f'แรงดัน {d["vbat"].min():.2f} – {d["vbat"].max():.2f} V', "#A78BFA"),
-        kpi("VBAT TREND", "📈", f'{v1 - v0:+.2f} V', f'{v0:.2f} → {v1:.2f} V ตลอดช่วงที่เลือก', "#34D399" if v1 >= v0 else "#F87171"),
     ])
     st.markdown(f'<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(215px,1fr));">{cards}</div>', unsafe_allow_html=True)
 
@@ -1085,9 +1105,9 @@ def render_solar_dashboard(d_all):
     }
     chart_html = _solar_charts_html(spec)
     if hasattr(st, "iframe"):
-        st.iframe(chart_html, height=1080)
+        st.iframe(chart_html, height=1170)
     else:
-        components.html(chart_html, height=1080, scrolling=True)
+        components.html(chart_html, height=1170, scrolling=False)
 
     # ---- ตารางข้อมูล ----
     st.markdown("##### 🗂️ ข้อมูลดิบจากชีต Solar_Data_Log")
@@ -1243,7 +1263,7 @@ function spin(d){dialDeg+=d;dial.style.transform='rotate('+dialDeg+'deg)';}
 function statics(s){
   const up=s==='UP';safe.classList.toggle('open',up);safe.classList.toggle('unlocked',up);safe.classList.toggle('light',up);safe.classList.toggle('locked',!up);
   needle.style.transform='rotate('+(up?0:180)+'deg)';ang.textContent=(up?0:180)+'°';
-  setStatus(up?'st-open':'st-lock',up?'UNLOCK · ปลดล็อกแล้ว':'LOCK · ล็อกอยู่');steps.forEach(li=>li.className=PENDING?'':'done');
+  setStatus(up?'st-open':'st-lock',up?'OPEN · เปิดอยู่':'LOCK · ล็อกอยู่');steps.forEach(li=>li.className=PENDING?'':'done');
 }
 function run(target,cb){
   if(busy)return;busy=true;const opening=target==='UP';
@@ -1254,7 +1274,7 @@ function run(target,cb){
     T(1500,()=>{setStep(2);safe.classList.add('unlocked');clunk();});
     T(2100,()=>{setStep(3);safe.classList.add('open');safe.classList.remove('locked');beep(180,.5,'triangle',.05);});
     T(2900,()=>{safe.classList.add('light');});
-    T(3500,()=>{safe.classList.remove('working');stage.classList.remove('scan');setStatus('st-open','UNLOCK · ปลดล็อกแล้ว');setStep(4);stamp(true);beep(660,.12,'sine',.06);setTimeout(()=>beep(990,.2,'sine',.06),140);cur='UP';busy=false;cb&&cb();});
+    T(3500,()=>{safe.classList.remove('working');stage.classList.remove('scan');setStatus('st-open','OPEN · เปิดอยู่');setStep(4);stamp(true);beep(660,.12,'sine',.06);setTimeout(()=>beep(990,.2,'sine',.06),140);cur='UP';busy=false;cb&&cb();});
   }else{
     T(400,()=>{setStep(3);safe.classList.remove('light');});
     T(700,()=>{safe.classList.remove('open');});
@@ -1275,7 +1295,7 @@ document.getElementById('demo').addEventListener('click',()=>{if(!busy){run(cur=
         when = esc(str(r.get("datetime", ""))[5:16])
         who = esc(str(r.get("location", "")))
         chips += (f'<div class="chip" style="animation-delay:{i * 0.08:.2f}s"><b class="{"u" if up else "d"}">'
-                  f'{"UNLOCK" if up else "LOCK"}</b><span>{when} · {who}</span></div>')
+                  f'{"OPEN" if up else "LOCK"}</b><span>{when} · {who}</span></div>')
     if not chips:
         chips = '<div class="chip"><span>ยังไม่มีประวัติการสั่งงาน</span></div>'
     return (tpl.replace("__STATE__", "UP" if state == "UP" else "DOWN")
@@ -1292,6 +1312,7 @@ def _alarm_charts_html(spec):
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
   *{margin:0;padding:0;box-sizing:border-box;font-family:'IBM Plex Sans Thai','Segoe UI',system-ui,sans-serif;}
+  html,body{overflow:hidden;}
   body{background:transparent;color:#f1f5f9;padding:2px;}
   .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;}
   @media (max-width:700px){.grid{grid-template-columns:1fr;}}
@@ -1332,6 +1353,9 @@ else {
   new Chart(document.getElementById('c4'),{type:'bar',
     data:{labels:S.hours,datasets:[{label:S.l4,data:S.hourCounts,backgroundColor:S.hourColor,borderRadius:4}]},options:opts(false)});
 }
+function __fit(){try{const h=Math.ceil(document.body.getBoundingClientRect().height)+8;
+  if(window.frameElement){window.frameElement.style.height=h+'px';window.frameElement.setAttribute('height',h);}}catch(e){}}
+window.addEventListener('load',__fit);window.addEventListener('resize',__fit);setTimeout(__fit,250);setTimeout(__fit,1400);
 </script></body></html>
 """
     return tpl.replace("__PAYLOAD__", payload)
@@ -1464,9 +1488,9 @@ def render_alarm_dashboard(kind, df):
     }
     chart_html = _alarm_charts_html(spec)  # ข้อมูลในกราฟเป็นตัวเลข/ชื่อมาตรฐานเท่านั้น ไม่ใส่ข้อความดิบจาก MQTT
     if hasattr(st, "iframe"):
-        st.iframe(chart_html, height=640)  # Streamlit รุ่นใหม่ (components.html ถูกเลิกใช้)
+        st.iframe(chart_html, height=650)  # Streamlit รุ่นใหม่ (components.html ถูกเลิกใช้)
     else:
-        components.html(chart_html, height=640, scrolling=True)
+        components.html(chart_html, height=650, scrolling=False)
 
     # ---------- ตารางประวัติ ----------
     st.markdown(f"##### {'ประวัติบันทึกสัญญาณแจ้งเตือนอัคคีภัย (Fire Alarm Log History)' if is_fire else 'ประวัติการบันทึกระดับน้ำ (Water Level Incident History)'}")
@@ -2118,6 +2142,15 @@ section[data-testid="stSidebar"] {
   .cnt { --num: var(--n); }
 }
 
+/* =================================================================
+   IOT CARD OVERFLOW FIX - ชื่อ/ป้ายสถานะไม่ล้นการ์ด: ตัดบรรทัดอัตโนมัติ ป้ายสถานะลงบรรทัดใหม่เมื่อที่ไม่พอ
+   ================================================================= */
+.iot-card { min-height: 6rem; display: flex; flex-direction: column; justify-content: space-between; min-width: 0; }
+.iot-card .hd { overflow-wrap: anywhere; }
+.iot-card .bd { flex-wrap: wrap; gap: 0.35rem 0.6rem; align-items: center; justify-content: space-between; min-width: 0; }
+.iot-card .nm { flex: 1 1 6rem; min-width: 0; line-height: 1.3; overflow-wrap: anywhere; word-break: break-word; }
+.iot-card .pill { flex: none; white-space: nowrap; max-width: 100%; }
+
 @media (max-width:768px){
   .block-container { padding-left: .4rem !important; padding-right: .4rem !important; }
   .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 0.45rem; }
@@ -2519,7 +2552,7 @@ if st.session_state.role == ROLE_ADMIN:
         st.markdown("---")
         st.caption("SYSTEM TELEMETRY")
         mqtt_badge = "🟢 Online" if iot_mgr.connected else "🔴 Offline"
-        servo_badge = "🔓 UNLOCK" if iot_mgr.servo_status == "UP" else "🔒 LOCK"
+        servo_badge = "🔓 OPEN" if iot_mgr.servo_status == "UP" else "🔒 LOCK"
         fire_badge = "🚨 ALERT" if iot_mgr.fire_status == "ALERT" else "🟢 NORMAL"
         water_any_alarm = any(v == "ALARM" for v in iot_mgr.water_status.values())
         water_badge = "🚨 ALARM" if water_any_alarm else "🟢 NORMAL"
@@ -2569,7 +2602,7 @@ if st.session_state.role == ROLE_ADMIN:
     water_cls = "bad" if water_alarm_cnt > 0 else "ok"
     water_txt = f"WATER ALARM: {water_alarm_cnt}" if water_alarm_cnt else "WATER: NORMAL"
     servo_cls = "info" if iot_mgr.servo_status == "UP" else "ok"
-    servo_txt = f"DRAWER: {iot_mgr.servo_status}"
+    servo_txt = "DRAWER: OPEN" if iot_mgr.servo_status == "UP" else "DRAWER: LOCK"
 
     st.markdown(f"""
     <div class="app-hero">
@@ -2636,11 +2669,11 @@ if st.session_state.role == ROLE_ADMIN:
 
         st.markdown("#### ⚡ แผงควบคุมด่วน (Quick Hardware & System Controls)")
         qa1, qa2, qa3, qa4, qa5 = st.columns(5)
-        if qa1.button("🔓 เปิดลิ้นชัก (Servo UP)", type="primary", use_container_width=True):
+        if qa1.button("🔓 เปิดลิ้นชัก (OPEN)", type="primary", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_servo_cmd"], "UP")
             st.toast("ส่งคำสั่ง UP ไปที่ esp8266/servo แล้ว", icon="🔓")
             st.rerun()
-        if qa2.button("🔒 ล็อกลิ้นชัก (Servo DOWN)", use_container_width=True):
+        if qa2.button("🔒 ล็อกลิ้นชัก (LOCK)", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_servo_cmd"], "DOWN")
             st.toast("ส่งคำสั่ง DOWN ไปที่ esp8266/servo แล้ว", icon="🔒")
             st.rerun()
@@ -3136,14 +3169,14 @@ if st.session_state.role == ROLE_ADMIN:
             <div class="glass-kpi" style="padding:1.35rem;">
               <div class="top"><span class="lbl">CURRENT SERVO POSITION</span><span class="ic-badge">{'🔓' if is_up else '🔒'}</span></div>
               <div class="val" style="font-size:1.7rem; color:{'#38BDF8' if is_up else '#34D399'} !important;">
-                {'UNLOCK (ปลดล็อก 0°)' if is_up else 'LOCK (ล็อก 180°)'}
+                {'OPEN (เปิด 0°)' if is_up else 'LOCK (ล็อก 180°)'}
               </div>
               <div class="sub">อัปเดตสถานะล่าสุด: {iot_mgr.servo_last_update}</div>
             </div>
             """, unsafe_allow_html=True)
 
             b_up, b_down = st.columns(2)
-            if b_up.button("🔓 สั่งเปิดลิ้นชัก (Publish 'UP')", type="primary", use_container_width=True):
+            if b_up.button("🔓 สั่งเปิดลิ้นชัก (OPEN)", type="primary", use_container_width=True):
                 iot_mgr.publish(cfg_iot["topic_servo_cmd"], "UP")
                 db.iot_logs.insert_one({
                     "datetime": get_now_str(), "system": "SERVO",
@@ -3151,9 +3184,9 @@ if st.session_state.role == ROLE_ADMIN:
                     "raw": f"Admin {st.session_state.username} sent UP"
                 })
                 st.session_state["servo_cmd"] = {"target": "UP", "ts": time.time()}
-                done("ส่งคำสั่ง 'UP' (หมุนเซอร์โวไปที่ 0°) เรียบร้อยแล้ว!")
+                done("ส่งคำสั่ง OPEN (หมุนเซอร์โวไปที่ 0°) เรียบร้อยแล้ว!")
 
-            if b_down.button("🔒 สั่งล็อก/ปิดลิ้นชัก (Publish 'DOWN')", use_container_width=True):
+            if b_down.button("🔒 สั่งล็อก/ปิดลิ้นชัก (LOCK)", use_container_width=True):
                 iot_mgr.publish(cfg_iot["topic_servo_cmd"], "DOWN")
                 db.iot_logs.insert_one({
                     "datetime": get_now_str(), "system": "SERVO",
@@ -3161,7 +3194,7 @@ if st.session_state.role == ROLE_ADMIN:
                     "raw": f"Admin {st.session_state.username} sent DOWN"
                 })
                 st.session_state["servo_cmd"] = {"target": "DOWN", "ts": time.time()}
-                done("ส่งคำสั่ง 'DOWN' (หมุนเซอร์โวไปที่ 180°) เรียบร้อยแล้ว!")
+                done("ส่งคำสั่ง LOCK (หมุนเซอร์โวไปที่ 180°) เรียบร้อยแล้ว!")
 
             st.caption("💡 กดสั่งงานแล้วตู้เซฟจะเล่นลำดับ เซอร์โวหมุน → ปลดสลัก → ประตูเปิด/ปิด ทันที และขึ้น 'รอบอร์ดยืนยัน' จนกว่า ESP8266 ตอบกลับ (รีเฟรชหน้าเพื่อดูสถานะจริง)")
 
@@ -3363,6 +3396,7 @@ if st.session_state.role == ROLE_ADMIN:
             with st.spinner("กำลังดึงข้อมูลและส่งไปยัง Google Apps Script Web App..."):
                 st.session_state.last_solar_data = fetch_growatt_realtime(sync_sheets=True)
 
+        solar_df, solar_err = get_solar_sheet_df()  # ข้อมูลจาก Google Sheets (ใช้ทั้งการ์ด PV และแดชบอร์ดด้านล่าง)
         sol = st.session_state.get("last_solar_data")
         if not sol:
             last_sol_doc = db.iot_logs.find_one({"system": "SOLAR"}, {"_id": 0}, sort=[("datetime", -1)])
@@ -3375,6 +3409,14 @@ if st.session_state.role == ROLE_ADMIN:
             else:
                 st.info(f"📡 ข้อมูลล่าสุดเมื่อ: **{sol['updated']}** · อุณหภูมิอินเวอร์เตอร์: **{sol['invTemp']} °C**")
 
+            # การ์ด SOLAR (PV INPUT): ใช้ค่าแถวล่าสุดจาก Google Sheets (Solar_Data_Log) ถ้ามี ไม่เช่นนั้นใช้ค่าจาก Growatt
+            if solar_df is not None and not solar_df.empty:
+                _sl = solar_df.iloc[-1]
+                pv_card_val = f"{int(_sl['pv'])} W"
+                pv_card_sub = f"กระแสชาร์จ: <b>{_sl['pvi']:.1f} A</b> · Google Sheets {_sl['dt'].strftime('%d/%m %H:%M')}"
+            else:
+                pv_card_val = f"{int(sol['pvP'])} W"
+                pv_card_sub = f"แรงดันแผง: <b>{sol['pvV']} V</b> · กระแสชาร์จ: <b>{sol['pvI']} A</b>"
             st.markdown(f"""
             <div class="kpi-grid">
               <div class="glass-kpi">
@@ -3384,8 +3426,8 @@ if st.session_state.role == ROLE_ADMIN:
               </div>
               <div class="glass-kpi">
                 <div class="top"><span class="lbl">SOLAR (PV INPUT)</span><span class="ic-badge">☀️</span></div>
-                <div class="val">{int(sol['pvP'])} W</div>
-                <div class="sub">แรงดันแผง: <b>{sol['pvV']} V</b> · กระแสชาร์จ: <b>{sol['pvI']} A</b></div>
+                <div class="val">{pv_card_val}</div>
+                <div class="sub">{pv_card_sub}</div>
               </div>
               <div class="glass-kpi">
                 <div class="top"><span class="lbl">AC LOAD (OUTPUT)</span><span class="ic-badge">🏠</span></div>
@@ -3415,18 +3457,10 @@ if st.session_state.role == ROLE_ADMIN:
             if st.button("🔄 โหลดข้อมูลจากชีตใหม่", key="solar_sheet_reload"):
                 load_solar_sheet.clear()
             solar_upload = st.file_uploader("หรืออัปโหลดไฟล์ CSV ที่ดาวน์โหลดจากชีตเอง (ใช้เมื่อดึงจากชีตตรงๆ ไม่ได้)", type=["csv"], key="solar_csv_upload")
-        if solar_upload is not None:
-            solar_raw, solar_err = pd.read_csv(solar_upload), ""
-        else:
-            solar_raw, solar_err = load_solar_sheet(solar_sheet_id.strip(), solar_gid.strip() or "0")
-        if solar_raw is None:
+        if solar_df is None:
             st.warning(f"⚠️ ดึงข้อมูลจากชีตไม่สำเร็จ: {solar_err}")
         else:
-            solar_df, solar_prep_err = prep_solar_df(solar_raw, solar_date_order)
-            if solar_df is None:
-                st.warning(f"⚠️ อ่านข้อมูลชีตไม่ได้: {solar_prep_err}")
-            else:
-                render_solar_dashboard(solar_df)
+            render_solar_dashboard(solar_df)
 
         st.markdown("---")
         st.markdown("#### 📈 ประวัติการบันทึกค่าพลังงานโซลาร์เซลล์ (จากการกดดึง Growatt ในฐานข้อมูล)")
