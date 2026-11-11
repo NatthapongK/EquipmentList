@@ -1178,7 +1178,7 @@ def show_html_frame(html_str, height):
     else:
         components.html(html_str, height=height, scrolling=False)
 
-def _vault_html(state, prev, pending, recent=None):
+def _vault_html(state, prev, pending):
     """ตู้เซฟลิ้นชักอัจฉริยะ (CSS+JS): UP = ปลดล็อก/เปิด (0°), DOWN = ล็อก/ปิด (180°)
     เล่นลำดับ: รับคำสั่ง -> เซอร์โวหมุน -> ปลดสลัก -> ประตูเปิด (หรือย้อนกลับ) ทุกครั้งที่สถานะเปลี่ยน"""
     tpl = """
@@ -1282,7 +1282,6 @@ button:hover{border-color:rgba(186,230,253,.7);}
       <div class="ang" id="ang">180°</div></div></div>
   <div class="panel"><div class="ttl">ลำดับการทำงาน</div>
     <ul class="steps" id="steps"><li>1 รับคำสั่ง MQTT</li><li>2 เซอร์โวหมุน</li><li>3 ปลดสลัก/ใส่สลัก</li><li>4 ประตูเปิด/ปิด</li></ul></div>
-  <div class="panel"><div class="ttl">คำสั่งล่าสุด (RECENT COMMANDS)</div><div class="chips">__RECENT__</div></div>
 </div></div>
 <script>
 const STATE="__STATE__",PREV="__PREV__",PENDING=__PENDING__;
@@ -1333,19 +1332,9 @@ if(STATE!==PREV){setTimeout(()=>run(STATE,waitNote),500);}else{waitNote();}
 document.getElementById('demo').addEventListener('click',()=>{if(!busy){run(cur==='UP'?'DOWN':'UP',()=>{note.textContent='(โหมดทดสอบ: ยังไม่ได้สั่งบอร์ดจริง)';});}});
 </script></body></html>
 """
-    chips = ""
-    for i, r in enumerate(recent or []):
-        up = str(r.get("status", "")).upper() == "UP"
-        when = esc(str(r.get("datetime", ""))[5:16])
-        who = esc(str(r.get("location", "")))
-        chips += (f'<div class="chip" style="animation-delay:{i * 0.08:.2f}s"><b class="{"u" if up else "d"}">'
-                  f'{"OPEN" if up else "LOCK"}</b><span>{when} · {who}</span></div>')
-    if not chips:
-        chips = '<div class="chip"><span>ยังไม่มีประวัติการสั่งงาน</span></div>'
     return (tpl.replace("__STATE__", "UP" if state == "UP" else "DOWN")
                .replace("__PREV__", "UP" if prev == "UP" else "DOWN")
-               .replace("__PENDING__", "true" if pending else "false")
-               .replace("__RECENT__", chips))
+               .replace("__PENDING__", "true" if pending else "false"))
 
 
 def _alarm_charts_html(spec):
@@ -2749,8 +2738,7 @@ if st.session_state.role == ROLE_ADMIN:
                 pill_t = "OFFLINE" if not on_val else st_val
                 p_cols[idx].markdown(
                     f'<div class="iot-card"><div class="hd">{pname}</div>'
-                    f'<div class="bd"><span class="nm">{pk if pk!="UNDERGROUND" else "Pool"}</span>'
-                    f'<span class="pill {pill_c}">{pill_t}</span></div></div>',
+                    f'<div class="bd"><span class="pill {pill_c}">{pill_t}</span></div></div>',
                     unsafe_allow_html=True
                 )
 
@@ -2761,7 +2749,7 @@ if st.session_state.role == ROLE_ADMIN:
                 fst = iot_mgr.fire_zones.get(fk, "NORMAL")
                 fc = "pill-alarm" if fst == "ALERT" else "pill-normal"
                 f_cols[idx].markdown(
-                    f'<div class="iot-card"><div class="hd">Fire Zone</div>'
+                    f'<div class="iot-card">'
                     f'<div class="bd"><span class="nm">{fname}</span>'
                     f'<span class="pill {fc}">{fst}</span></div></div>',
                     unsafe_allow_html=True
@@ -3204,8 +3192,7 @@ if st.session_state.role == ROLE_ADMIN:
 
         s_col1, s_col2 = st.columns([1.5, 1])
         with s_col1:
-            _recent_cmds = list(db.iot_logs.find({"system": "SERVO"}, {"_id": 0, "datetime": 1, "location": 1, "status": 1}).sort("datetime", -1).limit(4))
-            show_html_frame(_vault_html(eff_state, prev_state, bool(servo_cmd), _recent_cmds), 660)
+            show_html_frame(_vault_html(eff_state, prev_state, bool(servo_cmd)), 580)
 
         with s_col2:
             is_up = iot_mgr.servo_status == "UP"
