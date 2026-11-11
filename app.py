@@ -508,6 +508,33 @@ def _find_key_ci(node, target_key):
                 return res
     return None
 
+def _find_obj_by_sn(node, sn):
+    """หา object ที่มี sn/deviceSn/storageSn/serialNum ตรงกับอินเวอร์เตอร์ของเรา (เหมือน findObjBySn ในโค้ด CYD)"""
+    sn_low = str(sn).strip().lower()
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k.lower() in ("sn", "devicesn", "storagesn", "serialnum") and isinstance(v, str) and v.strip().lower() == sn_low:
+                return node
+        for v in node.values():
+            res = _find_obj_by_sn(v, sn)
+            if res is not None:
+                return res
+    elif isinstance(node, list):
+        for item in node:
+            res = _find_obj_by_sn(item, sn)
+            if res is not None:
+                return res
+    return None
+
+def _spf_scope(j, sn):
+    """เลือกขอบเขต JSON ที่จะอ่านค่า: object ของอินเวอร์เตอร์ตาม SN (ถ้ามีข้อมูลแบตเตอรี่) ไม่เช่นนั้นใช้ทั้งก้อน
+    ป้องกันการหยิบค่า Load/Grid จากอุปกรณ์หรือ node อื่นที่อยู่ในคำตอบเดียวกัน"""
+    dev = _find_obj_by_sn(j, sn)
+    if dev is not None and (_get_f(dev, ["vBat", "vBattery", "vbatSys", "vAkku"]) is not None
+                            or _get_f(dev, ["capacity", "soc", "batterySoc"]) is not None):
+        return dev
+    return j
+
 def _get_f(node, keys):
     for k in keys:
         v = _find_key_ci(node, k)
@@ -574,9 +601,11 @@ def fetch_growatt_realtime(sync_sheets=False):
             r = sess.post(ep_url, data=body, timeout=12) if method == "POST" else sess.get(ep_url, timeout=12)
             if r.status_code != 200:
                 continue
-            j = r.json()
+            j = _spf_scope(r.json(), sn)
             vBat = _get_f(j, ["vBat", "vBattery", "vbatSys", "vAkku"])
             soc = _get_f(j, ["capacity", "soc", "batterySoc"])
+            if soc is not None and not (0 <= soc <= 100):
+                soc = None  # SOC นอกช่วง 0-100 ไม่ใช่ค่าที่ถูกต้อง (เหมือนโค้ด CYD)
             if vBat is None and soc is None:
                 continue
 
@@ -924,6 +953,21 @@ def prep_solar_df(df, date_order="auto"):
     if d.empty:
         return None, "อ่านวัน-เวลาหรือค่าพลังงานจากชีตไม่ได้"
     return d, ""
+
+def solar_age_seconds(updated_str):
+    """อายุของข้อมูลโซลาร์ (วินาที) จากข้อความเวลา YYYY-MM-DD HH:MM:SS; คืน None ถ้าอ่านไม่ได้"""
+    try:
+        return (pd.Timestamp(get_now_str("%Y-%m-%d %H:%M:%S")) - pd.Timestamp(str(updated_str))).total_seconds()
+    except Exception:
+        return None
+
+def fmt_age_th(sec):
+    sec = max(int(sec), 0)
+    if sec < 3600:
+        return f"{sec // 60} นาที"
+    if sec < 86400:
+        return f"{sec // 3600} ชั่วโมง"
+    return f"{sec // 86400} วัน"
 
 def get_solar_sheet_df():
     """โหลดข้อมูลชีตโซลาร์ตามค่าที่ตั้งไว้ในกล่อง 'แหล่งข้อมูล' (หรือไฟล์ CSV ที่อัปโหลด) คืนค่า (DataFrame|None, ข้อความผิดพลาด)"""
@@ -3397,6 +3441,20 @@ if st.session_state.role == ROLE_ADMIN:
                 st.session_state.last_solar_data = fetch_growatt_realtime(sync_sheets=True)
 
         solar_df, solar_err = get_solar_sheet_df()  # ข้อมูลจาก Google Sheets (ใช้ทั้งการ์ด PV และแดชบอร์ดด้านล่าง)
+
+        # ถ้ายังไม่มีค่าเรียลไทม์ หรือค่าที่มีเก่ากว่า 5 นาที -> ดึงจาก Growatt ให้เอง (จำกัดไม่เกิน 1 ครั้งต่อ 5 นาที กันยิง Growatt ถี่)
+        _s_cur = st.session_state.get("last_solar_data")
+        _s_age = solar_age_seconds(_s_cur.get("updated")) if (_s_cur and _s_cur.get("ok")) else None
+        if (_s_age is None or _s_age > 300) and (time.time() - st.session_state.get("solar_auto_ts", 0)) > 300:
+            st.session_state["solar_auto_ts"] = time.time()
+            with st.spinner("กำลังดึงค่าเรียลไทม์ล่าสุดจาก Growatt Cloud..."):
+                _auto = fetch_growatt_realtime(sync_sheets=False)
+            if _auto.get("ok"):
+                st.session_state.last_solar_data = _auto
+                st.session_state.pop("solar_auto_err", None)
+            else:
+                st.session_state["solar_auto_err"] = _auto.get("error")
+
         sol = st.session_state.get("last_solar_data")
         if not sol:
             last_sol_doc = db.iot_logs.find_one({"system": "SOLAR"}, {"_id": 0}, sort=[("datetime", -1)])
@@ -3407,7 +3465,12 @@ if st.session_state.role == ROLE_ADMIN:
             if sol.get("sheets_synced"):
                 st.success(f"✅ อัปเดตข้อมูลล่าสุดเมื่อ {sol['updated']} (Server: {sol.get('host')}) และบันทึกลง Google Sheets เรียบร้อยแล้ว!")
             else:
-                st.info(f"📡 ข้อมูลล่าสุดเมื่อ: **{sol['updated']}** · อุณหภูมิอินเวอร์เตอร์: **{sol['invTemp']} °C**")
+                _age = solar_age_seconds(sol.get("updated"))
+                if _age is not None and _age > 600:
+                    st.warning(f"⏱️ ข้อมูลนี้เก่า ({fmt_age_th(_age)}ที่แล้ว · บันทึกเมื่อ {sol['updated']}) ค่าอาจไม่ตรงกับปัจจุบัน — กด 'ดึงข้อมูลเรียลไทม์จาก Growatt Cloud' เพื่อดึงค่าล่าสุด"
+                               + (f" (ดึงอัตโนมัติไม่สำเร็จ: {st.session_state.get('solar_auto_err')})" if st.session_state.get("solar_auto_err") else ""))
+                else:
+                    st.info(f"📡 ข้อมูลล่าสุดเมื่อ: **{sol['updated']}** · อุณหภูมิอินเวอร์เตอร์: **{sol['invTemp']} °C**")
 
             # การ์ด SOLAR (PV INPUT): ใช้ค่าแถวล่าสุดจาก Google Sheets (Solar_Data_Log) ถ้ามี ไม่เช่นนั้นใช้ค่าจาก Growatt
             if solar_df is not None and not solar_df.empty:
