@@ -873,6 +873,417 @@ def classify_fire_zone(text):
         return "ST"
     return "UNKNOWN"
 
+
+# =====================================================================
+#  SOLAR ANALYTICS (ข้อมูลจาก Google Sheets: Solar_Data_Log) - กราฟสไตล์ Neon Glass
+# =====================================================================
+SOLAR_SHEET_ID_DEFAULT = "1FQHhjrzsnK3a1_StCgb0dbOA_lywbhlDv7TgNHYusF8"
+SOLAR_SHEET_GID_DEFAULT = "0"
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_solar_sheet(sheet_id, gid):
+    """ดึงชีตเป็น CSV (ชีตต้องแชร์แบบ Anyone with the link = Viewer) คืนค่า (DataFrame|None, ข้อความผิดพลาด)"""
+    if requests is None:
+        return None, "ยังไม่ได้ติดตั้งไลบรารี requests"
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+    try:
+        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return None, f"Google ตอบกลับ HTTP {r.status_code} (ตรวจสอบว่าแชร์ชีตเป็น Anyone with the link)"
+        if "text/html" in r.headers.get("Content-Type", ""):
+            return None, "ชีตไม่ได้เปิดสาธารณะ (ต้องตั้งค่าแชร์เป็น Anyone with the link: Viewer)"
+        return pd.read_csv(io.StringIO(r.content.decode("utf-8-sig"))), ""
+    except Exception as e:
+        return None, str(e)
+
+def prep_solar_df(df, date_order="auto"):
+    """จัดคอลัมน์ Timestamp, Vbat, SOC, PV_Power, PV_Current, Load_Power ให้เป็นตัวเลข/เวลา; date_order: auto | dmy | mdy"""
+    d = df.copy()
+    d.columns = [str(c).strip().lower() for c in d.columns]
+    need = {"timestamp": "ts", "vbat": "vbat", "soc": "soc", "pv_power": "pv", "pv_current": "pvi", "load_power": "load"}
+    missing = [k for k in need if k not in d.columns]
+    if missing:
+        return None, "ไม่พบคอลัมน์: " + ", ".join(missing)
+    d = d[list(need.keys())].rename(columns=need)
+    for c in ("vbat", "soc", "pv", "pvi", "load"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    ts = d["ts"].astype(str).str.strip()
+    dayfirst = True  # ค่าเริ่มต้นแบบไทย วัน/เดือน/ปี
+    if date_order == "mdy":
+        dayfirst = False
+    elif date_order == "auto":
+        parts = ts.str.extract(r"^(\d{1,2})/(\d{1,2})/")
+        a = pd.to_numeric(parts[0], errors="coerce")
+        b = pd.to_numeric(parts[1], errors="coerce")
+        if (a > 12).any():
+            dayfirst = True
+        elif (b > 12).any():
+            dayfirst = False
+    d["dt"] = pd.to_datetime(ts, dayfirst=dayfirst, errors="coerce")
+    d = d.dropna(subset=["dt", "pv", "load"]).sort_values("dt").reset_index(drop=True)
+    if d.empty:
+        return None, "อ่านวัน-เวลาหรือค่าพลังงานจากชีตไม่ได้"
+    return d, ""
+
+def _solar_charts_html(spec):
+    """กราฟ Neon Glass: เกจครึ่งวงกลม 3 ตัว + Power Flow + แบตเตอรี่ + พลังงานรายชั่วโมง + สมดุลพลังงาน + PV vs Current"""
+    payload = json.dumps(spec, ensure_ascii=False).replace("</", "<\\/")
+    tpl = """
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:'IBM Plex Sans Thai','Segoe UI',system-ui,sans-serif;}
+body{background:transparent;color:#f1f5f9;padding:2px;}
+.row{display:grid;gap:14px;margin-bottom:14px;}
+.r3{grid-template-columns:repeat(3,1fr);}.r2{grid-template-columns:repeat(2,1fr);}.r1{grid-template-columns:1fr;}
+@media (max-width:760px){.r3,.r2{grid-template-columns:1fr;}}
+.card{position:relative;overflow:hidden;background:linear-gradient(145deg,rgba(255,255,255,.09),rgba(14,24,42,.62));border:1px solid rgba(255,255,255,.16);
+  border-radius:16px;padding:14px 16px;box-shadow:0 10px 30px rgba(0,10,30,.38),inset 0 1px 0 rgba(255,255,255,.2);animation:up .7s cubic-bezier(.2,.8,.2,1) backwards;}
+.card::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--ac,#22d3ee);opacity:.8;box-shadow:0 0 14px var(--ac,#22d3ee);}
+@keyframes up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.ttl{font-size:.74rem;color:#cbd5e1;font-weight:600;margin-bottom:6px;letter-spacing:.2px;}
+.box{position:relative;width:100%;height:250px;}
+.g{height:150px;}
+.gv{position:absolute;left:0;right:0;bottom:6px;text-align:center;}
+.gv b{font-size:1.55rem;font-weight:800;color:var(--ac);text-shadow:0 0 16px var(--ac);}
+.gv span{display:block;font-size:.72rem;color:#94a3b8;margin-top:1px;}
+#err{display:none;color:#fbbf24;font-size:.85rem;padding:10px;}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;}}
+</style></head><body>
+<div id="err">⚠️ โหลด Chart.js ไม่สำเร็จ (ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อแสดงกราฟ)</div>
+<div class="row r3">
+  <div class="card" style="--ac:#34d399;animation-delay:.05s"><div class="ttl" id="gt0"></div><div class="box g"><canvas id="g0"></canvas><div class="gv"><b id="gn0"></b><span id="gs0"></span></div></div></div>
+  <div class="card" style="--ac:#fbbf24;animation-delay:.12s"><div class="ttl" id="gt1"></div><div class="box g"><canvas id="g1"></canvas><div class="gv"><b id="gn1"></b><span id="gs1"></span></div></div></div>
+  <div class="card" style="--ac:#22d3ee;animation-delay:.19s"><div class="ttl" id="gt2"></div><div class="box g"><canvas id="g2"></canvas><div class="gv"><b id="gn2"></b><span id="gs2"></span></div></div></div>
+</div>
+<div class="row r1"><div class="card" style="--ac:#fbbf24;animation-delay:.26s"><div class="ttl">POWER FLOW · กำลังไฟจากแผงโซลาร์ เทียบกับโหลดใช้งาน (W)</div><div class="box"><canvas id="c1"></canvas></div></div></div>
+<div class="row r2">
+  <div class="card" style="--ac:#a78bfa;animation-delay:.33s"><div class="ttl">BATTERY · แรงดันแบตเตอรี่ (V) และ SOC (%)</div><div class="box"><canvas id="c2"></canvas></div></div>
+  <div class="card" style="--ac:#22d3ee;animation-delay:.40s"><div class="ttl" id="t3"></div><div class="box"><canvas id="c3"></canvas></div></div>
+</div>
+<div class="row r2">
+  <div class="card" style="--ac:#34d399;animation-delay:.47s"><div class="ttl">ENERGY BALANCE · สมดุลพลังงานของช่วงที่เลือก (kWh)</div><div class="box"><canvas id="c4"></canvas></div></div>
+  <div class="card" style="--ac:#f472b6;animation-delay:.54s"><div class="ttl">PV EFFICIENCY · กำลังแผง (W) เทียบกับกระแสชาร์จ (A)</div><div class="box"><canvas id="c5"></canvas></div></div>
+</div>
+<script>
+const S=__PAYLOAD__;
+if(typeof Chart==='undefined'){document.getElementById('err').style.display='block';}
+else{
+Chart.defaults.color='#94a3b8';Chart.defaults.animation={duration:1300,easing:'easeOutQuart'};
+const grid={color:'rgba(148,163,184,.13)'};
+const tip={backgroundColor:'rgba(8,18,34,.92)',borderColor:'rgba(255,255,255,.2)',borderWidth:1,titleColor:'#f1f5f9',bodyColor:'#cbd5e1',padding:10,cornerRadius:10};
+const leg={labels:{color:'#94a3b8',usePointStyle:true,pointStyle:'rectRounded',boxWidth:8,font:{size:11}}};
+function grad(ctx,c,a0,a1){const g=ctx.createLinearGradient(0,0,0,250);g.addColorStop(0,c.replace('1)',a0+')'));g.addColorStop(1,c.replace('1)',a1+')'));return g;}
+// เกจครึ่งวงกลม
+S.gauges.forEach((g,i)=>{
+  document.getElementById('gt'+i).textContent=g.title;document.getElementById('gs'+i).textContent=g.sub;
+  const out=document.getElementById('gn'+i),t0=performance.now();
+  const f=n=>{const p=Math.min(1,(n-t0)/1300),e=1-Math.pow(1-p,3);out.textContent=(g.val*e).toFixed(g.dec)+g.unit;if(p<1)requestAnimationFrame(f);};requestAnimationFrame(f);
+  new Chart(document.getElementById('g'+i),{type:'doughnut',data:{datasets:[{data:[Math.min(g.val,g.max),Math.max(g.max-g.val,0)],backgroundColor:[g.color,'rgba(148,163,184,.14)'],borderWidth:0,borderRadius:8}]},
+    options:{responsive:true,maintainAspectRatio:false,rotation:-90,circumference:180,cutout:'74%',plugins:{legend:{display:false},tooltip:{enabled:false}}}});
+});
+const xs={ticks:{color:'#94a3b8',maxRotation:0,autoSkip:true,maxTicksLimit:10},grid:grid};
+const ctx1=document.getElementById('c1').getContext('2d');
+new Chart(ctx1,{type:'line',data:{labels:S.labels,datasets:[
+  {label:'PV Power (W)',data:S.pv,borderColor:'rgba(251,191,36,1)',backgroundColor:grad(ctx1,'rgba(251,191,36,1)','.55','.02'),fill:true,tension:.38,pointRadius:0,pointHoverRadius:5,borderWidth:2.5},
+  {label:'Load (W)',data:S.load,borderColor:'rgba(34,211,238,1)',backgroundColor:grad(ctx1,'rgba(34,211,238,1)','.30','.02'),fill:true,tension:.38,pointRadius:0,pointHoverRadius:5,borderWidth:2.5}]},
+  options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:leg,tooltip:tip},scales:{x:xs,y:{beginAtZero:true,ticks:{color:'#94a3b8'},grid:grid}}}});
+new Chart(document.getElementById('c2'),{type:'line',data:{labels:S.labels,datasets:[
+  {label:'Vbat (V)',data:S.vbat,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.15)',fill:true,tension:.35,pointRadius:0,pointHoverRadius:5,borderWidth:2.5,yAxisID:'y'},
+  {label:'SOC (%)',data:S.soc,borderColor:'#34d399',stepped:true,pointRadius:0,borderWidth:2.5,yAxisID:'y1'}]},
+  options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:leg,tooltip:tip},
+  scales:{x:xs,y:{ticks:{color:'#c4b5fd'},grid:grid,suggestedMin:S.vmin,suggestedMax:S.vmax},y1:{position:'right',min:0,max:100,ticks:{color:'#6ee7b7'},grid:{drawOnChartArea:false}}}}});
+document.getElementById('t3').textContent=S.hourTitle;
+new Chart(document.getElementById('c3'),{type:'bar',data:{labels:S.hours,datasets:[
+  {label:'PV (kWh)',data:S.hourPv,backgroundColor:'rgba(251,191,36,.85)',borderRadius:6},
+  {label:'Load (kWh)',data:S.hourLoad,backgroundColor:'rgba(34,211,238,.85)',borderRadius:6}]},
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:leg,tooltip:tip},scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},y:{beginAtZero:true,ticks:{color:'#94a3b8'},grid:grid}}}});
+new Chart(document.getElementById('c4'),{type:'doughnut',data:{labels:S.balLabels,datasets:[{data:S.balData,backgroundColor:['#34d399','#fbbf24','#f87171'],borderColor:'rgba(10,22,40,.9)',borderWidth:3,hoverOffset:8}]},
+  options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:{legend:{position:'bottom',labels:leg.labels},tooltip:tip}}});
+new Chart(document.getElementById('c5'),{type:'scatter',data:{datasets:[{label:'PV Power vs Current',data:S.scatter,backgroundColor:'rgba(244,114,182,.7)',borderColor:'rgba(244,114,182,1)',pointRadius:4,pointHoverRadius:7}]},
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{...tip,callbacks:{label:c=>c.raw.y+' W @ '+c.raw.x+' A'}}},
+  scales:{x:{title:{display:true,text:'PV Current (A)',color:'#94a3b8'},ticks:{color:'#94a3b8'},grid:grid},y:{title:{display:true,text:'PV Power (W)',color:'#94a3b8'},ticks:{color:'#94a3b8'},grid:grid}}}});
+}
+</script></body></html>
+"""
+    return tpl.replace("__PAYLOAD__", payload)
+
+def render_solar_dashboard(d_all):
+    """แดชบอร์ดโซลาร์จากชีต: ตัวกรองวัน + KPI + กราฟ Neon Glass + ตารางข้อมูล"""
+    import numpy as np
+    d_all = d_all.copy()
+    d_all["date"] = d_all["dt"].dt.strftime("%Y-%m-%d")
+    date_opts = ["ALL"] + sorted(d_all["date"].unique().tolist(), reverse=True)
+    c1, c2 = st.columns([1.2, 3])
+    sel_date = c1.selectbox("เลือกวันที่ (Date)", date_opts, key="solar_dash_date",
+                            format_func=lambda v: "ทุกวันที่มีข้อมูล (All)" if v == "ALL" else v)
+    d = d_all if sel_date == "ALL" else d_all[d_all["date"] == sel_date]
+    d = d.reset_index(drop=True)
+    if d.empty:
+        st.info("ไม่มีข้อมูลในวันที่เลือก")
+        return
+    c2.caption(f"📊 ข้อมูล {len(d):,} จุด · ตั้งแต่ {d['dt'].iloc[0].strftime('%d/%m/%Y %H:%M')} ถึง {d['dt'].iloc[-1].strftime('%d/%m/%Y %H:%M')}")
+
+    # ---- คำนวณพลังงาน (kWh) ด้วย trapezoid; ข้ามช่วงที่ข้อมูลขาดนานเกิน 15 นาที ----
+    dt_h = d["dt"].diff().dt.total_seconds().div(3600)
+    ok = dt_h.between(0, 0.25)
+    pv_avg = (d["pv"] + d["pv"].shift()) / 2
+    ld_avg = (d["load"] + d["load"].shift()) / 2
+    e_pv = (pv_avg * dt_h).where(ok, 0).fillna(0) / 1000
+    e_ld = (ld_avg * dt_h).where(ok, 0).fillna(0) / 1000
+    e_direct = (np.minimum(pv_avg, ld_avg) * dt_h).where(ok, 0).fillna(0) / 1000
+    e_surplus = (np.maximum(pv_avg - ld_avg, 0) * dt_h).where(ok, 0).fillna(0) / 1000
+    e_deficit = (np.maximum(ld_avg - pv_avg, 0) * dt_h).where(ok, 0).fillna(0) / 1000
+    tot_pv, tot_ld = float(e_pv.sum()), float(e_ld.sum())
+    coverage = (float(e_direct.sum()) / tot_ld * 100) if tot_ld > 0 else 0.0
+
+    i_pk = int(d["pv"].idxmax())
+    i_ld = int(d["load"].idxmax())
+    last = d.iloc[-1]
+    v0, v1 = float(d["vbat"].iloc[0]), float(last["vbat"])
+
+    # ---- KPI cards (ตัวเลขนับขึ้นด้วย .cnt เมื่อเป็นจำนวนเต็ม) ----
+    def kpi(lbl, icon, val_html, sub, color="#FFFFFF"):
+        return (f'<div class="glass-kpi"><div class="top"><span class="lbl">{lbl}</span><span class="ic-badge">{icon}</span></div>'
+                f'<div class="val" style="color:{color} !important;">{val_html}</div><div class="sub">{sub}</div></div>')
+    cards = "".join([
+        kpi("PV PEAK (กำลังแผงสูงสุด)", "☀️", f'<span class="cnt" style="--n:{int(d.loc[i_pk, "pv"])}"></span> W', f'เวลา {d.loc[i_pk, "dt"].strftime("%H:%M")} · กระแส {d.loc[i_pk, "pvi"]:.1f} A', "#FBBF24"),
+        kpi("PV ENERGY (พลังงานจากแผง)", "⚡", f'{tot_pv:.2f} kWh', f'เฉลี่ย {d["pv"].mean():.0f} W · สะสมจากข้อมูลที่บันทึก', "#FBBF24"),
+        kpi("LOAD ENERGY (พลังงานที่ใช้)", "🏠", f'{tot_ld:.2f} kWh', f'เฉลี่ย {d["load"].mean():.0f} W · พุ่งสูงสุด {int(d.loc[i_ld, "load"])} W @ {d.loc[i_ld, "dt"].strftime("%H:%M")}', "#22D3EE"),
+        kpi("SOLAR COVERAGE (แผงรองรับโหลด)", "🌞", f'<span class="cnt" style="--n:{int(round(coverage))}"></span>%', "สัดส่วนโหลดที่แผงจ่ายได้โดยตรง", "#34D399"),
+        kpi("BATTERY NOW", "🔋", f'<span class="cnt" style="--n:{int(last["soc"])}"></span>% <span style="font-size:1rem;color:#94A3B8;">({last["vbat"]:.2f} V)</span>', f'แรงดัน {d["vbat"].min():.2f} – {d["vbat"].max():.2f} V', "#A78BFA"),
+        kpi("VBAT TREND", "📈", f'{v1 - v0:+.2f} V', f'{v0:.2f} → {v1:.2f} V ตลอดช่วงที่เลือก', "#34D399" if v1 >= v0 else "#F87171"),
+    ])
+    st.markdown(f'<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(215px,1fr));">{cards}</div>', unsafe_allow_html=True)
+
+    # ---- เตรียมข้อมูลกราฟ (ลดจุดถ้าเกิน 600 จุดเพื่อให้เบา) ----
+    step = max(1, int(np.ceil(len(d) / 600)))
+    g = d.iloc[::step]
+    multi = d["date"].nunique() > 1
+    labels = g["dt"].dt.strftime("%d/%m %H:%M" if multi else "%H:%M").tolist()
+    hr = d["dt"].shift().dt.hour  # พลังงานของช่วงเวลา นับเข้าชั่วโมงที่ช่วงนั้นเริ่ม
+    hdf = pd.DataFrame({"h": hr, "pv": e_pv, "ld": e_ld}).dropna(subset=["h"])
+    hsum = hdf.groupby("h")[["pv", "ld"]].sum()
+    hours_idx = list(range(int(hsum.index.min()), int(hsum.index.max()) + 1)) if not hsum.empty else []
+    hsum = hsum.reindex(hours_idx, fill_value=0)
+    spec = {
+        "labels": labels,
+        "pv": [round(float(v), 1) for v in g["pv"]], "load": [round(float(v), 1) for v in g["load"]],
+        "vbat": [round(float(v), 2) for v in g["vbat"]], "soc": [round(float(v), 0) for v in g["soc"]],
+        "vmin": round(float(d["vbat"].min()) - 0.3, 1), "vmax": round(float(d["vbat"].max()) + 0.3, 1),
+        "hours": [f"{h:02d}:00" for h in hours_idx],
+        "hourPv": [round(float(v), 3) for v in hsum["pv"]], "hourLoad": [round(float(v), 3) for v in hsum["ld"]],
+        "hourTitle": "HOURLY ENERGY · พลังงานรายชั่วโมง PV เทียบกับโหลด (kWh)" + (" · รวมทุกวัน" if multi else ""),
+        "balLabels": ["แผงจ่ายโหลดโดยตรง", "ส่วนเกิน (ชาร์จแบต)", "ส่วนขาด (ใช้แบต/กริด)"],
+        "balData": [round(float(e_direct.sum()), 3), round(float(e_surplus.sum()), 3), round(float(e_deficit.sum()), 3)],
+        "scatter": [{"x": round(float(a), 1), "y": round(float(b), 0)} for a, b in zip(g["pvi"], g["pv"])],
+        "gauges": [
+            {"title": "BATTERY SOC", "val": float(last["soc"]), "max": 100, "unit": "%", "dec": 0, "color": "#34d399", "sub": f'Vbat {last["vbat"]:.2f} V'},
+            {"title": "PV POWER NOW", "val": float(last["pv"]), "max": max(float(d["pv"].max()) * 1.15, 1), "unit": " W", "dec": 0, "color": "#fbbf24", "sub": f'เทียบกับค่าสูงสุดของช่วงนี้ ({int(d["pv"].max())} W)'},
+            {"title": "AC LOAD NOW", "val": float(last["load"]), "max": 5000, "unit": " W", "dec": 0, "color": "#22d3ee", "sub": "เทียบกับพิกัดอินเวอร์เตอร์ 5,000 W"},
+        ],
+    }
+    chart_html = _solar_charts_html(spec)
+    if hasattr(st, "iframe"):
+        st.iframe(chart_html, height=1080)
+    else:
+        components.html(chart_html, height=1080, scrolling=True)
+
+    # ---- ตารางข้อมูล ----
+    st.markdown("##### 🗂️ ข้อมูลดิบจากชีต Solar_Data_Log")
+    t1, t2 = st.columns([3, 1.2])
+    q = t1.text_input("🔍 ค้นหา", key="solar_dash_search", placeholder="พิมพ์วันที่ เวลา หรือค่าที่ต้องการ...", label_visibility="collapsed")
+    csv_bytes = d_all[["dt", "vbat", "soc", "pv", "pvi", "load"]].rename(columns={
+        "dt": "Timestamp", "vbat": "Vbat", "soc": "SOC", "pv": "PV_Power", "pvi": "PV_Current", "load": "Load_Power"
+    }).to_csv(index=False).encode("utf-8-sig")
+    t2.download_button("📥 โหลด Solar CSV", data=csv_bytes, file_name="solar_log.csv", mime="text/csv", key="solar_dash_dl", use_container_width=True)
+    tv = d.sort_values("dt", ascending=False).copy()
+    tv["วัน-เวลา"] = tv["dt"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    if q.strip():
+        ql = q.strip().lower()
+        tv = tv[tv.astype(str).apply(lambda r: ql in " ".join(r.values).lower(), axis=1)]
+    st.dataframe(tv[["วัน-เวลา", "vbat", "soc", "pv", "pvi", "load"]].head(100).rename(columns={
+        "vbat": "Vbat (V)", "soc": "SOC (%)", "pv": "PV Power (W)", "pvi": "PV Current (A)", "load": "Load (W)"}),
+        hide_index=True, use_container_width=True)
+    st.caption(f"แสดง {min(len(tv), 100)} จาก {len(tv):,} รายการล่าสุดตามตัวกรอง")
+
+def show_html_frame(html_str, height):
+    """แสดง HTML แบบ self-contained ใน iframe (รองรับ Streamlit ทั้งรุ่นเก่าและใหม่)"""
+    if hasattr(st, "iframe"):
+        st.iframe(html_str, height=height)
+    else:
+        components.html(html_str, height=height, scrolling=False)
+
+def _vault_html(state, prev, pending, recent=None):
+    """ตู้เซฟลิ้นชักอัจฉริยะ (CSS+JS): UP = ปลดล็อก/เปิด (0°), DOWN = ล็อก/ปิด (180°)
+    เล่นลำดับ: รับคำสั่ง -> เซอร์โวหมุน -> ปลดสลัก -> ประตูเปิด (หรือย้อนกลับ) ทุกครั้งที่สถานะเปลี่ยน"""
+    tpl = """
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:'IBM Plex Sans Thai','Segoe UI',system-ui,sans-serif;}
+body{background:transparent;color:#e2e8f0;padding:2px;}
+.wrap{border:1px solid rgba(255,255,255,.16);border-radius:16px;padding:12px;background:linear-gradient(145deg,rgba(255,255,255,.08),rgba(10,26,44,.55));box-shadow:0 10px 30px rgba(0,10,30,.4),inset 0 1px 0 rgba(255,255,255,.18);}
+.stage{position:relative;height:290px;border-radius:12px;display:flex;align-items:center;justify-content:center;perspective:1100px;overflow:hidden;
+  background:radial-gradient(60% 70% at 50% 40%,rgba(56,189,248,.16),transparent 70%),#0a1624;}
+.floor{position:absolute;bottom:0;left:0;right:0;height:36px;background:linear-gradient(180deg,transparent,rgba(56,189,248,.10));}
+.safe{position:relative;width:230px;height:236px;border-radius:14px;padding:14px;background:linear-gradient(145deg,#52627a,#1e293b);
+  box-shadow:0 18px 34px rgba(0,0,0,.55),inset 0 2px 0 rgba(255,255,255,.2),inset 0 -3px 8px rgba(0,0,0,.4);}
+.cav{position:absolute;inset:14px;border-radius:8px;background:#08101c;overflow:hidden;box-shadow:inset 0 0 18px rgba(0,0,0,.8);}
+.cav::after{content:"";position:absolute;inset:0;background:radial-gradient(80% 70% at 50% 35%,rgba(125,211,252,.55),rgba(56,189,248,.12) 60%,transparent);opacity:0;transition:opacity .8s;}
+.safe.light .cav::after{opacity:1;animation:flick 3s ease-in-out infinite;}
+@keyframes flick{0%,100%{filter:brightness(1)}50%{filter:brightness(1.25)}}
+.shelf{position:absolute;left:0;right:0;height:3px;background:#334155;}
+.s1{top:46%}.s2{top:84%}
+.item{position:absolute;font-size:30px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.6));transform:translateY(8px);opacity:.25;transition:all .7s .2s;}
+.safe.light .item{opacity:1;transform:none;}
+.i1{left:12%;top:14%}.i2{left:44%;top:14%}.i3{left:72%;top:14%}.i4{left:20%;top:55%}.i5{left:58%;top:55%}
+.mote{position:absolute;width:3px;height:3px;border-radius:50%;background:#bae6fd;opacity:0;}
+.safe.light .mote{animation:float 4s linear infinite;}
+.m1{left:25%;top:80%}.m2{left:50%;top:90%;animation-delay:1.2s!important}.m3{left:75%;top:85%;animation-delay:2.2s!important}
+@keyframes float{0%{transform:translateY(0);opacity:0}20%{opacity:.9}100%{transform:translateY(-120px);opacity:0}}
+.door{position:absolute;inset:14px;border-radius:8px;transform-origin:left center;transition:transform 1.25s cubic-bezier(.65,0,.25,1);
+  background:linear-gradient(145deg,#7587a1,#3b4a62);box-shadow:inset 0 2px 0 rgba(255,255,255,.28),inset 0 -3px 10px rgba(0,0,0,.35),4px 0 12px rgba(0,0,0,.35);}
+.safe.open .door{transform:rotateY(-112deg);}
+.plate{position:absolute;left:50%;top:10px;transform:translateX(-50%);font-size:10px;letter-spacing:2px;color:#cbd5e1;background:rgba(15,23,42,.55);padding:2px 8px;border-radius:4px;}
+.dial{position:absolute;left:50%;top:50%;width:84px;height:84px;margin:-38px 0 0 -42px;border-radius:50%;
+  background:conic-gradient(from 0deg,#94a3b8,#e2e8f0,#64748b,#cbd5e1,#94a3b8,#e2e8f0,#64748b,#cbd5e1,#94a3b8);
+  box-shadow:0 4px 10px rgba(0,0,0,.5),inset 0 0 0 5px #475569,inset 0 0 0 7px rgba(255,255,255,.25);transition:transform 1.3s cubic-bezier(.3,.1,.2,1);}
+.dial::before{content:"";position:absolute;inset:26px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#e2e8f0,#475569);box-shadow:0 2px 4px rgba(0,0,0,.5);}
+.dial i{position:absolute;left:50%;top:50%;width:6px;height:46px;margin:-23px 0 0 -3px;background:#1e293b;border-radius:3px;}
+.dial i:nth-child(2){transform:rotate(60deg)}.dial i:nth-child(3){transform:rotate(120deg)}
+.safe.locked .dial{animation:breathe 3s ease-in-out infinite;}
+@keyframes breathe{0%,100%{box-shadow:0 4px 10px rgba(0,0,0,.5),inset 0 0 0 5px #475569,0 0 0 0 rgba(248,113,113,0)}50%{box-shadow:0 4px 10px rgba(0,0,0,.5),inset 0 0 0 5px #475569,0 0 14px 3px rgba(248,113,113,.35)}}
+.led{position:absolute;right:12px;top:12px;width:13px;height:13px;border-radius:50%;background:#ef4444;box-shadow:0 0 10px #ef4444;transition:background .3s,box-shadow .3s;}
+.safe.unlocked .led{background:#34d399;box-shadow:0 0 12px #34d399;}
+.safe.working .led{background:#fbbf24;box-shadow:0 0 12px #fbbf24;animation:blink .35s steps(2) infinite;}
+@keyframes blink{50%{opacity:.25}}
+.bolt{position:absolute;right:-10px;width:20px;height:16px;border-radius:3px;background:linear-gradient(180deg,#e2e8f0,#94a3b8);box-shadow:0 2px 4px rgba(0,0,0,.5);transition:right .55s cubic-bezier(.5,0,.3,1);}
+.b1{top:22%}.b2{top:48%}.b3{top:74%}
+.safe.unlocked .bolt{right:3px;}
+.handle{position:absolute;left:10px;top:50%;width:8px;height:56px;margin-top:-28px;border-radius:4px;background:linear-gradient(90deg,#cbd5e1,#64748b);box-shadow:0 2px 4px rgba(0,0,0,.5);}
+.row{display:flex;gap:12px;margin-top:12px;flex-wrap:wrap;align-items:stretch;}
+.panel{flex:1;min-width:190px;border:1px solid rgba(255,255,255,.14);border-radius:12px;padding:10px 12px;background:rgba(255,255,255,.05);}
+.ttl{font-size:11px;color:#94a3b8;margin-bottom:6px;letter-spacing:.5px;}
+.status{display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:15px;padding:3px 12px;border-radius:999px;border:1px solid;}
+.st-lock{color:#fca5a5;border-color:rgba(248,113,113,.5);background:rgba(239,68,68,.14);}
+.st-open{color:#6ee7b7;border-color:rgba(52,211,153,.5);background:rgba(16,185,129,.14);}
+.st-work{color:#fde68a;border-color:rgba(251,191,36,.5);background:rgba(245,158,11,.14);}
+.note{font-size:12px;color:#94a3b8;margin-top:6px;min-height:16px;}
+.gauge{position:relative;width:170px;height:124px;margin:0 auto;}
+.gauge svg{width:100%;height:96px;overflow:visible;}
+.needle{transform-origin:85px 85px;transition:transform 1.4s cubic-bezier(.4,.1,.2,1);}
+.ang{position:absolute;left:0;right:0;bottom:0;text-align:center;font-size:19px;font-weight:600;color:#f1f5f9;}
+.steps{list-style:none;display:grid;gap:5px;font-size:12.5px;color:#94a3b8;}
+.steps li{display:flex;align-items:center;gap:8px;transition:color .3s;}
+.steps li::before{content:"";width:9px;height:9px;border-radius:50%;background:#334155;transition:all .3s;flex:none;}
+.steps li.on{color:#fde68a;}.steps li.on::before{background:#fbbf24;box-shadow:0 0 8px #fbbf24;}
+.steps li.done{color:#a7f3d0;}.steps li.done::before{background:#34d399;}
+button{margin-top:8px;font:inherit;font-size:12.5px;color:#e2e8f0;cursor:pointer;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.26);background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(10,30,52,.4));}
+button:hover{border-color:rgba(186,230,253,.7);}
+.laser{position:absolute;left:8%;right:8%;top:6%;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,#38bdf8,transparent);box-shadow:0 0 14px #38bdf8;opacity:0;pointer-events:none;z-index:5;}
+.stage.scan .laser{opacity:1;animation:scan 1.1s ease-in-out infinite alternate;}
+@keyframes scan{from{top:6%}to{top:92%}}
+.stamp{position:absolute;top:12px;left:50%;transform:translateX(-50%);padding:4px 16px;border:2px solid;border-radius:8px;font-weight:700;letter-spacing:3px;font-size:14px;opacity:0;pointer-events:none;z-index:6;}
+.stamp.ok{color:#6ee7b7;border-color:#34d399;background:rgba(16,185,129,.16);}
+.stamp.lk{color:#fca5a5;border-color:#f87171;background:rgba(239,68,68,.16);}
+.stamp.show{animation:stampIn 1.7s ease forwards;}
+@keyframes stampIn{0%{opacity:0;transform:translateX(-50%) scale(1.9)}14%{opacity:1;transform:translateX(-50%) scale(1)}78%{opacity:1}100%{opacity:0;transform:translateX(-50%) scale(1)}}
+.safe.shake{animation:shake .38s;}
+@keyframes shake{0%,100%{transform:none}20%{transform:translateX(-5px)}40%{transform:translateX(5px)}60%{transform:translateX(-3px)}80%{transform:translateX(3px)}}
+.chips{display:grid;gap:5px;font-size:12px;}
+.chip{display:flex;align-items:center;gap:7px;color:#cbd5e1;animation:chipIn .5s ease backwards;}
+.chip b{font-weight:600;padding:1px 8px;border-radius:999px;font-size:11px;border:1px solid;}
+.chip b.u{color:#6ee7b7;border-color:rgba(52,211,153,.5);}.chip b.d{color:#fca5a5;border-color:rgba(248,113,113,.5);}
+.chip span{color:#94a3b8;}
+@keyframes chipIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition-duration:.01s!important;}}
+</style></head><body><div class="wrap">
+<div class="stage" id="stage"><div class="floor"></div><div class="laser"></div><div class="stamp" id="stamp"></div>
+  <div class="safe locked" id="safe">
+    <div class="cav"><div class="shelf s1"></div><div class="shelf s2"></div>
+      <div class="item i1">🔧</div><div class="item i2">🔨</div><div class="item i3">🪛</div><div class="item i4">📦</div><div class="item i5">🔦</div>
+      <div class="mote m1"></div><div class="mote m2"></div><div class="mote m3"></div></div>
+    <div class="door"><div class="plate">SMART DRAWER</div><div class="led"></div>
+      <div class="dial" id="dial"><i></i><i></i><i></i></div><div class="handle"></div>
+      <div class="bolt b1"></div><div class="bolt b2"></div><div class="bolt b3"></div></div>
+  </div>
+</div>
+<div class="row">
+  <div class="panel"><div class="ttl">สถานะตู้</div><span class="status st-lock" id="st">LOCK · ล็อกอยู่</span><div class="note" id="note"></div>
+    <button id="demo">▶ ทดสอบอนิเมชัน (ไม่ส่งคำสั่งจริง)</button> <button id="snd">🔇 เสียง: ปิด</button></div>
+  <div class="panel"><div class="ttl">มุมเซอร์โว (SERVO ANGLE)</div>
+    <div class="gauge"><svg viewBox="0 0 170 96"><path d="M10 85 A75 75 0 0 1 160 85" fill="none" stroke="#1e293b" stroke-width="12" stroke-linecap="round"/>
+      <path d="M10 85 A75 75 0 0 1 85 10" fill="none" stroke="#34d399" stroke-width="12" stroke-linecap="round" opacity=".85"/>
+      <path d="M85 10 A75 75 0 0 1 160 85" fill="none" stroke="#f87171" stroke-width="12" stroke-linecap="round" opacity=".85"/>
+      <g class="needle" id="needle"><line x1="85" y1="85" x2="24" y2="85" stroke="#f1f5f9" stroke-width="3" stroke-linecap="round"/><circle cx="85" cy="85" r="6" fill="#f1f5f9"/></g></svg>
+      <div class="ang" id="ang">180°</div></div></div>
+  <div class="panel"><div class="ttl">ลำดับการทำงาน</div>
+    <ul class="steps" id="steps"><li>1 รับคำสั่ง MQTT</li><li>2 เซอร์โวหมุน</li><li>3 ปลดสลัก/ใส่สลัก</li><li>4 ประตูเปิด/ปิด</li></ul></div>
+  <div class="panel"><div class="ttl">คำสั่งล่าสุด (RECENT COMMANDS)</div><div class="chips">__RECENT__</div></div>
+</div></div>
+<script>
+const STATE="__STATE__",PREV="__PREV__",PENDING=__PENDING__;
+const safe=document.getElementById('safe'),st=document.getElementById('st'),note=document.getElementById('note'),
+  needle=document.getElementById('needle'),ang=document.getElementById('ang'),dial=document.getElementById('dial'),
+  steps=[...document.querySelectorAll('#steps li')];
+let cur=PREV,busy=false,angle=PREV==='UP'?0:180,dialDeg=0;
+const stage=document.getElementById('stage'),stampEl=document.getElementById('stamp'),sndBtn=document.getElementById('snd');
+let sndOn=false,ac=null;
+function beep(f,d,type,vol){if(!sndOn)return;try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),g=ac.createGain();
+  o.type=type||'sine';o.frequency.value=f;g.gain.value=vol||.05;o.connect(g);g.connect(ac.destination);o.start();g.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+d);o.stop(ac.currentTime+d);}catch(e){}}
+function whirr(){for(let i=0;i<8;i++)setTimeout(()=>beep(280+i*45,.12,'sawtooth',.02),i*130);}
+function clunk(){beep(90,.28,'square',.08);}
+function stamp(ok){stampEl.className='stamp '+(ok?'ok':'lk');stampEl.textContent=ok?'ACCESS GRANTED':'LOCKED';void stampEl.offsetWidth;stampEl.classList.add('show');}
+function shake(){safe.classList.remove('shake');void safe.offsetWidth;safe.classList.add('shake');}
+sndBtn.addEventListener('click',()=>{sndOn=!sndOn;sndBtn.textContent=sndOn?'🔊 เสียง: เปิด':'🔇 เสียง: ปิด';beep(660,.12,'sine',.05);});
+function setStatus(kind,txt){st.className='status '+kind;st.textContent=txt;}
+function setStep(n){steps.forEach((li,i)=>{li.className=i<n?'done':(i===n?'on':'');});}
+function tween(to,ms){const from=angle,t0=performance.now();angle=to;needle.style.transform='rotate('+to+'deg)';
+  const f=now=>{const p=Math.min(1,(now-t0)/ms),e=1-Math.pow(1-p,3);ang.textContent=Math.round(from+(to-from)*e)+'°';if(p<1)requestAnimationFrame(f);};requestAnimationFrame(f);}
+function spin(d){dialDeg+=d;dial.style.transform='rotate('+dialDeg+'deg)';}
+function statics(s){
+  const up=s==='UP';safe.classList.toggle('open',up);safe.classList.toggle('unlocked',up);safe.classList.toggle('light',up);safe.classList.toggle('locked',!up);
+  needle.style.transform='rotate('+(up?0:180)+'deg)';ang.textContent=(up?0:180)+'°';
+  setStatus(up?'st-open':'st-lock',up?'UNLOCK · ปลดล็อกแล้ว':'LOCK · ล็อกอยู่');steps.forEach(li=>li.className=PENDING?'':'done');
+}
+function run(target,cb){
+  if(busy)return;busy=true;const opening=target==='UP';
+  safe.classList.add('working');stage.classList.add('scan');beep(880,.1,'sine',.05);setStatus('st-work',opening?'กำลังเปิด…':'กำลังล็อก…');note.textContent='';setStep(0);
+  const T=(ms,f)=>setTimeout(f,ms);
+  if(opening){
+    T(500,()=>{setStep(1);tween(0,1400);spin(720);whirr();});
+    T(1500,()=>{setStep(2);safe.classList.add('unlocked');clunk();});
+    T(2100,()=>{setStep(3);safe.classList.add('open');safe.classList.remove('locked');beep(180,.5,'triangle',.05);});
+    T(2900,()=>{safe.classList.add('light');});
+    T(3500,()=>{safe.classList.remove('working');stage.classList.remove('scan');setStatus('st-open','UNLOCK · ปลดล็อกแล้ว');setStep(4);stamp(true);beep(660,.12,'sine',.06);setTimeout(()=>beep(990,.2,'sine',.06),140);cur='UP';busy=false;cb&&cb();});
+  }else{
+    T(400,()=>{setStep(3);safe.classList.remove('light');});
+    T(700,()=>{safe.classList.remove('open');});
+    T(2100,()=>{setStep(2);safe.classList.remove('unlocked');safe.classList.add('locked');clunk();shake();});
+    T(2600,()=>{setStep(1);tween(180,1400);spin(-720);whirr();});
+    T(4100,()=>{safe.classList.remove('working');stage.classList.remove('scan');setStatus('st-lock','LOCK · ล็อกอยู่');setStep(4);stamp(false);beep(220,.3,'square',.06);cur='DOWN';busy=false;cb&&cb();});
+  }
+}
+function waitNote(){if(PENDING){note.textContent='ส่งคำสั่งแล้ว รอ ESP8266 ยืนยันสถานะ…';}}
+statics(PREV);
+if(STATE!==PREV){setTimeout(()=>run(STATE,waitNote),500);}else{waitNote();}
+document.getElementById('demo').addEventListener('click',()=>{if(!busy){run(cur==='UP'?'DOWN':'UP',()=>{note.textContent='(โหมดทดสอบ: ยังไม่ได้สั่งบอร์ดจริง)';});}});
+</script></body></html>
+"""
+    chips = ""
+    for i, r in enumerate(recent or []):
+        up = str(r.get("status", "")).upper() == "UP"
+        when = esc(str(r.get("datetime", ""))[5:16])
+        who = esc(str(r.get("location", "")))
+        chips += (f'<div class="chip" style="animation-delay:{i * 0.08:.2f}s"><b class="{"u" if up else "d"}">'
+                  f'{"UNLOCK" if up else "LOCK"}</b><span>{when} · {who}</span></div>')
+    if not chips:
+        chips = '<div class="chip"><span>ยังไม่มีประวัติการสั่งงาน</span></div>'
+    return (tpl.replace("__STATE__", "UP" if state == "UP" else "DOWN")
+               .replace("__PREV__", "UP" if prev == "UP" else "DOWN")
+               .replace("__PENDING__", "true" if pending else "false")
+               .replace("__RECENT__", chips))
+
+
 def _alarm_charts_html(spec):
     """สร้าง HTML กราฟ 4 ช่อง (Bar / Doughnut / Line / Hourly Bar) ด้วย Chart.js ตามแบบแดชบอร์ดตัวอย่าง"""
     payload = json.dumps(spec, ensure_ascii=False).replace("</", "<\\/")
@@ -1655,6 +2066,58 @@ section[data-testid="stSidebar"] {
 /* ป้ายชื่อช่องกรอก */
 .stApp label, .stApp [data-testid="stWidgetLabel"] p { color: #E2E8F0 !important; }
 
+/* =================================================================
+   MOTION LAYER - อนิเมชั่นเบาๆ ทั้งแอป (CSS ล้วน ไม่รีเฟรชอัตโนมัติ)
+   1 ไล่ขึ้นทีละใบ  2 ตัวเลขนับขึ้น  3 ยกตัว+แสงกวาด  4 จุดสถานะกะพริบ  5 เด้งเมื่อค่าเปลี่ยน  6 แสงใต้น้ำลอย
+   * Streamlit วาด HTML ใหม่เมื่อข้อความเปลี่ยน อนิเมชั่นจึงเล่นซ้ำเองเมื่อค่าเปลี่ยน
+   ================================================================= */
+@property --num { syntax: "<integer>"; initial-value: 0; inherits: false; }
+.cnt { --num: 0; animation: cntUp 1.1s cubic-bezier(.2,.8,.2,1) forwards; counter-reset: cn var(--num); }
+.cnt::after { content: counter(cn); }
+@keyframes cntUp { from { --num: 0; } to { --num: var(--n); } }
+
+@keyframes riseIn { from { opacity: 0; transform: translateY(16px) scale(.97); } to { opacity: 1; transform: none; } }
+.app-hero, .glass-kpi, .iot-card, .req-banner, [data-testid="stExpander"], [data-testid="stAlert"], [data-testid="stDataFrame"] {
+  animation: riseIn .6s cubic-bezier(.2,.8,.2,1) backwards;
+}
+.kpi-grid > .glass-kpi:nth-child(1), [data-testid="stColumn"]:nth-child(1) .iot-card { animation-delay: .05s; }
+.kpi-grid > .glass-kpi:nth-child(2), [data-testid="stColumn"]:nth-child(2) .iot-card { animation-delay: .14s; }
+.kpi-grid > .glass-kpi:nth-child(3), [data-testid="stColumn"]:nth-child(3) .iot-card { animation-delay: .23s; }
+.kpi-grid > .glass-kpi:nth-child(4), [data-testid="stColumn"]:nth-child(4) .iot-card { animation-delay: .32s; }
+.kpi-grid > .glass-kpi:nth-child(5), [data-testid="stColumn"]:nth-child(5) .iot-card { animation-delay: .41s; }
+.kpi-grid > .glass-kpi:nth-child(6) { animation-delay: .50s; }
+
+/* ยกตัว + แสงเฉียงกวาดผ่านผิวกระจกเมื่อชี้เมาส์ */
+.glass-kpi, .iot-card { position: relative; overflow: hidden; transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease; }
+.glass-kpi:hover, .iot-card:hover { transform: translateY(-4px); }
+.glass-kpi::before, .iot-card::before {
+  content: ""; position: absolute; top: 0; left: -60%; width: 40%; height: 100%; pointer-events: none; z-index: 2;
+  background: linear-gradient(105deg, transparent, rgba(255,255,255,.20), transparent); transform: skewX(-18deg);
+}
+.glass-kpi:hover::before, .iot-card:hover::before { animation: sheen .9s ease; }
+@keyframes sheen { to { left: 130%; } }
+
+/* ตัวเลขหลักเด้งเข้ามา (เล่นซ้ำเมื่อค่าเปลี่ยน) */
+.glass-kpi .val { animation: valPop .7s cubic-bezier(.2,1.4,.4,1) backwards; animation-delay: .12s; display: block; }
+@keyframes valPop { 0% { transform: scale(1.14); filter: brightness(1.5); } 100% { transform: none; filter: none; } }
+
+/* จุดสถานะกะพริบ: ปกติ = เขียววงแหวนขยาย, ALARM = แดงเรืองกะพริบ */
+.pill-normal::before, .status-pill-top.ok::before, .status-pill-top.info::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px;
+  background: currentColor; animation: dotRing 1.8s ease-out infinite;
+}
+.status-pill-top.bad, .status-pill-top.warn { animation: pulse-red 1.5s infinite; }
+@keyframes dotRing { 0% { box-shadow: 0 0 0 0 currentColor; } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+/* แท็บ: เนื้อหาเฟดเข้า */
+.stTabs [role="tabpanel"] { animation: riseIn .45s ease backwards; }
+
+/* คนที่ตั้งค่าลดการเคลื่อนไหว / เครื่องช้า: ปิดอนิเมชั่น และแสดงตัวเลขจริงทันที */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .cnt { --num: var(--n); }
+}
+
 @media (max-width:768px){
   .block-container { padding-left: .4rem !important; padding-right: .4rem !important; }
   .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 0.45rem; }
@@ -2020,10 +2483,10 @@ if st.session_state.role == ROLE_ADMIN:
     ADMIN_NAV_ITEMS = [
         "📊 1. ภาพรวมระบบ (Overview)",
         "🛠️ 2. คลังอุปกรณ์ช่าง & สระว่ายน้ำ",
-        "🗄️ 3. ควบคุมลิ้นชัก (ESP8266 Servo)",
-        "💧 4. ระบบระดับน้ำ & ปั๊มน้ำ (Water Alarm)",
-        "🚨 5. ระบบแจ้งเตือนอัคคีภัย (Fire Alarm)",
-        "☀️ 6. ระบบโซลาร์เซลล์ (Growatt Solar)",
+        "🗄️ 3. ควบคุมลิ้นชัก",
+        "💧 4. Water Alarm System",
+        "🚨 5. Fire Alarm System",
+        "☀️ 6. ระบบโซล่าเซลล์",
         "⚙️ 7. ตั้งค่าระบบ & บัญชีผู้ใช้งาน"
     ]
 
@@ -2145,17 +2608,17 @@ if st.session_state.role == ROLE_ADMIN:
         <div class="kpi-grid">
           <div class="glass-kpi">
             <div class="top"><span class="lbl">รายการอุปกรณ์ทั้งหมด</span><span class="ic-badge">🛠️</span></div>
-            <div class="val">{len(items_df)}</div>
+            <div class="val"><span class="cnt" style="--n:{len(items_df)}"></span></div>
             <div class="sub">สภาพปกติพร้อมใช้งาน {len(items_df) - abn_cnt} รายการ</div>
           </div>
           <div class="glass-kpi">
             <div class="top"><span class="lbl">ชำรุด / กำลังใช้งาน / หมด</span><span class="ic-badge">⚠️</span></div>
-            <div class="val" style="color:{'#F87171' if abn_cnt else '#34D399'} !important;">{abn_cnt}</div>
+            <div class="val" style="color:{'#F87171' if abn_cnt else '#34D399'} !important;"><span class="cnt" style="--n:{abn_cnt}"></span></div>
             <div class="sub">สต็อกเหลือน้อยกว่าเกณฑ์: {low_cnt} รายการ</div>
           </div>
           <div class="glass-kpi">
             <div class="top"><span class="lbl">กำลังถูกยืม / รออนุมัติเบิก</span><span class="ic-badge">📦</span></div>
-            <div class="val">{borrowed_cnt} / {len(pending_reqs_all)}</div>
+            <div class="val"><span class="cnt" style="--n:{borrowed_cnt}"></span> / <span class="cnt" style="--n:{len(pending_reqs_all)}"></span></div>
             <div class="sub">ยืมอยู่ {borrowed_cnt} รายการ · รออนุมัติ {len(pending_reqs_all)} รายการ</div>
           </div>
           <div class="glass-kpi">
@@ -2654,14 +3117,26 @@ if st.session_state.role == ROLE_ADMIN:
         st.subheader("🗄️ ระบบควบคุมลิ้นชักอัจฉริยะ (ESP8266 Servo Controller)")
         st.caption(f"เชื่อมโยงกับบอร์ด ESP8266 (Pin D4 / GPIO2) · Command Topic: `{cfg_iot['topic_servo_cmd']}` · Status Topic: `{cfg_iot['topic_servo_status']}`")
 
-        s_col1, s_col2 = st.columns([1.2, 1.8])
+        # สถานะที่ใช้แสดงในตู้เซฟ: ถ้าเพิ่งสั่งงานและบอร์ดยังไม่ยืนยัน ให้เล่นอนิเมชั่นไปยังสถานะเป้าหมายก่อน
+        servo_cmd = st.session_state.get("servo_cmd")
+        if servo_cmd and (iot_mgr.servo_status == servo_cmd["target"] or time.time() - servo_cmd["ts"] > 45):
+            st.session_state.pop("servo_cmd", None)
+            servo_cmd = None
+        eff_state = servo_cmd["target"] if servo_cmd else iot_mgr.servo_status
+        prev_state = st.session_state.get("servo_view_prev", eff_state)
+
+        s_col1, s_col2 = st.columns([1.5, 1])
         with s_col1:
+            _recent_cmds = list(db.iot_logs.find({"system": "SERVO"}, {"_id": 0, "datetime": 1, "location": 1, "status": 1}).sort("datetime", -1).limit(4))
+            show_html_frame(_vault_html(eff_state, prev_state, bool(servo_cmd), _recent_cmds), 660)
+
+        with s_col2:
             is_up = iot_mgr.servo_status == "UP"
             st.markdown(f"""
             <div class="glass-kpi" style="padding:1.35rem;">
               <div class="top"><span class="lbl">CURRENT SERVO POSITION</span><span class="ic-badge">{'🔓' if is_up else '🔒'}</span></div>
-              <div class="val" style="font-size:2rem; color:{'#38BDF8' if is_up else '#34D399'} !important;">
-                {'UP (เปิดลิ้นชัก 0°)' if is_up else 'DOWN (ล็อก 180°)'}
+              <div class="val" style="font-size:1.7rem; color:{'#38BDF8' if is_up else '#34D399'} !important;">
+                {'UNLOCK (ปลดล็อก 0°)' if is_up else 'LOCK (ล็อก 180°)'}
               </div>
               <div class="sub">อัปเดตสถานะล่าสุด: {iot_mgr.servo_last_update}</div>
             </div>
@@ -2675,6 +3150,7 @@ if st.session_state.role == ROLE_ADMIN:
                     "location": "Admin Remote", "status": "UP",
                     "raw": f"Admin {st.session_state.username} sent UP"
                 })
+                st.session_state["servo_cmd"] = {"target": "UP", "ts": time.time()}
                 done("ส่งคำสั่ง 'UP' (หมุนเซอร์โวไปที่ 0°) เรียบร้อยแล้ว!")
 
             if b_down.button("🔒 สั่งล็อก/ปิดลิ้นชัก (Publish 'DOWN')", use_container_width=True):
@@ -2684,15 +3160,19 @@ if st.session_state.role == ROLE_ADMIN:
                     "location": "Admin Remote", "status": "DOWN",
                     "raw": f"Admin {st.session_state.username} sent DOWN"
                 })
+                st.session_state["servo_cmd"] = {"target": "DOWN", "ts": time.time()}
                 done("ส่งคำสั่ง 'DOWN' (หมุนเซอร์โวไปที่ 180°) เรียบร้อยแล้ว!")
 
-        with s_col2:
-            st.markdown("#### 📜 ประวัติการสั่งงานและสถานะตอบกลับจาก ESP8266")
-            servo_db_logs = list(db.iot_logs.find({"system": "SERVO"}, {"_id": 0}).sort("datetime", -1).limit(50))
-            if servo_db_logs:
-                st.dataframe(pd.DataFrame(servo_db_logs), use_container_width=True, hide_index=True)
-            else:
-                st.info("ยังไม่มีประวัติการสั่งเปิด-ปิดลิ้นชัก")
+            st.caption("💡 กดสั่งงานแล้วตู้เซฟจะเล่นลำดับ เซอร์โวหมุน → ปลดสลัก → ประตูเปิด/ปิด ทันที และขึ้น 'รอบอร์ดยืนยัน' จนกว่า ESP8266 ตอบกลับ (รีเฟรชหน้าเพื่อดูสถานะจริง)")
+
+        st.session_state["servo_view_prev"] = eff_state  # จำสถานะที่แสดงล่าสุด เพื่อเล่นอนิเมชั่นเฉพาะตอนสถานะเปลี่ยน
+
+        st.markdown("#### 📜 ประวัติการสั่งงานและสถานะตอบกลับจาก ESP8266")
+        servo_db_logs = list(db.iot_logs.find({"system": "SERVO"}, {"_id": 0}).sort("datetime", -1).limit(50))
+        if servo_db_logs:
+            st.dataframe(pd.DataFrame(servo_db_logs), use_container_width=True, hide_index=True)
+        else:
+            st.info("ยังไม่มีประวัติการสั่งเปิด-ปิดลิ้นชัก")
 
     # -----------------------------------------------------------------
     # MODULE 4: WATER LEVEL & PUMP ALARM
@@ -2925,7 +3405,31 @@ if st.session_state.role == ROLE_ADMIN:
             st.info("💡 กดปุ่ม **'🔄 ดึงข้อมูลเรียลไทม์จาก Growatt Cloud'** ด้านบนเพื่อแสดงสถานะแบตเตอรี่ แผงโซลาร์ โหลดใช้งาน และไฟการไฟฟ้า")
 
         st.markdown("---")
-        st.markdown("#### 📈 ประวัติการบันทึกค่าพลังงานโซลาร์เซลล์")
+        st.markdown("#### ⚡ วิเคราะห์พลังงานโซลาร์เซลล์จาก Google Sheets (Solar_Data_Log)")
+        with st.expander("⚙️ แหล่งข้อมูล Google Sheets", expanded=False):
+            sh_c1, sh_c2, sh_c3 = st.columns([3, 1, 1.4])
+            solar_sheet_id = sh_c1.text_input("Sheet ID", value=SOLAR_SHEET_ID_DEFAULT, key="solar_sheet_id")
+            solar_gid = sh_c2.text_input("GID (แท็บ)", value=SOLAR_SHEET_GID_DEFAULT, key="solar_sheet_gid")
+            solar_date_order = sh_c3.selectbox("รูปแบบวันที่ในชีต", ["auto", "dmy", "mdy"], key="solar_date_order",
+                                               format_func=lambda v: {"auto": "อัตโนมัติ (เดาให้)", "dmy": "วัน/เดือน/ปี", "mdy": "เดือน/วัน/ปี"}[v])
+            if st.button("🔄 โหลดข้อมูลจากชีตใหม่", key="solar_sheet_reload"):
+                load_solar_sheet.clear()
+            solar_upload = st.file_uploader("หรืออัปโหลดไฟล์ CSV ที่ดาวน์โหลดจากชีตเอง (ใช้เมื่อดึงจากชีตตรงๆ ไม่ได้)", type=["csv"], key="solar_csv_upload")
+        if solar_upload is not None:
+            solar_raw, solar_err = pd.read_csv(solar_upload), ""
+        else:
+            solar_raw, solar_err = load_solar_sheet(solar_sheet_id.strip(), solar_gid.strip() or "0")
+        if solar_raw is None:
+            st.warning(f"⚠️ ดึงข้อมูลจากชีตไม่สำเร็จ: {solar_err}")
+        else:
+            solar_df, solar_prep_err = prep_solar_df(solar_raw, solar_date_order)
+            if solar_df is None:
+                st.warning(f"⚠️ อ่านข้อมูลชีตไม่ได้: {solar_prep_err}")
+            else:
+                render_solar_dashboard(solar_df)
+
+        st.markdown("---")
+        st.markdown("#### 📈 ประวัติการบันทึกค่าพลังงานโซลาร์เซลล์ (จากการกดดึง Growatt ในฐานข้อมูล)")
         sol_logs = list(db.iot_logs.find({"system": "SOLAR"}, {"_id": 0}).sort("datetime", -1).limit(200))
         if sol_logs:
             sol_rows = []
@@ -3132,15 +3636,15 @@ elif st.session_state.role in TECH_ROLES:
     <div class="kpi-grid">
       <div class="glass-kpi">
         <div class="top"><span class="lbl">รายการอุปกรณ์ทั้งหมด</span><span class="ic-badge">🛠️</span></div>
-        <div class="val">{len(items_df)}</div>
+        <div class="val"><span class="cnt" style="--n:{len(items_df)}"></span></div>
       </div>
       <div class="glass-kpi">
         <div class="top"><span class="lbl">{abn_label}</span><span class="ic-badge">⚠️</span></div>
-        <div class="val" style="color:{'#F87171' if abn_cnt else '#34D399'} !important;">{abn_cnt}</div>
+        <div class="val" style="color:{'#F87171' if abn_cnt else '#34D399'} !important;"><span class="cnt" style="--n:{abn_cnt}"></span></div>
       </div>
       <div class="glass-kpi">
         <div class="top"><span class="lbl">กำลังถูกยืมอยู่</span><span class="ic-badge">📤</span></div>
-        <div class="val">{borrowed_cnt}</div>
+        <div class="val"><span class="cnt" style="--n:{borrowed_cnt}"></span></div>
       </div>
     </div>
     """, unsafe_allow_html=True)
