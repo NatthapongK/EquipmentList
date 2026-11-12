@@ -1034,6 +1034,3 @@ def render_borrow_return_system():
             "วันที่คืน": t.get("return_date"),
             "สถานะ": t.get("status"),
         } for t in all_txs]  # ตรวจสอบว่ามีวงเล็บเหลี่ยมปิดท้ายตรงนี้ครบถ้วน
-        
-        tx_history = pd.DataFrame(tx_data)
-        st.dataframe(tx_history, use_container_width=True, hide_index=True)
