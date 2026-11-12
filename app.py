@@ -2451,7 +2451,11 @@ if not items_df.empty:
         items_df['status'].str.startswith('กำลังใช้งาน', na=False) |
         items_df['status'].str.contains('กำลังใช้งาน', na=False)
     ]
-    thr = pd.Series(low_stock_limit, index=items_df.index).where(items_df['alert_zero'] != 1, 0)
+    if "alert_threshold" in items_df.columns:
+        item_thresholds = pd.to_numeric(items_df["alert_threshold"], errors="coerce").fillna(low_stock_limit)
+    else:
+        item_thresholds = pd.Series(low_stock_limit, index=items_df.index, dtype="float64")
+    thr = item_thresholds.where(items_df['alert_zero'] != 1, 0)
     low_stock_items = items_df[(items_df['subcategory'] != 'เครื่องมือช่าง') & (items_df['quantity'] <= thr)]
 else:
     abnormal_items = pd.DataFrame()
@@ -2460,6 +2464,16 @@ else:
 borrowed_cnt = len(active_borrows)
 abn_cnt, low_cnt = len(abnormal_items), len(low_stock_items)
 pending_reqs_all = get_pending_reqs()
+pending_req_alert_hours = max(1, int(get_settings_val("pending_req_alert_hours", "24")))
+
+def request_age_hours(request):
+    try:
+        requested_at = datetime.strptime(request.get("request_date", ""), "%Y-%m-%d %H:%M").replace(tzinfo=TZ_TH)
+        return (get_now_th() - requested_at).total_seconds() / 3600
+    except (TypeError, ValueError):
+        return None
+
+overdue_reqs = [r for r in pending_reqs_all if (request_age_hours(r) or 0) >= pending_req_alert_hours]
 
 # =====================================================================
 #  SHARED BORROW / RETURN COMPONENT
@@ -2855,6 +2869,24 @@ if st.session_state.role == ROLE_ADMIN:
             f'<div style="font-size:0.78rem; color:#BAE6FD;">ไปที่เมนู "2. คลังอุปกรณ์ช่าง & สระว่ายน้ำ -> อนุมัติคำขอเพิ่มอุปกรณ์" เพื่อพิจารณา</div></div></div>',
             unsafe_allow_html=True
         )
+
+    system_alert_messages = []
+    if overdue_reqs:
+        system_alert_messages.append(
+            f"มีคำขอ {len(overdue_reqs)} รายการรออนุมัติเกิน {pending_req_alert_hours} ชั่วโมง"
+        )
+    if not iot_mgr.connected:
+        system_alert_messages.append("MQTT Broker ขาดการเชื่อมต่อ")
+    offline_water_nodes = [
+        {"A": "อาคาร A", "B": "อาคาร B", "C": "อาคาร C", "D": "อาคาร D", "UNDERGROUND": "สระว่ายน้ำใต้ดิน"}.get(node, node)
+        for node, online in iot_mgr.water_online.items() if not online
+    ]
+    if offline_water_nodes:
+        system_alert_messages.append("จุดตรวจวัดน้ำออฟไลน์: " + ", ".join(offline_water_nodes))
+    if system_alert_messages:
+        with st.expander(f"🔔 การแจ้งเตือนระบบ ({len(system_alert_messages)})", expanded=True):
+            for alert_message in system_alert_messages:
+                st.warning(alert_message)
 
     # -----------------------------------------------------------------
     # MODULE 1: EXECUTIVE OVERVIEW (Admin Dashboard V2 Glass Grid)
@@ -3839,6 +3871,56 @@ if st.session_state.role == ROLE_ADMIN:
                         set_settings_val('global_daily_quota', new_base_quota)
                         set_settings_val(f"extra_quota_{date_str}", add_more_quota)
                         done("บันทึกการตั้งค่าโควต้าเรียบร้อยแล้ว!")
+
+                st.markdown("#### ⏱️ เตือนคำขอที่รออนุมัตินาน")
+                with st.form("pending_request_alert_form"):
+                    new_pending_alert_hours = st.number_input(
+                        "แจ้งเตือนเมื่อรอเกิน (ชั่วโมง)", min_value=1,
+                        value=pending_req_alert_hours, step=1,
+                    )
+                    if st.form_submit_button("บันทึกเวลาแจ้งเตือน"):
+                        set_settings_val("pending_req_alert_hours", new_pending_alert_hours)
+                        done("บันทึกเวลาการแจ้งเตือนคำขอแล้ว")
+
+            st.markdown("#### 🎚️ เกณฑ์แจ้งเตือนสต็อกรายอุปกรณ์")
+            st.caption("เว้นเกณฑ์ว่างเพื่อใช้ค่าเกณฑ์รวมของระบบ · กำหนด 0 เพื่อแจ้งเตือนเมื่อหมดเท่านั้น")
+            if not items_df.empty:
+                stock_alert_editor_df = items_df[["id", "name", "category", "quantity"]].copy()
+                stock_alert_editor_df["เกณฑ์แจ้งเตือน"] = (
+                    items_df["alert_threshold"] if "alert_threshold" in items_df.columns else None
+                )
+                with st.form("per_item_stock_alert_form"):
+                    edited_alert_thresholds = st.data_editor(
+                        stock_alert_editor_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        disabled=["id", "name", "category", "quantity"],
+                        key="per_item_stock_alert_editor",
+                        column_config={
+                            "id": st.column_config.NumberColumn("รหัส"),
+                            "quantity": st.column_config.NumberColumn("คงเหลือ"),
+                            "เกณฑ์แจ้งเตือน": st.column_config.NumberColumn(
+                                "เกณฑ์แจ้งเตือน",
+                                min_value=0,
+                                step=1,
+                                format="%d",
+                                help="ปล่อยว่างเพื่อใช้เกณฑ์รวมของระบบ",
+                            ),
+                        },
+                    )
+                    if st.form_submit_button("บันทึกเกณฑ์รายอุปกรณ์", type="primary"):
+                        for _, alert_row in edited_alert_thresholds.iterrows():
+                            threshold_value = alert_row.get("เกณฑ์แจ้งเตือน")
+                            if pd.isna(threshold_value):
+                                db.items.update_one({"id": int(alert_row["id"])}, {"$unset": {"alert_threshold": ""}})
+                            else:
+                                db.items.update_one(
+                                    {"id": int(alert_row["id"])},
+                                    {"$set": {"alert_threshold": int(threshold_value)}},
+                                )
+                        refresh_items()
+                        log_audit("STOCK_ALERT_THRESHOLDS_UPDATE", "items", detail="Updated per-item stock alert thresholds")
+                        done("บันทึกเกณฑ์แจ้งเตือนรายอุปกรณ์เรียบร้อยแล้ว")
 
         with set_tab2:
             st.markdown("#### 🪪 ตั้งชื่อแสดงผลบัญชีผู้ใช้")
