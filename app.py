@@ -59,27 +59,16 @@ ROLE_TECH = "ช่างประจำอาคาร"
 ROLE_TECH_SP = "ช่างประจำอาคารพิเศษ"
 TECH_ROLES = [ROLE_TECH, ROLE_TECH_SP]
 
-# --- DEFAULT HARDWARE & IOT CREDENTIALS (For Admin Only) ---
+# --- # --- IoT defaults: public topics only. All connection data comes from Streamlit Secrets. ---
 DEFAULT_IOT_CONFIG = {
-    "mqtt_server": "dcb4e8c8b1594e88aef914771ce94103.s1.eu.hivemq.cloud",
-    "mqtt_port": 8883,
-    "mqtt_user": "32bit7k",
-    "mqtt_pass": "aA0891148075",
-    "topic_servo_cmd": "esp8266/servo",
-    "topic_servo_status": "esp8266/servo/status",
-    "topic_water": "Water alarm",
-    "topic_check_clients": "CheckClients",
-    "topic_fire": "Firealarm",
-    "topic_fire_relay": "nodemcu/control/relay",
-    "line_token": "Z4Q1Oovl195VbH2Zs+cgtJfQrWalykEOIqe9R+fwagj60jYeu80011v83fSulPpkUPTrGee8/6q4i/yAoF0XhfUA37dgLIkIHQqYKejfbAB99UNtRl8GEbhPwF6T1PyiDOOGqEvaj1dbaw256MMuiwdB04t89/1O/w1cDnyilFU=",
-    "line_group_id": "C663efc381970da04d51c09f2bda9c3a4",
-    "growatt_user": "32bit7k",
-    "growatt_pass": "aA0891148075",
-    "growatt_sn": "RKG7BL404R",
-    "google_webapp_url": "https://script.google.com/macros/s/AKfycbz2aB_1RR7UMMX92TOC9c_o_wbyCmfFt82K4hIYFfEFyPcmHL8UWAu0Z9sm99zQW2QFNQ/exec",
+    "mqtt_server": "", "mqtt_port": 8883, "mqtt_user": "", "mqtt_pass": "",
+    "topic_servo_cmd": "esp8266/servo", "topic_servo_status": "esp8266/servo/status",
+    "topic_water": "Water alarm", "topic_check_clients": "CheckClients",
+    "topic_fire": "Firealarm", "topic_fire_relay": "nodemcu/control/relay",
+    "line_token": "", "line_group_id": "", "growatt_user": "",
+    "growatt_pass": "", "growatt_sn": "", "google_webapp_url": "",
 }
-
-# รายการอุปกรณ์เริ่มต้นทั้งหมด
+รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
     ("ปลั๊กโรลElecton", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
     ("สว่านแบตMakita", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
@@ -231,14 +220,34 @@ def set_settings_val(key, val):
     get_settings_val.clear()
 
 def get_iot_config():
+    """Read sensitive IoT configuration from Streamlit Secrets only."""
     cfg = DEFAULT_IOT_CONFIG.copy()
-    for k, v in DEFAULT_IOT_CONFIG.items():
-        saved = get_settings_val(f"iot_{k}", None)
-        if saved is not None and saved != "None":
-            cfg[k] = int(saved) if isinstance(v, int) and str(saved).isdigit() else saved
+    required = {
+        "mqtt_server": "mqtt_server", "mqtt_user": "mqtt_user", "mqtt_pass": "mqtt_pass",
+        "line_token": "line_token", "line_group_id": "line_group_id",
+        "growatt_user": "growatt_user", "growatt_pass": "growatt_pass",
+        "growatt_sn": "growatt_sn", "google_webapp_url": "google_webapp_url",
+    }
+    try:
+        secret_cfg = st.secrets.get("iot", {})
+    except Exception:
+        secret_cfg = {}
+    for key in required:
+        value = secret_cfg.get(key) if hasattr(secret_cfg, "get") else None
+        if value not in (None, ""):
+            cfg[key] = str(value)
+    port = secret_cfg.get("mqtt_port", cfg["mqtt_port"]) if hasattr(secret_cfg, "get") else cfg["mqtt_port"]
+    try:
+        cfg["mqtt_port"] = int(port)
+    except (TypeError, ValueError):
+        cfg["mqtt_port"] = 8883
+    # Public topic names may be changed in settings; never load credentials from MongoDB.
+    for key in ("topic_servo_cmd", "topic_servo_status", "topic_water", "topic_check_clients", "topic_fire", "topic_fire_relay"):
+        saved = get_settings_val(f"iot_{key}", None)
+        if saved not in (None, "None", ""):
+            cfg[key] = saved
     return cfg
-
-# =====================================================================
+=====================================================================
 #  REAL-TIME MQTT & IOT BACKGROUND ENGINE (ADMIN ONLY)
 # =====================================================================
 def send_line_push(message_text, token=None, group_id=None):
@@ -3651,37 +3660,20 @@ if st.session_state.role == ROLE_ADMIN:
                             get_tech_users_df.clear()
                             done(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ {dup_count} บัญชี)")
 
-        with set_tab3:
+                with set_tab3:
             st.markdown("#### 📡 ตั้งค่าการเชื่อมต่อ HiveMQ Cloud, LINE OA และ Growatt Solar")
-            with st.form("iot_config_form"):
-                c1, c2 = st.columns(2)
-                with c1:
-                    m_srv = st.text_input("MQTT Broker Host (HiveMQ Cloud)", value=cfg_iot["mqtt_server"])
-                    m_port = st.number_input("MQTT TLS Port", value=int(cfg_iot["mqtt_port"]))
-                    m_user = st.text_input("MQTT Username", value=cfg_iot["mqtt_user"])
-                    m_pass = st.text_input("MQTT Password", value=cfg_iot["mqtt_pass"], type="password")
-                    l_tok = st.text_input("LINE OA Channel Access Token", value=cfg_iot["line_token"], type="password")
-                    l_gid = st.text_input("LINE Group / User ID", value=cfg_iot["line_group_id"])
-                with c2:
-                    g_user = st.text_input("Growatt Username", value=cfg_iot["growatt_user"])
-                    g_pass = st.text_input("Growatt Password", value=cfg_iot["growatt_pass"], type="password")
-                    g_sn = st.text_input("Growatt Device SN (SPF5000ES)", value=cfg_iot["growatt_sn"])
-                    g_url = st.text_input("Google Apps Script Web App URL", value=cfg_iot["google_webapp_url"])
-                    t_servo = st.text_input("Servo Command Topic", value=cfg_iot["topic_servo_cmd"])
-                    t_relay = st.text_input("Fire Relay Reset Topic", value=cfg_iot["topic_fire_relay"])
-
-                if st.form_submit_button("💾 บันทึกการตั้งค่าฮาร์ดแวร์และเชื่อมต่อใหม่", type="primary"):
-                    new_map = {
-                        "mqtt_server": m_srv, "mqtt_port": int(m_port), "mqtt_user": m_user, "mqtt_pass": m_pass,
-                        "line_token": l_tok, "line_group_id": l_gid, "growatt_user": g_user, "growatt_pass": g_pass,
-                        "growatt_sn": g_sn, "google_webapp_url": g_url, "topic_servo_cmd": t_servo, "topic_fire_relay": t_relay
-                    }
-                    for k, v in new_map.items():
-                        set_settings_val(f"iot_{k}", v)
-                    iot_mgr.connect()
-                    done("บันทึกการตั้งค่า IoT และรีสตาร์ทการเชื่อมต่อ MQTT เรียบร้อยแล้ว!")
-
-        with set_tab4:
+            st.info("ข้อมูลเชื่อมต่ออ่านจาก App settings → Secrets ในส่วน [iot] เท่านั้น เพื่อไม่บันทึกข้อมูลลับลง MongoDB")
+            cfg = get_iot_config()
+            st.dataframe(pd.DataFrame([
+                {"บริการ": "MQTT", "สถานะ": "ตั้งค่าแล้ว" if cfg["mqtt_server"] and cfg["mqtt_user"] and cfg["mqtt_pass"] else "ยังตั้งค่าไม่ครบ"},
+                {"บริการ": "LINE", "สถานะ": "ตั้งค่าแล้ว" if cfg["line_token"] and cfg["line_group_id"] else "ยังตั้งค่าไม่ครบ"},
+                {"บริการ": "Growatt", "สถานะ": "ตั้งค่าแล้ว" if cfg["growatt_user"] and cfg["growatt_pass"] and cfg["growatt_sn"] else "ยังตั้งค่าไม่ครบ"},
+                {"บริการ": "Google Apps Script", "สถานะ": "ตั้งค่าแล้ว" if cfg["google_webapp_url"] else "ยังตั้งค่าไม่ครบ"},
+            ]), use_container_width=True, hide_index=True)
+            if st.button("🔄 เชื่อมต่อ MQTT ใหม่", type="primary"):
+                iot_mgr.connect()
+                done("สั่งเชื่อมต่อ MQTT ใหม่แล้ว")
+with set_tab4:
             st.markdown("#### 🖥️ มอนิเตอร์ข้อความ MQTT แบบสด (Live MQTT Broker Feed)")
             with st.form("custom_mqtt_pub"):
                 cp1, cp2, cp3 = st.columns([1.2, 1.5, 0.8])
