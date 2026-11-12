@@ -68,7 +68,7 @@ DEFAULT_IOT_CONFIG = {
     "line_token": "", "line_group_id": "", "growatt_user": "",
     "growatt_pass": "", "growatt_sn": "", "google_webapp_url": "",
 }
-รายการอุปกรณ์เริ่มต้นทั้งหมด
+#รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
     ("ปลั๊กโรลElecton", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
     ("สว่านแบตMakita", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
