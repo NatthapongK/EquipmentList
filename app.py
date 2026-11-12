@@ -68,7 +68,7 @@ DEFAULT_IOT_CONFIG = {
     "line_token": "", "line_group_id": "", "growatt_user": "",
     "growatt_pass": "", "growatt_sn": "", "google_webapp_url": "",
 }
-#รายการอุปกรณ์เริ่มต้นทั้งหมด
+# รายการอุปกรณ์เริ่มต้นทั้งหมด
 DEFAULT_INITIAL_ITEMS = [
     ("ปลั๊กโรลElecton", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
     ("สว่านแบตMakita", "อุปกรณ์ช่าง", "เครื่องมือช่าง", 2, "ปกติ", "-", None),
@@ -2208,6 +2208,25 @@ section[data-testid="stSidebar"] {
 # =====================================================================
 #  LOGIN STATE & SESSION RESTORATION
 # =====================================================================
+# --- Password hashing for technician accounts (stdlib PBKDF2-HMAC-SHA256) ---
+PASSWORD_HASH_ROUNDS = 310000
+
+def hash_user_password(password):
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), PASSWORD_HASH_ROUNDS).hex()
+    return f"pbkdf2${PASSWORD_HASH_ROUNDS}${salt}${digest}"
+
+def verify_user_password(password, stored):
+    """Return (valid, is_legacy_plaintext). Upgrade legacy credentials after successful login."""
+    stored = str(stored or "")
+    if stored.startswith("pbkdf2$"):
+        try:
+            _, rounds, salt, expected = stored.split("$", 3)
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), int(rounds)).hex()
+            return secrets.compare_digest(actual, expected), False
+        except (ValueError, TypeError):
+            return False, False
+    return secrets.compare_digest(password, stored), True
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
@@ -2288,9 +2307,16 @@ if not st.session_state.logged_in or not st.session_state.role or st.session_sta
             if username == admin_user and password == admin_pass:
                 role_val, user_val = ROLE_ADMIN, admin_user
             else:
-                matched_tech = tech_df[(tech_df['username'] == username) & (tech_df['password'] == password)] if not tech_df.empty else pd.DataFrame()
+                matched_tech = tech_df[tech_df['username'] == username] if not tech_df.empty else pd.DataFrame()
                 if not matched_tech.empty:
-                    role_val, user_val = ROLE_TECH, username
+                    saved_password = matched_tech.iloc[0].get('password', '')
+                    password_ok, needs_upgrade = verify_user_password(password, saved_password)
+                    if password_ok:
+                        role_val, user_val = ROLE_TECH, username
+                        if needs_upgrade:
+                            upgraded_hash = hash_user_password(password)
+                            db.tech_users.update_one({"username": username}, {"$set": {"password": upgraded_hash}})
+                            get_tech_users_df.clear()
 
             if role_val:
                 orig_role = role_val if role_val == ROLE_ADMIN else None
@@ -3604,7 +3630,7 @@ if st.session_state.role == ROLE_ADMIN:
                         if new_t_user.strip() and new_t_pass.strip():
                             if not db.tech_users.find_one({"username": new_t_user}, {"_id": 1}):
                                 t_id = get_next_sequence("tech_users_id")
-                                db.tech_users.insert_one({"id": t_id, "username": new_t_user, "password": new_t_pass})
+                                db.tech_users.insert_one({"id": t_id, "username": new_t_user, "password": hash_user_password(new_t_pass)})
                                 get_tech_users_df.clear()
                                 done(f"สร้างบัญชีช่าง '{new_t_user}' สำเร็จ!")
                             else:
@@ -3622,10 +3648,13 @@ if st.session_state.role == ROLE_ADMIN:
                         t_row = tech_list_df[tech_list_df['id'] == t_id_int].iloc[0]
                         with st.form(f"edit_tech_{t_id_int}"):
                             edit_u = st.text_input("Username", value=t_row['username'])
-                            edit_p = st.text_input("Password ใหม่", value=t_row['password'])
+                            edit_p = st.text_input("Password ใหม่ (เว้นว่างหากไม่เปลี่ยน)", type="password")
                             col_tu1, col_tu2 = st.columns(2)
                             if col_tu1.form_submit_button("บันทึกการแก้ไข", type="primary"):
-                                db.tech_users.update_one({"id": t_id_int}, {"$set": {"username": edit_u, "password": edit_p}})
+                                update_doc = {"username": edit_u}
+                                if edit_p:
+                                    update_doc["password"] = hash_user_password(edit_p)
+                                db.tech_users.update_one({"id": t_id_int}, {"$set": update_doc})
                                 get_tech_users_df.clear()
                                 done("อัปเดตบัญชีช่างสำเร็จ!")
                             if col_tu2.form_submit_button("ลบบัญชีนี้"):
@@ -3654,7 +3683,7 @@ if st.session_state.role == ROLE_ADMIN:
                                 if u in existing_users:
                                     dup_count += 1
                                 else:
-                                    db.tech_users.insert_one({"id": get_next_sequence("tech_users_id"), "username": u, "password": p})
+                                    db.tech_users.insert_one({"id": get_next_sequence("tech_users_id"), "username": u, "password": hash_user_password(p)})
                                     existing_users.add(u)
                                     success_count += 1
                             get_tech_users_df.clear()
