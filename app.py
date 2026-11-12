@@ -3641,20 +3641,20 @@ if st.session_state.role == ROLE_ADMIN:
                 with st.form("user_display_name_form"):
                     profile_user = st.selectbox("เลือกบัญชีผู้ใช้", profile_users)
                     profile_doc = db.user_profiles.find_one({"username": profile_user}, {"display_name": 1}) or {}
-                    display_name_input = st.text_input("ชื่อที่ต้องการให้แสดง", value=profile_doc.get("display_name", ""))
+                    display_name_input = st.text_input("ชื่อที่ต้องการให้แสดง", value=profile_doc.get("display_name", ""), key=f"display_name_{profile_user}")
                     if st.form_submit_button("บันทึกชื่อแสดงผล", type="primary"):
                         if display_name_input.strip():
                             db.user_profiles.update_one({"username": profile_user}, {"$set": {"display_name": display_name_input.strip()}}, upsert=True)
                         else:
                             db.user_profiles.delete_one({"username": profile_user})
                         done("บันทึกชื่อแสดงผลแล้ว")
-                profile_rows = list(db.user_profiles.find({}, {"_id": 0, "username": 1, "display_name": 1}))
-                if profile_rows:
-                    st.dataframe(pd.DataFrame(profile_rows).rename(columns={"username": "Username", "display_name": "ชื่อแสดงผล"}), use_container_width=True, hide_index=True)
-            st.markdown("---")
+                profile_map = {d["username"]: d.get("display_name", "") for d in db.user_profiles.find({}, {"_id": 0, "username": 1, "display_name": 1})}
+                all_profile_rows = [{"Username": u, "ชื่อแสดงผล": profile_map.get(u, "") or "(ยังไม่ตั้งชื่อ)"} for u in profile_users]
+                st.dataframe(pd.DataFrame(all_profile_rows), use_container_width=True, hide_index=True)
             all_techs_df = get_tech_users_df()
             if not all_techs_df.empty:
-                st.dataframe(all_techs_df[['id', 'username']].rename(columns={'id': 'รหัส', 'username': 'ชื่อผู้ใช้งาน (Username)'}), use_container_width=True, hide_index=True)
+                all_techs_df["ชื่อแสดงผล"] = all_techs_df["username"].map(get_display_name)
+                st.dataframe(all_techs_df[['id', 'username', 'ชื่อแสดงผล']].rename(columns={'id': 'รหัส', 'username': 'ชื่อผู้ใช้งาน (Username)'}), use_container_width=True, hide_index=True)
             st.markdown("---")
             col_t1, col_t2 = st.columns(2)
             with col_t1:
