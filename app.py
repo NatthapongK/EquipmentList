@@ -59,7 +59,7 @@ ROLE_TECH = "ช่างประจำอาคาร"
 ROLE_TECH_SP = "ช่างประจำอาคารพิเศษ"
 TECH_ROLES = [ROLE_TECH, ROLE_TECH_SP]
 
-# --- # --- IoT defaults: public topics only. All connection data comes from Streamlit Secrets. ---
+# --- IoT defaults: public topics only. All connection data comes from Streamlit Secrets. ---
 DEFAULT_IOT_CONFIG = {
     "mqtt_server": "", "mqtt_port": 8883, "mqtt_user": "", "mqtt_pass": "",
     "topic_servo_cmd": "esp8266/servo", "topic_servo_status": "esp8266/servo/status",
@@ -247,7 +247,7 @@ def get_iot_config():
         if saved not in (None, "None", ""):
             cfg[key] = saved
     return cfg
-=====================================================================
+# =====================================================================
 #  REAL-TIME MQTT & IOT BACKGROUND ENGINE (ADMIN ONLY)
 # =====================================================================
 def send_line_push(message_text, token=None, group_id=None):
