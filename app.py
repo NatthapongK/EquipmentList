@@ -32,6 +32,12 @@ try:
 except ImportError:
     LocalStorage = None
 
+
+try:
+    import extra_streamlit_components as stx
+except ImportError:
+    stx = None
+
 # =====================================================================
 #  KAVE TOWN SHIFT - CENTRAL ENTERPRISE COMMAND & INVENTORY SYSTEM
 #  - Admin: ควบคุมครบทุกส่วน (Inventory, ESP8266 Drawer Servo, Water Pump,
@@ -2270,6 +2276,14 @@ if "uploader_version" not in st.session_state:
 
 LS_KEY = "inv_token"
 local_store = LocalStorage() if LocalStorage is not None else None
+cookie_manager = None
+saved_cookie_token = None
+if stx is not None:
+    try:
+        cookie_manager = stx.CookieManager(key="login_cookie_manager")
+        saved_cookie_token = cookie_manager.get(cookie=LS_KEY)
+    except Exception:
+        cookie_manager = None
 saved_token = None
 if local_store is not None:
     try:
@@ -2278,7 +2292,7 @@ if local_store is not None:
         saved_token = None
 
 if not st.session_state.logged_in:
-    cand_token = st.query_params.get("token") or saved_token
+    cand_token = st.query_params.get("token") or saved_cookie_token or saved_token
     if cand_token:
         sess = db.sessions.find_one({"token": cand_token})
         if sess and sess.get("role") and sess.get("role") not in ["None", "null", ""]:
@@ -2289,6 +2303,11 @@ if not st.session_state.logged_in:
             st.session_state.original_role = sess.get("original_role")
             st.session_state.token = sess["token"]
             st.query_params["token"] = sess["token"]
+            if cookie_manager is not None and saved_cookie_token != sess["token"]:
+                try:
+                    cookie_manager.set(cookie=LS_KEY, val=sess["token"], expires_at=datetime.now() + timedelta(days=3650))
+                except Exception:
+                    pass
         else:
             st.query_params.clear()
             if saved_token and local_store is not None:
@@ -2362,6 +2381,11 @@ if not st.session_state.logged_in or not st.session_state.role or st.session_sta
                 st.session_state.original_role = orig_role
                 st.session_state.token = token
                 st.query_params["token"] = token
+                if cookie_manager is not None:
+                    try:
+                        cookie_manager.set(cookie=LS_KEY, val=token, expires_at=datetime.now() + timedelta(days=3650))
+                    except Exception:
+                        pass
                 if local_store is not None:
                     try:
                         local_store.setItem(LS_KEY, token, key="ls_set_token")
@@ -2682,6 +2706,11 @@ if st.session_state.role == ROLE_ADMIN:
             if st.button("🚪 ออกจากระบบ (Logout)", type="primary", use_container_width=True, key="sidebar_logout_btn"):
                 if st.session_state.get("token"):
                     db.sessions.delete_one({"token": st.session_state.token})
+                if cookie_manager is not None:
+                    try:
+                        cookie_manager.delete(cookie=LS_KEY)
+                    except Exception:
+                        pass
                 if local_store is not None:
                     try:
                         local_store.deleteItem(LS_KEY, key="ls_del_token")
