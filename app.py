@@ -819,7 +819,7 @@ def get_recent_reductions(inspections, days=7):
             rows.append({
                 "วันที่ตรวจ": when.strftime("%d/%m/%Y %H:%M"), "อุปกรณ์": name, "หมวดหมู่": cat,
                 "จำนวนเดิม": old_q, "จำนวนใหม่": new_q, "ลดลง": old_q - new_q,
-                "สาเหตุ": reason or "ปรับจำนวน", "ผู้ตรวจ": rec.get("tech_name", "-"),
+                "สาเหตุ": reason or "ปรับจำนวน", "ผู้ตรวจ": get_display_name(rec.get("tech_name", "-")),
             })
     return rows
 
