@@ -190,7 +190,13 @@ def init_mongo():
     database.tech_users.create_index("username")
     database.settings.create_index("key")
     database.sessions.create_index("token", unique=True)
-    database.sessions.create_index("created", expireAfterSeconds=60 * 60 * 24 * 30)
+    # Keep sessions until explicit logout. Remove the former 30-day TTL index if present.
+    session_indexes = database.sessions.index_information()
+    for index_name, index_info in session_indexes.items():
+        if index_info.get("expireAfterSeconds") is not None:
+            database.sessions.drop_index(index_name)
+    database.sessions.create_index("created")
+    database.user_profiles.create_index("username", unique=True)
     database.iot_logs.create_index([("system", 1), ("datetime", -1)])
 
     if database.items.count_documents({}, limit=1) == 0:
@@ -747,6 +753,12 @@ def get_items_df():
         df['alert_zero'] = pd.to_numeric(df.get('alert_zero', 0), errors='coerce').fillna(0).astype(int)
         df['note'] = df['note'].fillna("") if 'note' in df.columns else ""
     return df
+
+def get_display_name(username):
+    if not username:
+        return ""
+    profile = db.user_profiles.find_one({"username": username}, {"_id": 0, "display_name": 1})
+    return (profile or {}).get("display_name") or username
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_tech_users_df():
@@ -2608,7 +2620,7 @@ if st.session_state.role == ROLE_ADMIN:
 
         st.markdown(
             f'<div class="user-card"><div class="avatar">{esc(st.session_state.username[:1].upper() if st.session_state.username else "A")}</div>'
-            f'<div><div class="u-name">{esc(st.session_state.username)}</div>'
+            f'<div><div class="u-name">{esc(get_display_name(st.session_state.username))}</div>'
             f'<div class="u-role">{esc(st.session_state.role)}</div></div></div>',
             unsafe_allow_html=True
         )
@@ -2680,7 +2692,7 @@ if st.session_state.role == ROLE_ADMIN:
     <div class="app-hero">
       <div>
         <div class="t">🛠️ KAVE TOWN SHIFT · ADMIN COMMAND DASHBOARD</div>
-        <div class="s">วันที่ {get_now_str("%d/%m/%Y %H:%M")} · ผู้ดูแลระบบ: <b>{esc(st.session_state.username)}</b></div>
+        <div class="s">วันที่ {get_now_str("%d/%m/%Y %H:%M")} · ผู้ดูแลระบบ: <b>{esc(get_display_name(st.session_state.username))}</b></div>
       </div>
       <div class="badge-row">
         <span class="status-pill-top {mqtt_cls}">📡 {mqtt_txt}</span>
@@ -3616,6 +3628,30 @@ if st.session_state.role == ROLE_ADMIN:
                         done("บันทึกการตั้งค่าโควต้าเรียบร้อยแล้ว!")
 
         with set_tab2:
+            st.markdown("#### 🪪 ตั้งชื่อแสดงผลบัญชีผู้ใช้")
+            profile_users = [d.get("username", "") for d in db.tech_users.find({}, {"username": 1, "_id": 0})]
+            try:
+                profile_admin_user = str(st.secrets["admin"]["username"])
+                if profile_admin_user:
+                    profile_users.insert(0, profile_admin_user)
+            except Exception:
+                pass
+            profile_users = list(dict.fromkeys([u for u in profile_users if u]))
+            if profile_users:
+                with st.form("user_display_name_form"):
+                    profile_user = st.selectbox("เลือกบัญชีผู้ใช้", profile_users)
+                    profile_doc = db.user_profiles.find_one({"username": profile_user}, {"display_name": 1}) or {}
+                    display_name_input = st.text_input("ชื่อที่ต้องการให้แสดง", value=profile_doc.get("display_name", ""))
+                    if st.form_submit_button("บันทึกชื่อแสดงผล", type="primary"):
+                        if display_name_input.strip():
+                            db.user_profiles.update_one({"username": profile_user}, {"$set": {"display_name": display_name_input.strip()}}, upsert=True)
+                        else:
+                            db.user_profiles.delete_one({"username": profile_user})
+                        done("บันทึกชื่อแสดงผลแล้ว")
+                profile_rows = list(db.user_profiles.find({}, {"_id": 0, "username": 1, "display_name": 1}))
+                if profile_rows:
+                    st.dataframe(pd.DataFrame(profile_rows).rename(columns={"username": "Username", "display_name": "ชื่อแสดงผล"}), use_container_width=True, hide_index=True)
+            st.markdown("---")
             all_techs_df = get_tech_users_df()
             if not all_techs_df.empty:
                 st.dataframe(all_techs_df[['id', 'username']].rename(columns={'id': 'รหัส', 'username': 'ชื่อผู้ใช้งาน (Username)'}), use_container_width=True, hide_index=True)
@@ -3734,7 +3770,7 @@ elif st.session_state.role in TECH_ROLES:
         <div class="s">ประจำวันที่ {get_now_str("%d/%m/%Y")}</div>
       </div>
       <div class="badge-row">
-        <span class="status-pill-top info">👷 {esc(st.session_state.username)} ({esc(st.session_state.role)})</span>
+        <span class="status-pill-top info">👷 {esc(get_display_name(st.session_state.username))} ({esc(st.session_state.role)})</span>
       </div>
     </div>
     """, unsafe_allow_html=True)
