@@ -1881,6 +1881,7 @@ section[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(i
   box-shadow: 0 4px 18px rgba(0,0,0,0.2);
 }
 .iot-card .hd { font-size: 0.71rem; color: var(--muted); text-transform: uppercase; font-weight: 700; margin-bottom: 0.4rem; }
+.water-status-card .hd { font-size: 1rem; line-height: 1.35; color: #E2E8F0; text-transform: none; }
 .iot-card .bd { display: flex; justify-content: space-between; align-items: center; }
 .iot-card .nm { font-size: 0.94rem; font-weight: 700; color: #F8FAFC; }
 .pill {
@@ -2992,7 +2993,7 @@ if st.session_state.role == ROLE_ADMIN:
             log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             st.toast("ส่งคำสั่ง DOWN ไปที่ esp8266/servo แล้ว", icon="🔒")
             st.rerun()
-        if qa3.button("📡 เช็กสถานะปั๊มน้ำ (CheckClients)", use_container_width=True):
+        if qa3.button("💧 เช็กสถานะปั๊มน้ำ", help="ส่งคำสั่ง CheckClients เพื่ออ่านสถานะปั๊มน้ำ", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_check_clients"], "CheckClients")
             log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             iot_mgr.publish(cfg_iot["topic_water"], "CheckClients")
@@ -3022,7 +3023,7 @@ if st.session_state.role == ROLE_ADMIN:
                 pill_c = "pill-off" if not on_val else ("pill-alarm" if st_val == "ALARM" else "pill-normal")
                 pill_t = "OFFLINE" if not on_val else st_val
                 p_cols[idx].markdown(
-                    f'<div class="iot-card"><div class="hd">{pname}</div>'
+                    f'<div class="iot-card water-status-card"><div class="hd">{pname}</div>'
                     f'<div class="bd"><span class="pill {pill_c}">{pill_t}</span></div></div>',
                     unsafe_allow_html=True
                 )
@@ -3050,7 +3051,10 @@ if st.session_state.role == ROLE_ADMIN:
 
             if low_cnt:
                 with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์ ({low_cnt} รายการ)", expanded=False):
-                    st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
+                    low_stock_display = low_stock_items[['name', 'category', 'quantity']].rename(columns={
+                        'name': 'ชื่ออุปกรณ์', 'category': 'หมวดหมู่', 'quantity': 'จำนวน'
+                    })
+                    st.dataframe(low_stock_display, hide_index=True, use_container_width=True)
             else:
                 st.success("✅ อุปกรณ์ทั่วไปมีจำนวนเพียงพอทุกรายการ")
 
