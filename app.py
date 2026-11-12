@@ -191,7 +191,9 @@ def init_mongo():
 
     database.items.create_index("id", unique=True)
     database.transactions.create_index("id")
+    database.transactions.create_index("borrow_request_id", unique=True, sparse=True)
     database.inspections.create_index("id")
+    database.inspections.create_index("submission_key", unique=True, sparse=True)
     database.requisition_requests.create_index("id")
     database.tech_users.create_index("username")
     database.settings.create_index("key")
@@ -235,6 +237,24 @@ def log_audit(action, target, before=None, after=None, detail=""):
         # Audit failures should be visible in server logs without breaking the user action.
         import logging
         logging.exception("Unable to write audit log")
+
+def save_inspection_once(document):
+    """Insert one inspection report per user/category/round/content/minute."""
+    identity = {
+        "tech_name": document.get("tech_name"),
+        "category": document.get("category"),
+        "session_num": document.get("session_num"),
+        "inspection_minute": str(document.get("inspection_date", ""))[:16],
+        "details": document.get("details", ""),
+        "changes": document.get("changes", []),
+    }
+    canonical = json.dumps(identity, sort_keys=True, ensure_ascii=False, default=str)
+    document["submission_key"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    try:
+        db.inspections.insert_one(document)
+        return True
+    except pymongo.errors.DuplicateKeyError:
+        return False
 
 def get_next_sequence(name):
     counter = db.counters.find_one_and_update(
@@ -1668,7 +1688,13 @@ st.markdown("""
   color: var(--ink);
 }
 
-header[data-testid="stHeader"] { background: transparent !important; height: 1.4rem !important; }
+header[data-testid="stHeader"] { display: none !important; height: 0 !important; }
+div[data-testid="stToolbar"], div[data-testid="stDecoration"], .stAppToolbar,
+.stAppDeployButton, button[title*="Fork"], a[title*="GitHub"] {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+}
 footer { visibility: hidden !important; display: none !important; }
 #MainMenu { visibility: hidden !important; display: none !important; }
 .stDeployButton { display: none !important; }
@@ -2445,6 +2471,8 @@ def render_borrow_return_system():
     with sub_borrow:
         available_items = items_df[items_df['quantity'] > 0] if not items_df.empty else pd.DataFrame()
         if not available_items.empty:
+            if "borrow_request_id" not in st.session_state:
+                st.session_state.borrow_request_id = secrets.token_urlsafe(18)
             with st.form("borrow_form_shared", clear_on_submit=True):
                 item_dict = {f"{row['name']} (คงเหลือ: {row['quantity']} ชิ้น)": row['id']
                              for _, row in available_items.iterrows()}
@@ -2465,18 +2493,34 @@ def render_borrow_return_system():
                     else:
                         b_img_b64 = compress_image_to_base64(borrow_img_file)
                         tx_id = get_next_sequence("transactions_id")
-                        db.transactions.insert_one({
-                            "id": tx_id, "item_id": selected_id, "borrower_name": borrower_name,
-                            "borrow_date": get_now_str("%Y-%m-%d %H:%M"), "return_date": None,
-                            "status": "กำลังยืม", "borrower_image": b_img_b64, "quantity": borrow_qty,
-                            "giver_name": st.session_state.username, "receiver_name": None, "return_image": None
-                        })
-                        new_qty = int(cur["quantity"]) - borrow_qty
-                        new_status = 'ยืม' if new_qty == 0 else cur["status"]
-                        db.items.update_one({"id": selected_id}, {"$set": {"quantity": new_qty, "status": new_status}})
-                        refresh_items()
-                        clear_tx_cache()
-                        done(f"บันทึกการยืม {cur['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
+                        try:
+                            with db.client.start_session() as mongo_session:
+                                with mongo_session.start_transaction():
+                                    stock_update = db.items.update_one(
+                                        {"id": selected_id, "quantity": {"$gte": int(borrow_qty)}},
+                                        {"$inc": {"quantity": -int(borrow_qty)}},
+                                        session=mongo_session,
+                                    )
+                                    if not stock_update.modified_count:
+                                        raise ValueError("สต็อกถูกเปลี่ยนโดยผู้ใช้อื่น กรุณาตรวจสอบจำนวนแล้วลองใหม่")
+                                    new_qty = int(cur["quantity"]) - int(borrow_qty)
+                                    if new_qty == 0:
+                                        db.items.update_one({"id": selected_id}, {"$set": {"status": "ยืม"}}, session=mongo_session)
+                                    db.transactions.insert_one({
+                                        "id": tx_id, "item_id": selected_id, "borrower_name": borrower_name,
+                                        "borrow_date": get_now_str("%Y-%m-%d %H:%M"), "return_date": None,
+                                        "status": "กำลังยืม", "borrower_image": b_img_b64, "quantity": int(borrow_qty),
+                                        "giver_name": st.session_state.username, "receiver_name": None, "return_image": None,
+                                        "borrow_request_id": st.session_state.borrow_request_id
+                                    }, session=mongo_session)
+                            refresh_items()
+                            clear_tx_cache()
+                            st.session_state.borrow_request_id = secrets.token_urlsafe(18)
+                            done(f"บันทึกการยืม {cur['name']} จำนวน {borrow_qty} ชิ้น เรียบร้อยแล้ว")
+                        except ValueError as e:
+                            st.warning(str(e))
+                        except Exception as e:
+                            st.error(f"บันทึกการยืมไม่สำเร็จ ระบบยกเลิกรายการแล้ว: {e}")
         else:
             st.info("ไม่มีอุปกรณ์ที่มีจำนวนคงเหลือให้ยืมในขณะนี้")
 
@@ -2508,15 +2552,32 @@ def render_borrow_return_system():
                             ret_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายตอนคืนอุปกรณ์ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"ret_img_{t['id']}")
                             if st.form_submit_button("✅ รับคืนอุปกรณ์รายการนี้", type="primary"):
                                 r_img_b64 = compress_image_to_base64(ret_img_file)
-                                db.transactions.update_one(
-                                    {"id": t['id']},
-                                    {"$set": {"return_date": get_now_str("%Y-%m-%d %H:%M"), "status": "คืนแล้ว",
-                                              "receiver_name": st.session_state.username, "return_image": r_img_b64}})
                                 tx_qty = int(t.get('quantity', 1))
-                                db.items.update_one({"id": t['item_id']}, {"$inc": {"quantity": tx_qty}, "$set": {"status": "ปกติ"}})
-                                refresh_items()
-                                clear_tx_cache()
-                                done(f"รับคืน {item_name} จำนวน {tx_qty} ชิ้น เรียบร้อยแล้ว")
+                                try:
+                                    with db.client.start_session() as mongo_session:
+                                        with mongo_session.start_transaction():
+                                            returned = db.transactions.update_one(
+                                                {"id": t['id'], "status": "กำลังยืม"},
+                                                {"$set": {"return_date": get_now_str("%Y-%m-%d %H:%M"), "status": "คืนแล้ว",
+                                                          "receiver_name": st.session_state.username, "return_image": r_img_b64}},
+                                                session=mongo_session,
+                                            )
+                                            if not returned.modified_count:
+                                                raise ValueError("รายการนี้ถูกคืนไปแล้ว กรุณารีเฟรชรายการ")
+                                            stock_restored = db.items.update_one(
+                                                {"id": t['item_id']},
+                                                {"$inc": {"quantity": tx_qty}, "$set": {"status": "ปกติ"}},
+                                                session=mongo_session,
+                                            )
+                                            if not stock_restored.matched_count:
+                                                raise ValueError("ไม่พบอุปกรณ์ในคลัง จึงยกเลิกรายการคืน")
+                                    refresh_items()
+                                    clear_tx_cache()
+                                    done(f"รับคืน {item_name} จำนวน {tx_qty} ชิ้น เรียบร้อยแล้ว")
+                                except ValueError as e:
+                                    st.warning(str(e))
+                                except Exception as e:
+                                    st.error(f"บันทึกการคืนไม่สำเร็จ ระบบยกเลิกรายการแล้ว: {e}")
         else:
             st.info("ไม่มีรายการอุปกรณ์ที่กำลังถูกยืมในขณะนี้")
 
@@ -2978,17 +3039,26 @@ if st.session_state.role == ROLE_ADMIN:
                                            "alert_zero": 1 if qe_alert_zero else 0, "note": qe_note}
                                     if qe_file is not None:
                                         upd["image"] = compress_image_to_base64(qe_file)
-                                    db.items.update_one({"id": qe_id}, {"$set": upd})
-                                    log_audit("ITEM_UPDATE", qe_id, {"name": qe_row.get("name"), "quantity": qe_row.get("quantity"), "status": qe_row.get("status")}, {"name": qe_name, "quantity": qe_quantity, "status": qe_status})
-                                    refresh_items(images=qe_file is not None)
-                                    close_quick_edit()
-                                    done("อัปเดตข้อมูลสำเร็จ!")
+                                    saved = db.items.update_one(
+                                        {"id": qe_id, "name": qe_row.get("name"), "quantity": qe_row.get("quantity"), "status": qe_row.get("status")},
+                                        {"$set": upd},
+                                    )
+                                    if saved.matched_count:
+                                        log_audit("ITEM_UPDATE", qe_id, {"name": qe_row.get("name"), "quantity": qe_row.get("quantity"), "status": qe_row.get("status")}, {"name": qe_name, "quantity": qe_quantity, "status": qe_status})
+                                        refresh_items(images=qe_file is not None)
+                                        close_quick_edit()
+                                        done("อัปเดตข้อมูลสำเร็จ!")
+                                    else:
+                                        st.warning("ข้อมูลอุปกรณ์ถูกแก้โดยผู้ใช้อื่นแล้ว กรุณาปิดหน้าต่างแล้วเปิดใหม่ก่อนบันทึก")
                                 if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
-                                    db.items.delete_one({"id": qe_id})
-                                    log_audit("ITEM_DELETE", qe_id, {"name": qe_row.get("name"), "quantity": qe_row.get("quantity"), "status": qe_row.get("status")})
-                                    refresh_items(images=True)
-                                    close_quick_edit()
-                                    done("ลบเรียบร้อยแล้ว!")
+                                    deleted = db.items.delete_one({"id": qe_id, "name": qe_row.get("name"), "quantity": qe_row.get("quantity"), "status": qe_row.get("status")})
+                                    if deleted.deleted_count:
+                                        log_audit("ITEM_DELETE", qe_id, {"name": qe_row.get("name"), "quantity": qe_row.get("quantity"), "status": qe_row.get("status")})
+                                        refresh_items(images=True)
+                                        close_quick_edit()
+                                        done("ลบเรียบร้อยแล้ว!")
+                                    else:
+                                        st.warning("ข้อมูลอุปกรณ์ถูกแก้โดยผู้ใช้อื่นแล้ว จึงไม่ได้ลบ กรุณารีเฟรชรายการ")
                                 if col_qe3.form_submit_button("❌ ปิดหน้าต่าง"):
                                     close_quick_edit()
                                     st.rerun()
@@ -3057,15 +3127,24 @@ if st.session_state.role == ROLE_ADMIN:
                                            "alert_zero": 1 if e_alert_zero else 0, "note": e_note}
                                     if e_file is not None:
                                         upd["image"] = compress_image_to_base64(e_file)
-                                    db.items.update_one({"id": item_id_int}, {"$set": upd})
-                                    log_audit("ITEM_UPDATE", item_id_int, {"name": current_item["name"], "quantity": int(current_item["quantity"]), "status": current_item["status"]}, {"name": e_name, "quantity": int(e_quantity), "status": e_status})
-                                    refresh_items(images=e_file is not None)
-                                    done("อัปเดตข้อมูลสำเร็จ!")
+                                    saved = db.items.update_one(
+                                        {"id": item_id_int, "name": current_item["name"], "quantity": int(current_item["quantity"]), "status": current_item["status"]},
+                                        {"$set": upd},
+                                    )
+                                    if saved.matched_count:
+                                        log_audit("ITEM_UPDATE", item_id_int, {"name": current_item["name"], "quantity": int(current_item["quantity"]), "status": current_item["status"]}, {"name": e_name, "quantity": int(e_quantity), "status": e_status})
+                                        refresh_items(images=e_file is not None)
+                                        done("อัปเดตข้อมูลสำเร็จ!")
+                                    else:
+                                        st.warning("ข้อมูลอุปกรณ์ถูกแก้โดยผู้ใช้อื่นแล้ว กรุณารีเฟรชรายการก่อนบันทึก")
                                 if col_e2.form_submit_button("ลบอุปกรณ์นี้", type="secondary"):
-                                    db.items.delete_one({"id": item_id_int})
-                                    log_audit("ITEM_DELETE", item_id_int, {"name": current_item["name"], "quantity": int(current_item["quantity"]), "status": current_item["status"]})
-                                    refresh_items(images=True)
-                                    done("ลบเรียบร้อยแล้ว!")
+                                    deleted = db.items.delete_one({"id": item_id_int, "name": current_item["name"], "quantity": int(current_item["quantity"]), "status": current_item["status"]})
+                                    if deleted.deleted_count:
+                                        log_audit("ITEM_DELETE", item_id_int, {"name": current_item["name"], "quantity": int(current_item["quantity"]), "status": current_item["status"]})
+                                        refresh_items(images=True)
+                                        done("ลบเรียบร้อยแล้ว!")
+                                    else:
+                                        st.warning("ข้อมูลอุปกรณ์ถูกแก้โดยผู้ใช้อื่นแล้ว จึงไม่ได้ลบ กรุณารีเฟรชรายการ")
 
                 with sub_bulk:
                     st.markdown("### 📁 อัปโหลดรูปภาพอุปกรณ์แบบกลุ่ม (ตามชื่อไฟล์รหัสอุปกรณ์ เช่น `1.jpg`, `2.png`)")
@@ -3137,7 +3216,7 @@ if st.session_state.role == ROLE_ADMIN:
                                     ))
                         if bulk_ops:
                             db.items.bulk_write(bulk_ops, ordered=False)
-                        db.inspections.insert_one({
+                        save_inspection_once({
                             "id": get_next_sequence("inspections_id"),
                             "tech_name": f"{st.session_state.username} (Admin)",
                             "category": "อุปกรณ์ช่าง",
@@ -3169,7 +3248,7 @@ if st.session_state.role == ROLE_ADMIN:
                                     adm_pool_changes.append({"item_id": rid, "name": row_map.loc[rid, 'name'], "old_qty": old_q, "new_qty": q_val, "reason": "ปรับจำนวน"})
                         if bulk_pool_ops:
                             db.items.bulk_write(bulk_pool_ops, ordered=False)
-                        db.inspections.insert_one({
+                        save_inspection_once({
                             "id": get_next_sequence("inspections_id"),
                             "tech_name": f"{st.session_state.username} (Admin)",
                             "category": "อุปกรณ์สระว่ายน้ำ",
@@ -3260,20 +3339,41 @@ if st.session_state.role == ROLE_ADMIN:
                             st.write(f"📝 **หมายเหตุ/เหตุผล:** {req['note']}")
                             col_app1, col_app2 = st.columns(2)
                             if col_app1.button("✅ อนุมัติ (เพิ่มจำนวนเข้าคลัง)", key=f"approve_{req['id']}", type="primary"):
-                                res = db.requisition_requests.update_one(
-                                    {"id": req['id'], "status": "รออนุมัติ"},
-                                    {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}})
-                                if res.modified_count:
+                                try:
+                                    with db.client.start_session() as mongo_session:
+                                        with mongo_session.start_transaction():
+                                            res = db.requisition_requests.update_one(
+                                                {"id": req['id'], "status": "รออนุมัติ"},
+                                                {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}},
+                                                session=mongo_session,
+                                            )
+                                            if not res.modified_count:
+                                                raise ValueError("คำขอนี้ถูกดำเนินการไปแล้ว กรุณารีเฟรชรายการ")
+                                            stock_added = db.items.update_one(
+                                                {"id": req['item_id']},
+                                                {"$inc": {"quantity": int(req['quantity']), "orig_quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}},
+                                                session=mongo_session,
+                                            )
+                                            if not stock_added.matched_count:
+                                                raise ValueError("ไม่พบอุปกรณ์ในคลัง ระบบยกเลิกการอนุมัติแล้ว")
                                     log_audit("REQUISITION_APPROVE", req["id"], before={"status": "รออนุมัติ", "quantity": current_stock}, after={"status": "อนุมัติ", "quantity": current_stock + int(req["quantity"])})
-                                    db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity']), "orig_quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
-                                refresh_items()
-                                clear_req_cache()
-                                done(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
+                                    refresh_items()
+                                    clear_req_cache()
+                                    done(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
+                                except ValueError as e:
+                                    st.warning(str(e))
+                                except Exception as e:
+                                    st.error(f"อนุมัติคำขอไม่สำเร็จ ระบบยกเลิกการเปลี่ยนแปลงแล้ว: {e}")
                             if col_app2.button("❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
-                                db.requisition_requests.update_one({"id": req['id'], "status": "รออนุมัติ"}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": get_now_str()}})
-                                log_audit("REQUISITION_REJECT", req["id"], before={"status": "รออนุมัติ"}, after={"status": "ไม่อนุมัติ"})
-                                clear_req_cache()
-                                done(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว", icon="⚠️")
+                                rejected = db.requisition_requests.update_one(
+                                    {"id": req['id'], "status": "รออนุมัติ"},
+                                    {"$set": {"status": "ไม่อนุมัติ", "approval_date": get_now_str()}})
+                                if rejected.modified_count:
+                                    log_audit("REQUISITION_REJECT", req["id"], before={"status": "รออนุมัติ"}, after={"status": "ไม่อนุมัติ"})
+                                    clear_req_cache()
+                                    done(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว", icon="⚠️")
+                                else:
+                                    st.warning("คำขอนี้ถูกดำเนินการไปแล้ว กรุณารีเฟรชรายการ")
                             st.markdown("---")
                 else:
                     st.info("ไม่มีคำขอเพิ่มอุปกรณ์ที่รอการอนุมัติในขณะนี้")
@@ -4077,7 +4177,7 @@ elif st.session_state.role in TECH_ROLES:
                                     db.items.bulk_write(bulk_operations, ordered=False)
 
                                 summary_details = ", ".join(flagged_summaries) if flagged_summaries else "ปกติทุกรายการ"
-                                db.inspections.insert_one({
+                                save_inspection_once({
                                     "id": get_next_sequence("inspections_id"),
                                     "tech_name": st.session_state.username,
                                     "category": "อุปกรณ์ช่าง",
@@ -4145,7 +4245,7 @@ elif st.session_state.role in TECH_ROLES:
                                 db.items.bulk_write(bulk_pool_ops, ordered=False)
 
                             summary_note = "อัปเดตจำนวนอุปกรณ์สระว่ายน้ำ" + (f" | การเปลี่ยนแปลง: {', '.join(pool_summaries)}" if pool_summaries else "")
-                            db.inspections.insert_one({
+                            inspection_saved = save_inspection_once({
                                 "id": get_next_sequence("inspections_id"),
                                 "tech_name": st.session_state.username,
                                 "category": "อุปกรณ์สระว่ายน้ำ",
@@ -4161,6 +4261,10 @@ elif st.session_state.role in TECH_ROLES:
                         get_inspections_list.clear()
                         clear_inspection_widget_state()
                         st.session_state.uploader_version += 1
-                        done("อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!")
+                        done(
+                            "อัปเดตจำนวนอุปกรณ์สระว่ายน้ำเรียบร้อยแล้ว!" if inspection_saved
+                            else "รายการตรวจนี้ถูกบันทึกแล้ว ระบบไม่เพิ่มประวัติซ้ำ",
+                            icon="✅" if inspection_saved else "ℹ️",
+                        )
             else:
                 st.info("ไม่มีอุปกรณ์สระว่ายน้ำในระบบ")
