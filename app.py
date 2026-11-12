@@ -2768,7 +2768,7 @@ if st.session_state.role == ROLE_ADMIN:
                 st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
 
             if low_cnt:
-                with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์ ({low_cnt} รายการ)", expanded=True):
+                with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์ ({low_cnt} รายการ)", expanded=False):
                     st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
             else:
                 st.success("✅ อุปกรณ์ทั่วไปมีจำนวนเพียงพอทุกรายการ")
@@ -2776,7 +2776,7 @@ if st.session_state.role == ROLE_ADMIN:
             # แจ้งเตือนรายการที่ถูกปรับลดจำนวนใน 7 วันล่าสุด (ไม่มีการปรับลดเลย = ไม่แสดง)
             admin_reduced_rows = get_recent_reductions(get_inspections_list(), days=7)
             if admin_reduced_rows:
-                with st.expander(f"📉 มีการปรับลดจำนวนอุปกรณ์ใน 7 วันล่าสุด ({len(admin_reduced_rows)} รายการ)", expanded=True):
+                with st.expander(f"📉 มีการปรับลดจำนวนอุปกรณ์ใน 7 วันล่าสุด ({len(admin_reduced_rows)} รายการ)", expanded=False):
                     st.dataframe(pd.DataFrame(admin_reduced_rows), hide_index=True, use_container_width=True)
 
             if borrowed_cnt:
