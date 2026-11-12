@@ -3630,27 +3630,37 @@ if st.session_state.role == ROLE_ADMIN:
         with set_tab2:
             st.markdown("#### 🪪 ตั้งชื่อแสดงผลบัญชีผู้ใช้")
             profile_users = [d.get("username", "") for d in db.tech_users.find({}, {"username": 1, "_id": 0})]
+            profile_roles = {u: "ช่าง" for u in profile_users}
             try:
                 profile_admin_user = str(st.secrets["admin"]["username"])
                 if profile_admin_user:
                     profile_users.insert(0, profile_admin_user)
+                    profile_roles[profile_admin_user] = "ผู้ดูแลระบบ"
             except Exception:
                 pass
             profile_users = list(dict.fromkeys([u for u in profile_users if u]))
-            if profile_users:
-                with st.form("user_display_name_form"):
-                    profile_user = st.selectbox("เลือกบัญชีผู้ใช้", profile_users)
-                    profile_doc = db.user_profiles.find_one({"username": profile_user}, {"display_name": 1}) or {}
-                    display_name_input = st.text_input("ชื่อที่ต้องการให้แสดง", value=profile_doc.get("display_name", ""), key=f"display_name_{profile_user}")
-                    if st.form_submit_button("บันทึกชื่อแสดงผล", type="primary"):
-                        if display_name_input.strip():
-                            db.user_profiles.update_one({"username": profile_user}, {"$set": {"display_name": display_name_input.strip()}}, upsert=True)
-                        else:
-                            db.user_profiles.delete_one({"username": profile_user})
-                        done("บันทึกชื่อแสดงผลแล้ว")
-                profile_map = {d["username"]: d.get("display_name", "") for d in db.user_profiles.find({}, {"_id": 0, "username": 1, "display_name": 1})}
-                all_profile_rows = [{"Username": u, "ชื่อแสดงผล": profile_map.get(u, "") or "(ยังไม่ตั้งชื่อ)"} for u in profile_users]
-                st.dataframe(pd.DataFrame(all_profile_rows), use_container_width=True, hide_index=True)
+            profile_map = {d["username"]: d.get("display_name", "") for d in db.user_profiles.find({}, {"_id": 0, "username": 1, "display_name": 1})}
+            editor_rows = [{"Username": u, "ประเภทบัญชี": profile_roles.get(u, "ช่าง"), "ชื่อแสดงผล": profile_map.get(u, "")} for u in profile_users]
+            editor_key = f"user_profiles_editor_{st.session_state.get('profile_editor_ver', 0)}"
+            edited_profiles = st.data_editor(
+                pd.DataFrame(editor_rows),
+                use_container_width=True,
+                hide_index=True,
+                disabled=["Username", "ประเภทบัญชี"],
+                key=editor_key,
+                column_config={"ชื่อแสดงผล": st.column_config.TextColumn("ชื่อแสดงผล", help="กรอกชื่อที่ต้องการให้แสดงแทน Username")},
+            )
+            if st.button("💾 บันทึกชื่อแสดงผลทั้งหมด", type="primary", key="save_all_display_names"):
+                for _, profile_row in edited_profiles.iterrows():
+                    username_value = str(profile_row["Username"])
+                    display_value = str(profile_row.get("ชื่อแสดงผล", "") or "").strip()
+                    if display_value:
+                        db.user_profiles.update_one({"username": username_value}, {"$set": {"display_name": display_value}}, upsert=True)
+                    else:
+                        db.user_profiles.delete_one({"username": username_value})
+                st.session_state.profile_editor_ver = st.session_state.get("profile_editor_ver", 0) + 1
+                done("บันทึกชื่อแสดงผลทั้งหมดแล้ว")
+            st.markdown("---")
             all_techs_df = get_tech_users_df()
             if not all_techs_df.empty:
                 all_techs_df["ชื่อแสดงผล"] = all_techs_df["username"].map(get_display_name)
