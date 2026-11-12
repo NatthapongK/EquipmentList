@@ -2410,7 +2410,7 @@ def render_borrow_return_system():
                                              max_value=int(available_items['quantity'].max()), value=1)
                 borrower_name = st.text_input("ชื่อผู้ยืม * (ระบุชื่อ-นามสกุล / แผนก)")
                 borrow_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายผู้ยืมหรือหลักฐานการยืม (ถ้ามี)", type=["jpg", "jpeg", "png"])
-                st.info(f"📌 ผู้ทำรายการ/ผู้ให้ยืม: **{st.session_state.username}** (บันทึกอัตโนมัติ)")
+                st.info(f"📌 ผู้ทำรายการ/ผู้ให้ยืม: **{get_display_name(st.session_state.username)}** (บันทึกอัตโนมัติ)")
 
                 if st.form_submit_button("ยืนยันการยืมอุปกรณ์", type="primary"):
                     selected_id = item_dict[sel_item_label]
@@ -2443,7 +2443,7 @@ def render_borrow_return_system():
         if active_txs:
             for t in active_txs:
                 item_name = item_name_map.get(t["item_id"], "Unknown")
-                giver_str = f" | ผู้ให้ยืม: {t.get('giver_name')}" if t.get('giver_name') else ""
+                giver_str = f" | ผู้ให้ยืม: {get_display_name(t.get('giver_name'))}" if t.get('giver_name') else ""
                 with st.expander(f"📦 อุปกรณ์: {item_name} (จำนวนยืม: {t.get('quantity', 1)} ชิ้น) | ผู้ยืม: {t.get('borrower_name')}{giver_str}"):
                     col_r1, col_r2 = st.columns([1, 2])
                     with col_r1:
@@ -2457,11 +2457,11 @@ def render_borrow_return_system():
                         st.write(f"**จำนวนที่ยืม:** {t.get('quantity', 1)} ชิ้น")
                         st.write(f"**ผู้ยืม:** {t.get('borrower_name')}")
                         if t.get('giver_name'):
-                            st.write(f"**ผู้ให้ยืม/บันทึก:** {t.get('giver_name')}")
+                            st.write(f"**ผู้ให้ยืม/บันทึก:** {get_display_name(t.get('giver_name'))}")
                         st.write(f"**วันที่ยืม:** {t.get('borrow_date')}")
 
                         with st.form(key=f"return_form_{t['id']}"):
-                            st.info(f"📌 ผู้รับคืน: **{st.session_state.username}** (บันทึกอัตโนมัติ)")
+                            st.info(f"📌 ผู้รับคืน: **{get_display_name(st.session_state.username)}** (บันทึกอัตโนมัติ)")
                             ret_img_file = st.file_uploader("ถ่ายภาพ/แนบรูปถ่ายตอนคืนอุปกรณ์ (ถ้ามี)", type=["jpg", "jpeg", "png"], key=f"ret_img_{t['id']}")
                             if st.form_submit_button("✅ รับคืนอุปกรณ์รายการนี้", type="primary"):
                                 r_img_b64 = compress_image_to_base64(ret_img_file)
@@ -2485,8 +2485,8 @@ def render_borrow_return_system():
             "ชื่ออุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
             "จำนวน": t.get("quantity", 1),
             "ผู้ยืม": t.get("borrower_name"),
-            "ผู้ให้ยืม": t.get("giver_name"),
-            "ผู้รับคืน": t.get("receiver_name"),
+            "ผู้ให้ยืม": get_display_name(t.get("giver_name")),
+            "ผู้รับคืน": get_display_name(t.get("receiver_name")),
             "วันที่ยืม": t.get("borrow_date"),
             "วันที่คืน": t.get("return_date"),
             "สถานะ": t.get("status"),
@@ -3156,12 +3156,14 @@ if st.session_state.role == ROLE_ADMIN:
                 else:
                     filtered_insp = inspections_df
 
+                display_insp = filtered_insp.copy()
+                display_insp['tech_display_name'] = display_insp['tech_name'].map(lambda n: get_display_name(str(n)[:-8]) + ' (Admin)' if str(n).endswith(' (Admin)') else get_display_name(n))
                 st.dataframe(
-                    filtered_insp[['id', 'tech_name', 'category', 'inspection_date', 'session_num', 'details']],
+                    display_insp[['id', 'tech_display_name', 'category', 'inspection_date', 'session_num', 'details']],
                     use_container_width=True, hide_index=True,
                     column_config={
                         "id": st.column_config.NumberColumn("รหัส", width="small"),
-                        "tech_name": "ผู้ตรวจ", "category": "หมวดหมู่",
+                        "tech_display_name": "ผู้ตรวจ", "category": "หมวดหมู่",
                         "inspection_date": st.column_config.DatetimeColumn("วันที่ตรวจ", format="DD/MM/YYYY HH:mm"),
                         "session_num": st.column_config.NumberColumn("รอบ", width="small"),
                         "details": st.column_config.TextColumn("รายละเอียด", width="large"),
@@ -3170,9 +3172,9 @@ if st.session_state.role == ROLE_ADMIN:
 
                 st.markdown("---")
                 st.markdown("#### 📸 ดูรายละเอียดและรูปถ่ายหน้างานของการตรวจเช็ค")
-                for _, row in filtered_insp.head(30).iterrows():
+                for _, row in display_insp.head(30).iterrows():
                     date_str_show = row['inspection_date'].strftime("%Y-%m-%d %H:%M:%S")
-                    with st.expander(f"📌 {date_str_show} | ผู้ตรวจ: {row['tech_name']} | หมวด: {row['category']} (รอบที่ {row['session_num']})"):
+                    with st.expander(f"📌 {date_str_show} | ผู้ตรวจ: {row['tech_display_name']} | หมวด: {row['category']} (รอบที่ {row['session_num']})"):
                         st.write(f"📝 **รายละเอียดการตรวจ:** {row['details']}")
                         if st.checkbox("🖼️ โหลดรูปถ่าย", key=f"load_photos_{row['id']}"):
                             photo_imgs = get_inspection_photos(int(row['id']))
@@ -3195,7 +3197,7 @@ if st.session_state.role == ROLE_ADMIN:
                         item_name = item_name_map.get(req["item_id"], "Unknown")
                         current_stock = current_qty_map.get(req["item_id"], 0)
                         with st.container():
-                            st.write(f"🆔 **รหัสคำขอ:** #{req['id']} | 👤 **ผู้ขอเพิ่ม:** {req['tech_name']} | 📅 **วันที่ขอ:** {req['request_date']}")
+                            st.write(f"🆔 **รหัสคำขอ:** #{req['id']} | 👤 **ผู้ขอเพิ่ม:** {get_display_name(req['tech_name'])} | 📅 **วันที่ขอ:** {req['request_date']}")
                             st.write(f"📦 **อุปกรณ์:** {item_name} | **จำนวนที่ขอเพิ่ม:** +{req['quantity']} ชิ้น (คงเหลือปัจจุบัน: {current_stock})")
                             st.write(f"📝 **หมายเหตุ/เหตุผล:** {req['note']}")
                             col_app1, col_app2 = st.columns(2)
@@ -3220,7 +3222,7 @@ if st.session_state.role == ROLE_ADMIN:
                 req_history_list = get_req_history()
                 if req_history_list:
                     st.dataframe(pd.DataFrame([{
-                        "รหัส": r["id"], "ผู้ขอ": r.get("tech_name"),
+                        "รหัส": r["id"], "ผู้ขอ": get_display_name(r.get("tech_name")),
                         "ชื่ออุปกรณ์": item_name_map.get(r["item_id"], "Unknown"),
                         "จำนวนที่ขอ": r.get("quantity"), "หมายเหตุ": r.get("note"),
                         "วันที่ขอ": r.get("request_date"), "วันที่อนุมัติ": r.get("approval_date"),
@@ -3661,11 +3663,6 @@ if st.session_state.role == ROLE_ADMIN:
                 st.session_state.profile_editor_ver = st.session_state.get("profile_editor_ver", 0) + 1
                 done("บันทึกชื่อแสดงผลทั้งหมดแล้ว")
             st.markdown("---")
-            all_techs_df = get_tech_users_df()
-            if not all_techs_df.empty:
-                all_techs_df["ชื่อแสดงผล"] = all_techs_df["username"].map(get_display_name)
-                st.dataframe(all_techs_df[['id', 'username', 'ชื่อแสดงผล']].rename(columns={'id': 'รหัส', 'username': 'ชื่อผู้ใช้งาน (Username)'}), use_container_width=True, hide_index=True)
-            st.markdown("---")
             col_t1, col_t2 = st.columns(2)
             with col_t1:
                 st.markdown("**➕ เพิ่มบัญชีช่างใหม่ (รายบุคคล)**")
@@ -3837,7 +3834,7 @@ elif st.session_state.role in TECH_ROLES:
                 "อุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
                 "จำนวนที่ยืม": t.get("quantity", 1),
                 "ผู้ยืม": t.get("borrower_name"),
-                "ผู้ให้ยืม": t.get("giver_name"),
+                "ผู้ให้ยืม": get_display_name(t.get("giver_name")),
                 "วันที่ยืม": t.get("borrow_date"),
             } for t in active_borrows]), hide_index=True, use_container_width=True)
 
