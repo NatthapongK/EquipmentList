@@ -6,3 +6,5 @@ paho-mqtt>=2.1,<3
 requests>=2.31,<3
 openpyxl>=3.1,<4
 argon2-cffi>=23.1,<26
+extra-streamlit-components>=0.1.71
+streamlit-local-storage==0.0.25
