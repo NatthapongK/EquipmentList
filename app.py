@@ -3660,20 +3660,22 @@ if st.session_state.role == ROLE_ADMIN:
                             get_tech_users_df.clear()
                             done(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ {dup_count} บัญชี)")
 
-                with set_tab3:
+        with set_tab3:
             st.markdown("#### 📡 ตั้งค่าการเชื่อมต่อ HiveMQ Cloud, LINE OA และ Growatt Solar")
             st.info("ข้อมูลเชื่อมต่ออ่านจาก App settings → Secrets ในส่วน [iot] เท่านั้น เพื่อไม่บันทึกข้อมูลลับลง MongoDB")
             cfg = get_iot_config()
-            st.dataframe(pd.DataFrame([
+            status_rows = [
                 {"บริการ": "MQTT", "สถานะ": "ตั้งค่าแล้ว" if cfg["mqtt_server"] and cfg["mqtt_user"] and cfg["mqtt_pass"] else "ยังตั้งค่าไม่ครบ"},
                 {"บริการ": "LINE", "สถานะ": "ตั้งค่าแล้ว" if cfg["line_token"] and cfg["line_group_id"] else "ยังตั้งค่าไม่ครบ"},
                 {"บริการ": "Growatt", "สถานะ": "ตั้งค่าแล้ว" if cfg["growatt_user"] and cfg["growatt_pass"] and cfg["growatt_sn"] else "ยังตั้งค่าไม่ครบ"},
                 {"บริการ": "Google Apps Script", "สถานะ": "ตั้งค่าแล้ว" if cfg["google_webapp_url"] else "ยังตั้งค่าไม่ครบ"},
-            ]), use_container_width=True, hide_index=True)
+            ]
+            st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
             if st.button("🔄 เชื่อมต่อ MQTT ใหม่", type="primary"):
                 iot_mgr.connect()
                 done("สั่งเชื่อมต่อ MQTT ใหม่แล้ว")
-with set_tab4:
+
+        with set_tab4:
             st.markdown("#### 🖥️ มอนิเตอร์ข้อความ MQTT แบบสด (Live MQTT Broker Feed)")
             with st.form("custom_mqtt_pub"):
                 cp1, cp2, cp3 = st.columns([1.2, 1.5, 0.8])
@@ -3683,8 +3685,7 @@ with set_tab4:
                     iot_mgr.publish(custom_topic, custom_payload)
                     st.toast(f"Published to {custom_topic}: {custom_payload}", icon="📡")
                     st.rerun()
-
-            if iot_mgr.raw_mqtt_feed:
+if iot_mgr.raw_mqtt_feed:
                 st.dataframe(pd.DataFrame(iot_mgr.raw_mqtt_feed), use_container_width=True, hide_index=True)
             else:
                 st.info("ยังไม่มีข้อความ MQTT เข้ามาในเซสชันนี้")
