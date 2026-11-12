@@ -2773,6 +2773,12 @@ if st.session_state.role == ROLE_ADMIN:
             else:
                 st.success("✅ อุปกรณ์ทั่วไปมีจำนวนเพียงพอทุกรายการ")
 
+            # แจ้งเตือนรายการที่ถูกปรับลดจำนวนใน 7 วันล่าสุด (ไม่มีการปรับลดเลย = ไม่แสดง)
+            admin_reduced_rows = get_recent_reductions(get_inspections_list(), days=7)
+            if admin_reduced_rows:
+                with st.expander(f"📉 มีการปรับลดจำนวนอุปกรณ์ใน 7 วันล่าสุด ({len(admin_reduced_rows)} รายการ)", expanded=True):
+                    st.dataframe(pd.DataFrame(admin_reduced_rows), hide_index=True, use_container_width=True)
+
             if borrowed_cnt:
                 with st.expander(f"📤 อุปกรณ์ที่กำลังถูกยืม ({borrowed_cnt} รายการ)", expanded=False):
                     st.dataframe(pd.DataFrame([{
