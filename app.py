@@ -1019,7 +1019,21 @@ def render_borrow_return_system():
             st.info("ไม่มีรายการอุปกรณ์ที่กำลังถูกยืม")
 
     with sub_history:
-        st.markdown("#### ประวัติการยืม-คืนทั้งหมด & ส่งออกรายงาน (Feature 5)")
+        st.markdown("#### ประวัติการยืม-คืนทั้งหมด (แสดง 300 รายการล่าสุด)")
         all_txs = get_tx_history()
+        
+        # กำหนดโครงสร้างข้อมูลและปิดวงเล็บให้สมบูรณ์
         tx_data = [{
-            "รหัส": t["id"], "ชื่ออุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
+            "รหัส": t["id"],
+            "ชื่ออุปกรณ์": item_name_map.get(t["item_id"], "Unknown"),
+            "จำนวน": t.get("quantity", 1),
+            "ผู้ยืม": t.get("borrower_name"),
+            "ผู้ให้ยืม": t.get("giver_name"),
+            "ผู้รับคืน": t.get("receiver_name"),
+            "วันที่ยืม": t.get("borrow_date"),
+            "วันที่คืน": t.get("return_date"),
+            "สถานะ": t.get("status"),
+        } for t in all_txs]  # ตรวจสอบว่ามีวงเล็บเหลี่ยมปิดท้ายตรงนี้ครบถ้วน
+        
+        tx_history = pd.DataFrame(tx_data)
+        st.dataframe(tx_history, use_container_width=True, hide_index=True)
