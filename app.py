@@ -3685,7 +3685,7 @@ if st.session_state.role == ROLE_ADMIN:
                     iot_mgr.publish(custom_topic, custom_payload)
                     st.toast(f"Published to {custom_topic}: {custom_payload}", icon="📡")
                     st.rerun()
-if iot_mgr.raw_mqtt_feed:
+            if iot_mgr.raw_mqtt_feed:
                 st.dataframe(pd.DataFrame(iot_mgr.raw_mqtt_feed), use_container_width=True, hide_index=True)
             else:
                 st.info("ยังไม่มีข้อความ MQTT เข้ามาในเซสชันนี้")
