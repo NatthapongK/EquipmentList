@@ -822,7 +822,7 @@ def get_inspection_count(category, today_str):
     return db.inspections.count_documents({"category": category, "inspection_date": {"$regex": f"^{today_str}"}})
 
 @st.cache_data(ttl=30, show_spinner=False)
-def get_tx_history(limit=300):
+def get_tx_history(limit=5000):
     return list(db.transactions.find({}, {"_id": 0, "borrower_image": 0, "return_image": 0}).sort("id", -1).limit(limit))
 
 @st.cache_data(ttl=600, max_entries=300, show_spinner=False)
@@ -2582,7 +2582,7 @@ def render_borrow_return_system():
             st.info("ไม่มีรายการอุปกรณ์ที่กำลังถูกยืมในขณะนี้")
 
     with sub_history:
-        st.markdown("#### ประวัติการยืม-คืนทั้งหมด (แสดง 300 รายการล่าสุด)")
+        st.markdown("#### ประวัติการยืม-คืน")
         all_txs = get_tx_history()
         tx_history = pd.DataFrame([{
             "รหัส": t["id"],
@@ -2595,7 +2595,43 @@ def render_borrow_return_system():
             "วันที่คืน": t.get("return_date"),
             "สถานะ": t.get("status"),
         } for t in all_txs])
-        st.dataframe(tx_history, use_container_width=True, hide_index=True)
+        if not tx_history.empty:
+            tx_col1, tx_col2, tx_col3 = st.columns([2, 2, 1])
+            tx_search = tx_col1.text_input("ค้นหาชื่อผู้ยืม/อุปกรณ์/ผู้บันทึก", key="borrow_history_search")
+            tx_dates = tx_col2.date_input(
+                "ช่วงวันที่ยืม",
+                value=(get_now_th().date() - timedelta(days=30), get_now_th().date()),
+                key="borrow_history_dates",
+            )
+            tx_status = tx_col3.selectbox("สถานะ", ["ทั้งหมด", "กำลังยืม", "คืนแล้ว"], key="borrow_history_status")
+
+            filtered_txs = tx_history.copy()
+            if tx_search.strip():
+                searchable = filtered_txs.fillna("").astype(str).agg(" ".join, axis=1)
+                filtered_txs = filtered_txs[searchable.str.contains(re.escape(tx_search.strip()), case=False, na=False)]
+            if isinstance(tx_dates, (tuple, list)) and len(tx_dates) == 2:
+                tx_start, tx_end = tx_dates
+                borrow_dates = pd.to_datetime(filtered_txs["วันที่ยืม"], errors="coerce").dt.date
+                filtered_txs = filtered_txs[(borrow_dates >= tx_start) & (borrow_dates <= tx_end)]
+            elif isinstance(tx_dates, (tuple, list)) and len(tx_dates) == 1:
+                borrow_dates = pd.to_datetime(filtered_txs["วันที่ยืม"], errors="coerce").dt.date
+                filtered_txs = filtered_txs[borrow_dates == tx_dates[0]]
+            if tx_status != "ทั้งหมด":
+                filtered_txs = filtered_txs[filtered_txs["สถานะ"] == tx_status]
+
+            st.caption(f"พบ {len(filtered_txs)} รายการ จากประวัติ {len(tx_history)} รายการที่โหลด")
+            st.dataframe(filtered_txs, use_container_width=True, hide_index=True)
+            csv_data = filtered_txs.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "⬇️ ดาวน์โหลดผลลัพธ์เป็น CSV",
+                data=csv_data,
+                file_name=f"borrow_return_history_{get_now_th().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="download_borrow_history_csv",
+                disabled=filtered_txs.empty,
+            )
+        else:
+            st.info("ยังไม่มีประวัติการยืม-คืน")
 
 # =====================================================================
 #  INSPECTION LISTS
@@ -2922,17 +2958,24 @@ if st.session_state.role == ROLE_ADMIN:
 
         with col_ov2:
             st.markdown("#### 📋 สรุปรายการอุปกรณ์ที่ต้องดูแล")
-            if abn_cnt:
-                with st.expander(f"❌ {abn_title} ({abn_cnt} รายการ)", expanded=True):
-                    st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
+            overview_category = st.selectbox(
+                "กรองตามหมวดหมู่",
+                ["ทั้งหมด", "อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"],
+                key="admin_overview_stock_category",
+            )
+            abnormal_view = abnormal_items if overview_category == "ทั้งหมด" else abnormal_items[abnormal_items["category"] == overview_category]
+            low_stock_view = low_stock_items if overview_category == "ทั้งหมด" else low_stock_items[low_stock_items["category"] == overview_category]
+            if not abnormal_view.empty:
+                with st.expander(f"❌ {abn_title} ({len(abnormal_view)} รายการ)", expanded=True):
+                    st.dataframe(abnormal_view[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
             else:
-                st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
+                st.success("✅ ไม่มีรายการชำรุดในหมวดที่เลือก")
 
-            if low_cnt:
-                with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์ ({low_cnt} รายการ)", expanded=False):
-                    st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
+            if not low_stock_view.empty:
+                with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์ ({len(low_stock_view)} รายการ)", expanded=False):
+                    st.dataframe(low_stock_view[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
             else:
-                st.success("✅ อุปกรณ์ทั่วไปมีจำนวนเพียงพอทุกรายการ")
+                st.success("✅ ไม่มีอุปกรณ์เหลือน้อยในหมวดที่เลือก")
 
             # แจ้งเตือนรายการที่ถูกปรับลดจำนวนใน 7 วันล่าสุด (ไม่มีการปรับลดเลย = ไม่แสดง)
             admin_reduced_rows = get_recent_reductions(get_inspections_list(), days=7)
@@ -3990,17 +4033,24 @@ elif st.session_state.role in TECH_ROLES:
     </div>
     """, unsafe_allow_html=True)
 
+    tech_overview_category = st.selectbox(
+        "กรองรายการตามหมวดหมู่",
+        ["ทั้งหมด", "อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"],
+        key="tech_overview_stock_category",
+    )
+    tech_abnormal_view = abnormal_items if tech_overview_category == "ทั้งหมด" else abnormal_items[abnormal_items["category"] == tech_overview_category]
+    tech_low_stock_view = low_stock_items if tech_overview_category == "ทั้งหมด" else low_stock_items[low_stock_items["category"] == tech_overview_category]
     col_a1, col_a2 = st.columns(2)
     with col_a1:
-        if abn_cnt:
-            with st.expander(f"❌ {abn_title} ({abn_cnt} รายการ)"):
-                st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
+        if not tech_abnormal_view.empty:
+            with st.expander(f"❌ {abn_title} ({len(tech_abnormal_view)} รายการ)"):
+                st.dataframe(tech_abnormal_view[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
         else:
-            st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
+            st.success("✅ ไม่มีรายการชำรุดในหมวดที่เลือก")
     with col_a2:
-        if low_cnt:
-            with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อย ({low_cnt} รายการ)"):
-                st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
+        if not tech_low_stock_view.empty:
+            with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อย ({len(tech_low_stock_view)} รายการ)"):
+                st.dataframe(tech_low_stock_view[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
         else:
             st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 
