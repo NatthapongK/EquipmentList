@@ -3888,10 +3888,10 @@ if st.session_state.role == ROLE_ADMIN:
         st.subheader("⚙️ ตั้งค่าระบบ, เครือข่ายฮาร์ดแวร์ IoT และบัญชีช่าง")
         set_tab1, set_tab2, set_tab3, set_tab4, set_tab5, set_tab6 = st.tabs([
             "🔧 7.1 เกณฑ์แจ้งเตือน & โควต้าตรวจประจำวัน",
-            "👷 7.2 จัดการบัญชีช่าง (เพิ่ม/แก้ไข/นำเข้า .txt)",
-            "📡 7.3 ตั้งค่า MQTT, LINE OA & Growatt Solar",
-            "🖥️ 7.4 MQTT Live Monitor (Raw Feed)",
-            "📜 7.5 ประวัติการกระทำ",
+            "👷 7.2 จัดการบัญชีช่าง",
+            "📡 7.3 ตั้งค่า IoT",
+            "🖥️ 7.4 MQTT Live",
+            "📜 7.5 Audit Log",
             "🗄️ 7.6 สำรอง/กู้คืนข้อมูล"
         ])
 
