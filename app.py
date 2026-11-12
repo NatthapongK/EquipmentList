@@ -198,6 +198,8 @@ def init_mongo():
     database.sessions.create_index("created")
     database.user_profiles.create_index("username", unique=True)
     database.iot_logs.create_index([("system", 1), ("datetime", -1)])
+    database.audit_logs.create_index([("datetime", -1)])
+    database.audit_logs.create_index([("actor", 1), ("datetime", -1)])
 
     if database.items.count_documents({}, limit=1) == 0:
         database.items.insert_many(build_default_docs())
@@ -210,6 +212,23 @@ def init_mongo():
     return database
 
 db = init_mongo()
+def log_audit(action, target, before=None, after=None, detail=""):
+    """Record security-relevant changes without storing credentials or images."""
+    try:
+        db.audit_logs.insert_one({
+            "datetime": get_now_str(),
+            "actor": st.session_state.get("username", "system"),
+            "role": st.session_state.get("role", "-"),
+            "action": str(action),
+            "target": str(target),
+            "before": before,
+            "after": after,
+            "detail": str(detail)[:500],
+        })
+    except Exception:
+        # Audit failures should be visible in server logs without breaking the user action.
+        import logging
+        logging.exception("Unable to write audit log")
 
 def get_next_sequence(name):
     counter = db.counters.find_one_and_update(
@@ -2755,19 +2774,24 @@ if st.session_state.role == ROLE_ADMIN:
         qa1, qa2, qa3, qa4, qa5 = st.columns(5)
         if qa1.button("🔓 เปิดลิ้นชัก (OPEN)", type="primary", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_servo_cmd"], "UP")
+            log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             st.toast("ส่งคำสั่ง UP ไปที่ esp8266/servo แล้ว", icon="🔓")
             st.rerun()
         if qa2.button("🔒 ล็อกลิ้นชัก (LOCK)", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_servo_cmd"], "DOWN")
+            log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             st.toast("ส่งคำสั่ง DOWN ไปที่ esp8266/servo แล้ว", icon="🔒")
             st.rerun()
         if qa3.button("📡 เช็กสถานะปั๊มน้ำ (CheckClients)", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_check_clients"], "CheckClients")
+            log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             iot_mgr.publish(cfg_iot["topic_water"], "CheckClients")
+            log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             st.toast("ส่งคำสั่ง CheckClients แล้ว", icon="💧")
             st.rerun()
         if qa4.button("⚡ สั่ง Reset Relay ไฟไหม้", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_fire_relay"], "reset")
+            log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             iot_mgr.handle_message(cfg_iot["topic_fire"], "RESET CLEAR")
             st.toast("ส่งคำสั่ง reset ไปที่ nodemcu/control/relay แล้ว", icon="🚨")
             st.rerun()
@@ -2926,11 +2950,13 @@ if st.session_state.role == ROLE_ADMIN:
                                     if qe_file is not None:
                                         upd["image"] = compress_image_to_base64(qe_file)
                                     db.items.update_one({"id": qe_id}, {"$set": upd})
+                                    log_audit("ITEM_UPDATE", qe_id, {"name": qe_row.get("name"), "quantity": qe_row.get("quantity"), "status": qe_row.get("status")}, {"name": qe_name, "quantity": qe_quantity, "status": qe_status})
                                     refresh_items(images=qe_file is not None)
                                     close_quick_edit()
                                     done("อัปเดตข้อมูลสำเร็จ!")
                                 if col_qe2.form_submit_button("🗑️ ลบอุปกรณ์นี้", type="secondary"):
                                     db.items.delete_one({"id": qe_id})
+                                    log_audit("ITEM_DELETE", qe_id, {"name": qe_row.get("name"), "quantity": qe_row.get("quantity"), "status": qe_row.get("status")})
                                     refresh_items(images=True)
                                     close_quick_edit()
                                     done("ลบเรียบร้อยแล้ว!")
@@ -2965,6 +2991,7 @@ if st.session_state.role == ROLE_ADMIN:
                                     "alert_zero": 1 if alert_zero else 0, "note": note,
                                     "image": compress_image_to_base64(uploaded_file)
                                 })
+                                log_audit("ITEM_CREATE", new_id, after={"name": name, "category": category, "quantity": int(quantity), "status": status})
                                 refresh_items(images=uploaded_file is not None)
                                 done("เพิ่มอุปกรณ์สำเร็จ!")
                             else:
@@ -3002,10 +3029,12 @@ if st.session_state.role == ROLE_ADMIN:
                                     if e_file is not None:
                                         upd["image"] = compress_image_to_base64(e_file)
                                     db.items.update_one({"id": item_id_int}, {"$set": upd})
+                                    log_audit("ITEM_UPDATE", item_id_int, {"name": current_item["name"], "quantity": int(current_item["quantity"]), "status": current_item["status"]}, {"name": e_name, "quantity": int(e_quantity), "status": e_status})
                                     refresh_items(images=e_file is not None)
                                     done("อัปเดตข้อมูลสำเร็จ!")
                                 if col_e2.form_submit_button("ลบอุปกรณ์นี้", type="secondary"):
                                     db.items.delete_one({"id": item_id_int})
+                                    log_audit("ITEM_DELETE", item_id_int, {"name": current_item["name"], "quantity": int(current_item["quantity"]), "status": current_item["status"]})
                                     refresh_items(images=True)
                                     done("ลบเรียบร้อยแล้ว!")
 
@@ -3206,12 +3235,14 @@ if st.session_state.role == ROLE_ADMIN:
                                     {"id": req['id'], "status": "รออนุมัติ"},
                                     {"$set": {"status": "อนุมัติ", "approval_date": get_now_str()}})
                                 if res.modified_count:
+                                    log_audit("REQUISITION_APPROVE", req["id"], before={"status": "รออนุมัติ", "quantity": current_stock}, after={"status": "อนุมัติ", "quantity": current_stock + int(req["quantity"])})
                                     db.items.update_one({"id": req['item_id']}, {"$inc": {"quantity": int(req['quantity']), "orig_quantity": int(req['quantity'])}, "$set": {"status": "ปกติ"}})
                                 refresh_items()
                                 clear_req_cache()
                                 done(f"อนุมัติคำขอ #{req['id']} เรียบร้อยแล้ว")
                             if col_app2.button("❌ ไม่อนุมัติ", key=f"reject_{req['id']}"):
                                 db.requisition_requests.update_one({"id": req['id'], "status": "รออนุมัติ"}, {"$set": {"status": "ไม่อนุมัติ", "approval_date": get_now_str()}})
+                                log_audit("REQUISITION_REJECT", req["id"], before={"status": "รออนุมัติ"}, after={"status": "ไม่อนุมัติ"})
                                 clear_req_cache()
                                 done(f"ปฏิเสธคำขอ #{req['id']} เรียบร้อยแล้ว", icon="⚠️")
                             st.markdown("---")
@@ -3268,6 +3299,7 @@ if st.session_state.role == ROLE_ADMIN:
             b_up, b_down = st.columns(2)
             if b_up.button("🔓 สั่งเปิดลิ้นชัก (OPEN)", type="primary", use_container_width=True):
                 iot_mgr.publish(cfg_iot["topic_servo_cmd"], "UP")
+                log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
                 db.iot_logs.insert_one({
                     "datetime": get_now_str(), "system": "SERVO",
                     "location": "Admin Remote", "status": "UP",
@@ -3278,6 +3310,7 @@ if st.session_state.role == ROLE_ADMIN:
 
             if b_down.button("🔒 สั่งล็อก/ปิดลิ้นชัก (LOCK)", use_container_width=True):
                 iot_mgr.publish(cfg_iot["topic_servo_cmd"], "DOWN")
+                log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
                 db.iot_logs.insert_one({
                     "datetime": get_now_str(), "system": "SERVO",
                     "location": "Admin Remote", "status": "DOWN",
@@ -3327,7 +3360,9 @@ if st.session_state.role == ROLE_ADMIN:
         w_act1, w_act2, w_act3 = st.columns([1.2, 1.2, 1.6])
         if w_act1.button("📡 ส่งคำสั่ง CheckClients (ตรวจสอบสถานะออนไลน์)", type="primary", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_check_clients"], "CheckClients")
+            log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             iot_mgr.publish(cfg_iot["topic_water"], "CheckClients")
+            log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             done("ส่งคำสั่ง CheckClients ไปยัง MQTT แล้ว")
 
         with w_act2:
@@ -3340,6 +3375,7 @@ if st.session_state.role == ROLE_ADMIN:
             ])
         if w_act3.button("🚀 ส่งสถานะเข้า MQTT & แจ้งเตือน LINE OA", use_container_width=True):
             iot_mgr.publish(cfg_iot["topic_water"], sim_pump)
+            log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
             line_msg_map = {
                 "TransferpumpA Alarm": "Flood Alert⚠️ : อาคารA ห้องปั้มน้ำผิดปกติ❌",
                 "TransferpumpA Normal": "อาคารA ห้องปั้มน้ำสถานะ : ปกติ✅",
@@ -3403,6 +3439,7 @@ if st.session_state.role == ROLE_ADMIN:
             st.markdown("#### ⚡ ควบคุมรีเลย์ตู้ไฟ (Remote Reset)")
             if st.button("⚡ สั่ง RESET RELAY อาราม (MQTT 'reset')", type="primary", use_container_width=True):
                 iot_mgr.publish(cfg_iot["topic_fire_relay"], "reset")
+                log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
                 iot_mgr.handle_message(cfg_iot["topic_fire"], "RESET CLEAR")
                 done("ส่งคำสั่ง 'reset' ไปยังหัวข้อ nodemcu/control/relay เรียบร้อยแล้ว!")
 
@@ -3443,6 +3480,7 @@ if st.session_state.role == ROLE_ADMIN:
             if sim_c3.button("🚨 ส่งสัญญาณทดสอบ Fire Alarm", type="primary", use_container_width=True):
                 alert_msg = f"🚨 ALARM ALERT!\n- {sim_bldg}"
                 iot_mgr.publish(cfg_iot["topic_fire"], alert_msg)
+                log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
                 if send_to_line_too:
                     send_line_push(alert_msg)
                 done(f"จำลองสัญญาณเตือนภัย: {sim_bldg}")
@@ -3599,11 +3637,12 @@ if st.session_state.role == ROLE_ADMIN:
     # -----------------------------------------------------------------
     elif selected_admin_module.startswith("⚙️ 7."):
         st.subheader("⚙️ ตั้งค่าระบบ, เครือข่ายฮาร์ดแวร์ IoT และบัญชีช่าง")
-        set_tab1, set_tab2, set_tab3, set_tab4 = st.tabs([
+        set_tab1, set_tab2, set_tab3, set_tab4, set_tab5 = st.tabs([
             "🔧 7.1 เกณฑ์แจ้งเตือน & โควต้าตรวจประจำวัน",
             "👷 7.2 จัดการบัญชีช่าง (เพิ่ม/แก้ไข/นำเข้า .txt)",
             "📡 7.3 ตั้งค่า MQTT, LINE OA & Growatt Solar",
-            "🖥️ 7.4 MQTT Live Monitor (Raw Feed)"
+            "🖥️ 7.4 MQTT Live Monitor (Raw Feed)",
+            "📜 7.5 ประวัติการกระทำ"
         ])
 
         with set_tab1:
@@ -3755,12 +3794,26 @@ if st.session_state.role == ROLE_ADMIN:
                 custom_payload = cp2.text_input("Payload / Message", value="UP")
                 if cp3.form_submit_button("📤 Publish", type="primary", use_container_width=True):
                     iot_mgr.publish(custom_topic, custom_payload)
+                    log_audit("IOT_COMMAND", "MQTT", detail="Publish command requested")
                     st.toast(f"Published to {custom_topic}: {custom_payload}", icon="📡")
                     st.rerun()
             if iot_mgr.raw_mqtt_feed:
                 st.dataframe(pd.DataFrame(iot_mgr.raw_mqtt_feed), use_container_width=True, hide_index=True)
             else:
                 st.info("ยังไม่มีข้อความ MQTT เข้ามาในเซสชันนี้")
+
+        with set_tab5:
+            st.markdown("#### 📜 ประวัติการกระทำของผู้ใช้ (Audit Log)")
+            st.caption("แสดงผู้กระทำ เวลา รายการ และค่าก่อน/หลัง เฉพาะการกระทำที่บันทึกในรุ่นนี้")
+            audit_rows = list(db.audit_logs.find({}, {"_id": 0}).sort("datetime", -1).limit(500))
+            if audit_rows:
+                audit_df = pd.DataFrame(audit_rows)
+                if "actor" in audit_df.columns:
+                    audit_df["actor"] = audit_df["actor"].map(get_display_name)
+                audit_df = audit_df.rename(columns={"datetime": "เวลา", "actor": "ผู้กระทำ", "role": "บทบาท", "action": "การกระทำ", "target": "รายการ", "before": "ค่าก่อน", "after": "ค่าหลัง", "detail": "รายละเอียด"})
+                st.dataframe(audit_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("ยังไม่มีประวัติการกระทำ")
 
 # =====================================================================
 #  ROLE 2: TECH VIEW (PURE INVENTORY ONLY - NO MQTT/DRAWER/WATER/FIRE)
