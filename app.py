@@ -16,6 +16,7 @@ import hashlib
 import secrets
 import threading
 from PIL import Image, ImageOps
+from bson import json_util
 
 try:
     import requests
@@ -260,6 +261,57 @@ def get_next_sequence(name):
     counter = db.counters.find_one_and_update(
         {"_id": name}, {"$inc": {"seq": 1}}, upsert=True, return_document=pymongo.ReturnDocument.AFTER)
     return counter["seq"]
+
+BACKUP_COLLECTIONS = [
+    "items", "transactions", "inspections", "requisition_requests",
+    "tech_users", "user_profiles", "settings", "audit_logs",
+]
+BACKUP_COUNTERS = {
+    "items": "items_id",
+    "transactions": "transactions_id",
+    "inspections": "inspections_id",
+    "requisition_requests": "requisition_requests_id",
+    "tech_users": "tech_users_id",
+}
+
+def make_database_backup():
+    return {
+        "app": "equipmentlist",
+        "format_version": 1,
+        "created_at": get_now_str(),
+        "collections": {
+            name: list(db[name].find({}))
+            for name in BACKUP_COLLECTIONS
+        },
+    }
+
+def validate_database_backup(payload):
+    if not isinstance(payload, dict) or payload.get("app") != "equipmentlist" or payload.get("format_version") != 1:
+        raise ValueError("รูปแบบไฟล์สำรองไม่ถูกต้องหรือไม่รองรับ")
+    collections = payload.get("collections")
+    if not isinstance(collections, dict) or any(name not in collections for name in BACKUP_COLLECTIONS):
+        raise ValueError("ไฟล์สำรองมีข้อมูลไม่ครบทุกหมวด")
+    for name in BACKUP_COLLECTIONS:
+        if not isinstance(collections[name], list) or any(not isinstance(doc, dict) for doc in collections[name]):
+            raise ValueError(f"ข้อมูลในหมวด {name} ไม่ถูกต้อง")
+    return collections
+
+def restore_database_backup(collections):
+    with db.client.start_session() as mongo_session:
+        with mongo_session.start_transaction():
+            for name in BACKUP_COLLECTIONS:
+                collection = db[name]
+                collection.delete_many({}, session=mongo_session)
+                docs = collections[name]
+                if docs:
+                    collection.insert_many(docs, ordered=True, session=mongo_session)
+
+            for collection_name, counter_name in BACKUP_COUNTERS.items():
+                max_id = max((int(doc.get("id", 0)) for doc in collections[collection_name]), default=0)
+                db.counters.update_one(
+                    {"_id": counter_name}, {"$max": {"seq": max_id}},
+                    upsert=True, session=mongo_session,
+                )
 
 @st.cache_data(ttl=30, show_spinner=False)
 def get_settings_val(key, default="1"):
@@ -2990,24 +3042,17 @@ if st.session_state.role == ROLE_ADMIN:
 
         with col_ov2:
             st.markdown("#### 📋 สรุปรายการอุปกรณ์ที่ต้องดูแล")
-            overview_category = st.selectbox(
-                "กรองตามหมวดหมู่",
-                ["ทั้งหมด", "อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"],
-                key="admin_overview_stock_category",
-            )
-            abnormal_view = abnormal_items if overview_category == "ทั้งหมด" else abnormal_items[abnormal_items["category"] == overview_category]
-            low_stock_view = low_stock_items if overview_category == "ทั้งหมด" else low_stock_items[low_stock_items["category"] == overview_category]
-            if not abnormal_view.empty:
-                with st.expander(f"❌ {abn_title} ({len(abnormal_view)} รายการ)", expanded=True):
-                    st.dataframe(abnormal_view[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
+            if abn_cnt:
+                with st.expander(f"❌ {abn_title} ({abn_cnt} รายการ)", expanded=True):
+                    st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
             else:
-                st.success("✅ ไม่มีรายการชำรุดในหมวดที่เลือก")
+                st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
 
-            if not low_stock_view.empty:
-                with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์ ({len(low_stock_view)} รายการ)", expanded=False):
-                    st.dataframe(low_stock_view[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
+            if low_cnt:
+                with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อยกว่าเกณฑ์ ({low_cnt} รายการ)", expanded=False):
+                    st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
             else:
-                st.success("✅ ไม่มีอุปกรณ์เหลือน้อยในหมวดที่เลือก")
+                st.success("✅ อุปกรณ์ทั่วไปมีจำนวนเพียงพอทุกรายการ")
 
             # แจ้งเตือนรายการที่ถูกปรับลดจำนวนใน 7 วันล่าสุด (ไม่มีการปรับลดเลย = ไม่แสดง)
             admin_reduced_rows = get_recent_reductions(get_inspections_list(), days=7)
@@ -3841,12 +3886,13 @@ if st.session_state.role == ROLE_ADMIN:
     # -----------------------------------------------------------------
     elif selected_admin_module.startswith("⚙️ 7."):
         st.subheader("⚙️ ตั้งค่าระบบ, เครือข่ายฮาร์ดแวร์ IoT และบัญชีช่าง")
-        set_tab1, set_tab2, set_tab3, set_tab4, set_tab5 = st.tabs([
+        set_tab1, set_tab2, set_tab3, set_tab4, set_tab5, set_tab6 = st.tabs([
             "🔧 7.1 เกณฑ์แจ้งเตือน & โควต้าตรวจประจำวัน",
             "👷 7.2 จัดการบัญชีช่าง (เพิ่ม/แก้ไข/นำเข้า .txt)",
             "📡 7.3 ตั้งค่า MQTT, LINE OA & Growatt Solar",
             "🖥️ 7.4 MQTT Live Monitor (Raw Feed)",
-            "📜 7.5 ประวัติการกระทำ"
+            "📜 7.5 ประวัติการกระทำ",
+            "🗄️ 7.6 สำรอง/กู้คืนข้อมูล"
         ])
 
         with set_tab1:
@@ -4069,6 +4115,57 @@ if st.session_state.role == ROLE_ADMIN:
             else:
                 st.info("ยังไม่มีประวัติการกระทำ")
 
+        with set_tab6:
+            st.markdown("#### 🗄️ ส่งออกข้อมูลสำรอง")
+            st.caption("ไฟล์รวมข้อมูลอุปกรณ์ ประวัติยืม-คืน ผลตรวจ คำขอ บัญชีช่าง ชื่อแสดงผล การตั้งค่า และ Audit Log รวมรูปภาพที่เก็บในรายการด้วย")
+            backup_payload = make_database_backup()
+            backup_text = json_util.dumps(backup_payload, ensure_ascii=False, indent=2)
+            st.download_button(
+                "⬇️ ดาวน์โหลดไฟล์สำรองข้อมูล",
+                data=backup_text.encode("utf-8"),
+                file_name=f"equipmentlist_backup_{get_now_th().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                key="download_database_backup",
+            )
+
+            st.markdown("#### ♻️ กู้คืนข้อมูลจากไฟล์สำรอง")
+            st.warning("การกู้คืนจะแทนที่ข้อมูลในหมวดที่อยู่ในไฟล์สำรองทั้งหมด ควรดาวน์โหลดไฟล์สำรองปัจจุบันเก็บไว้ก่อน")
+            uploaded_backup = st.file_uploader(
+                "เลือกไฟล์สำรอง EquipmentList (.json)",
+                type=["json"],
+                key="restore_database_backup_file",
+            )
+            if uploaded_backup is not None:
+                try:
+                    backup_collections = validate_database_backup(json_util.loads(uploaded_backup.getvalue().decode("utf-8")))
+                    preview_counts = {name: len(backup_collections[name]) for name in BACKUP_COLLECTIONS}
+                    st.dataframe(
+                        pd.DataFrame([{"หมวดข้อมูล": name, "จำนวนรายการในไฟล์": count} for name, count in preview_counts.items()]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    with st.form("restore_database_backup_form"):
+                        confirm_restore = st.checkbox("ฉันเข้าใจว่าการกู้คืนจะแทนที่ข้อมูลปัจจุบัน")
+                        restore_clicked = st.form_submit_button("♻️ ยืนยันกู้คืนข้อมูล", type="primary")
+                    if restore_clicked:
+                        if not confirm_restore:
+                            st.error("กรุณาติ๊กยืนยันก่อนกู้คืนข้อมูล")
+                        else:
+                            try:
+                                restore_database_backup(backup_collections)
+                                refresh_items(images=True)
+                                clear_tx_cache()
+                                clear_req_cache()
+                                get_inspections_list.clear()
+                                get_tech_users_df.clear()
+                                get_settings_val.clear()
+                                log_audit("DATABASE_RESTORE", "backup", detail=f"Restored backup created at {uploaded_backup.name}")
+                                done("กู้คืนข้อมูลสำเร็จแล้ว")
+                            except Exception as restore_error:
+                                st.error(f"กู้คืนไม่สำเร็จ ระบบยกเลิกการเปลี่ยนแปลงแล้ว: {restore_error}")
+                except Exception as backup_error:
+                    st.error(f"อ่านไฟล์สำรองไม่ได้: {backup_error}")
+
 # =====================================================================
 #  ROLE 2: TECH VIEW (PURE INVENTORY ONLY - NO MQTT/DRAWER/WATER/FIRE)
 # =====================================================================
@@ -4115,24 +4212,17 @@ elif st.session_state.role in TECH_ROLES:
     </div>
     """, unsafe_allow_html=True)
 
-    tech_overview_category = st.selectbox(
-        "กรองรายการตามหมวดหมู่",
-        ["ทั้งหมด", "อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"],
-        key="tech_overview_stock_category",
-    )
-    tech_abnormal_view = abnormal_items if tech_overview_category == "ทั้งหมด" else abnormal_items[abnormal_items["category"] == tech_overview_category]
-    tech_low_stock_view = low_stock_items if tech_overview_category == "ทั้งหมด" else low_stock_items[low_stock_items["category"] == tech_overview_category]
     col_a1, col_a2 = st.columns(2)
     with col_a1:
-        if not tech_abnormal_view.empty:
-            with st.expander(f"❌ {abn_title} ({len(tech_abnormal_view)} รายการ)"):
-                st.dataframe(tech_abnormal_view[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
+        if abn_cnt:
+            with st.expander(f"❌ {abn_title} ({abn_cnt} รายการ)"):
+                st.dataframe(abnormal_items[['name', 'category', 'status', 'quantity']], hide_index=True, use_container_width=True)
         else:
-            st.success("✅ ไม่มีรายการชำรุดในหมวดที่เลือก")
+            st.success("✅ อุปกรณ์ทุกชิ้นอยู่ในสภาพปกติ")
     with col_a2:
-        if not tech_low_stock_view.empty:
-            with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อย ({len(tech_low_stock_view)} รายการ)"):
-                st.dataframe(tech_low_stock_view[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
+        if low_cnt:
+            with st.expander(f"⚠️ อุปกรณ์ทั่วไปเหลือน้อย ({low_cnt} รายการ)"):
+                st.dataframe(low_stock_items[['name', 'category', 'quantity']], hide_index=True, use_container_width=True)
         else:
             st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 
