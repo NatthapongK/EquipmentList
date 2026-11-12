@@ -768,16 +768,20 @@ def get_tx_image(tx_id):
 def get_inspections_list(limit=1000):
     return list(db.inspections.find({}, {"_id": 0, "photos": 0}).sort("id", -1).limit(limit))
 
-def get_latest_reductions(inspections):
-    """คืนรายการอุปกรณ์ที่ถูกปรับลดจำนวนในการตรวจเช็คล่าสุดของแต่ละหมวด (ช่าง / สระว่ายน้ำ)"""
+def get_recent_reductions(inspections, days=7):
+    """คืนรายการอุปกรณ์ที่ถูกปรับลดจำนวนจากการตรวจเช็ค/แก้ไขในช่วง N วันล่าสุด (ช่าง + สระว่ายน้ำ) เรียงใหม่สุดก่อน"""
     rows = []
-    for cat in ["อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"]:
-        latest = next((r for r in inspections if r.get("category") == cat), None)  # รายการเรียงใหม่สุดก่อนอยู่แล้ว
-        if not latest:
+    cutoff = pd.Timestamp(get_now_str("%Y-%m-%d %H:%M:%S")) - pd.Timedelta(days=days)
+    for rec in inspections:  # inspections เรียงใหม่สุดก่อนอยู่แล้ว
+        cat = rec.get("category")
+        if cat not in ("อุปกรณ์ช่าง", "อุปกรณ์สระว่ายน้ำ"):
+            continue
+        when = pd.to_datetime(rec.get("inspection_date"), errors="coerce")
+        if pd.isna(when) or when < cutoff:
             continue
         found = []
-        if isinstance(latest.get("changes"), list):
-            for c in latest["changes"]:
+        if isinstance(rec.get("changes"), list):
+            for c in rec["changes"]:
                 try:
                     if int(c["new_qty"]) < int(c["old_qty"]):
                         found.append((c.get("name", "-"), int(c["old_qty"]), int(c["new_qty"]), c.get("reason", "")))
@@ -785,16 +789,16 @@ def get_latest_reductions(inspections):
                     continue
         else:
             # ข้อมูลเก่าที่ยังไม่มีฟิลด์ changes: ดึงจากข้อความ "ชื่อ: ปรับจาก X เหลือ Y" (เฉพาะสระว่ายน้ำ)
-            txt = str(latest.get("details", "")).split("|")[-1].replace("การเปลี่ยนแปลง:", "")
+            txt = str(rec.get("details", "")).split("|")[-1].replace("การเปลี่ยนแปลง:", "")
             for part in txt.split(", "):
                 m = re.match(r"^\s*(.*?):\s*ปรับจาก (\d+) เหลือ (\d+)\s*$", part)
                 if m and int(m.group(3)) < int(m.group(2)):
                     found.append((m.group(1).strip(), int(m.group(2)), int(m.group(3)), "ปรับจำนวน"))
         for name, old_q, new_q, reason in found:
             rows.append({
-                "อุปกรณ์": name, "หมวดหมู่": cat, "จำนวนเดิม": old_q, "จำนวนใหม่": new_q,
-                "ลดลง": old_q - new_q, "สาเหตุ": reason or "ปรับจำนวน",
-                "ผู้ตรวจ": latest.get("tech_name", "-"), "วันที่ตรวจ": str(latest.get("inspection_date", ""))[:16],
+                "วันที่ตรวจ": when.strftime("%d/%m/%Y %H:%M"), "อุปกรณ์": name, "หมวดหมู่": cat,
+                "จำนวนเดิม": old_q, "จำนวนใหม่": new_q, "ลดลง": old_q - new_q,
+                "สาเหตุ": reason or "ปรับจำนวน", "ผู้ตรวจ": rec.get("tech_name", "-"),
             })
     return rows
 
@@ -3747,10 +3751,10 @@ elif st.session_state.role in TECH_ROLES:
         else:
             st.success("✅ อุปกรณ์ทั่วไปทุกชิ้นมีจำนวนเพียงพอ")
 
-    # แจ้งเตือนรายการที่ถูกปรับลดจำนวนในการตรวจเช็คล่าสุด (ถ้าปกติทุกรายการ จะไม่แสดงอะไร)
-    reduced_rows = get_latest_reductions(get_inspections_list())
+    # แจ้งเตือนรายการที่ถูกปรับลดจำนวนใน 7 วันล่าสุด (ถ้าไม่มีการปรับลดเลย จะไม่แสดงอะไร)
+    reduced_rows = get_recent_reductions(get_inspections_list(), days=7)
     if reduced_rows:
-        with st.expander(f"📉 การตรวจเช็คล่าสุดมีการปรับลดจำนวน ({len(reduced_rows)} รายการ)"):
+        with st.expander(f"📉 มีการปรับลดจำนวนอุปกรณ์ใน 7 วันล่าสุด ({len(reduced_rows)} รายการ)"):
             st.dataframe(pd.DataFrame(reduced_rows), hide_index=True, use_container_width=True)
 
     if borrowed_cnt:
