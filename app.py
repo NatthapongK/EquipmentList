@@ -375,9 +375,13 @@ def send_line_push(message_text, token=None, group_id=None):
     except Exception as e:
         return False, str(e)
 
+SERVO_AUTO_LOCK_SECONDS = 60 * 60  # เปิดค้างครบ 1 ชั่วโมง ให้สั่งล็อกอัตโนมัติ
+
 class CentralIoTManager:
     def __init__(self):
         self.lock = threading.Lock()
+        self.servo_open_since = None   # เวลา (epoch) ที่ลิ้นชักเริ่มเปิด ใช้นับเวลาล็อกอัตโนมัติ
+        self.servo_cmd_topic = "esp8266/servo"
         self.connected = False
         self.last_connect_err = ""
         self.client = None
@@ -427,6 +431,10 @@ class CentralIoTManager:
         if topic in ["esp8266/servo", "esp8266/servo/status"]:
             if msg_up in ["UP", "DOWN"]:
                 with self.lock:
+                    if msg_up == "UP" and self.servo_status != "UP":
+                        self.servo_open_since = time.time()   # เพิ่งเปิด -> เริ่มนับ
+                    elif msg_up == "DOWN":
+                        self.servo_open_since = None          # ล็อกแล้ว -> หยุดนับ
                     self.servo_status = msg_up
                     self.servo_last_update = get_now_str("%H:%M:%S")
                 if topic == "esp8266/servo/status":
@@ -509,6 +517,7 @@ class CentralIoTManager:
             self.last_connect_err = "ยังไม่ได้ติดตั้ง paho-mqtt"
             return False
         cfg = get_iot_config()
+        self.servo_cmd_topic = cfg["topic_servo_cmd"]
         try:
             if self.client:
                 try:
@@ -570,6 +579,22 @@ class CentralIoTManager:
             self.last_connect_err = str(e)
             return False
 
+    def _auto_lock_loop(self):
+        """ตรวจทุก 15 วินาที: ถ้าลิ้นชักเปิดค้างครบเวลาที่กำหนดและออนไลน์อยู่ ให้ส่งคำสั่ง DOWN (ล็อก) อัตโนมัติ"""
+        while True:
+            time.sleep(15)
+            try:
+                with self.lock:
+                    due = (self.servo_status == "UP" and self.servo_open_since is not None
+                           and time.time() - self.servo_open_since >= SERVO_AUTO_LOCK_SECONDS)
+                if not due or not self.connected:
+                    continue  # ยังไม่ครบเวลา หรือออฟไลน์อยู่ (จะลองใหม่รอบถัดไป)
+                if self.publish(self.servo_cmd_topic, "DOWN"):  # publish จะอัปเดตสถานะเป็น DOWN เอง
+                    self.log_to_db("SERVO", "Auto Lock", "DOWN",
+                                   f"AUTO-LOCK: เปิดค้างเกิน {SERVO_AUTO_LOCK_SECONDS // 60} นาที ระบบสั่งล็อกอัตโนมัติ")
+            except Exception:
+                pass
+
     def publish(self, topic, payload, retain=False):
         if not self.client or not self.connected:
             self.connect()
@@ -588,6 +613,7 @@ class CentralIoTManager:
 def get_iot_manager():
     mgr = CentralIoTManager()
     mgr.connect()
+    threading.Thread(target=mgr._auto_lock_loop, name="servo-auto-lock", daemon=True).start()
     return mgr
 
 iot_mgr = get_iot_manager()
@@ -3548,6 +3574,12 @@ if st.session_state.role == ROLE_ADMIN:
               <div class="sub">อัปเดตสถานะล่าสุด: {iot_mgr.servo_last_update}</div>
             </div>
             """, unsafe_allow_html=True)
+
+            if is_up and iot_mgr.servo_open_since:
+                _elapsed = int(time.time() - iot_mgr.servo_open_since)
+                _remain = max(0, SERVO_AUTO_LOCK_SECONDS - _elapsed)
+                st.warning(f"⏱️ ลิ้นชักเปิดค้างมาแล้ว {_elapsed // 60} นาที · จะล็อกอัตโนมัติในอีก {_remain // 60} นาที {_remain % 60} วินาที "
+                           f"(ครบ {SERVO_AUTO_LOCK_SECONDS // 60} นาที) · ตัวเลขอ้างอิงตอนโหลดหน้า รีเฟรชเพื่ออัปเดต")
 
             b_up, b_down = st.columns(2)
             if b_up.button("🔓 สั่งเปิดลิ้นชัก (OPEN)", type="primary", use_container_width=True):
