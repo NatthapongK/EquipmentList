@@ -1073,28 +1073,62 @@ def load_solar_sheet(sheet_id, gid):
     except Exception as e:
         return None, str(e)
 
+def _solar_find_col(cols, pred):
+    """หาชื่อคอลัมน์แรกที่ตรงเงื่อนไข (ไม่สนใจตัวพิมพ์ เว้นวรรค _ - และวงเล็บ)"""
+    for c in cols:
+        n = re.sub(r"[\s_\-()]", "", str(c).lower())
+        if pred(n):
+            return c
+    return None
+
+SOLAR_COL_RULES = {
+    "ts":     lambda n: "timestamp" in n or "datetime" in n or n in ("time", "date") or "วัน" in n,
+    "soc":    lambda n: "soc" in n,
+    "vbat":   lambda n: ("vbat" in n or "battv" in n or "batteryv" in n or ("batt" in n and "volt" in n)
+                         or ("แรงดัน" in n and "pv" not in n)) and "pv" not in n,
+    "status": lambda n: ("status" in n or "state" in n or "สถานะ" in n) and "pv" not in n and "grid" not in n and "load" not in n,
+    "pvi":    lambda n: "pv" in n and ("curr" in n or "amp" in n or "กระแส" in n or n.endswith("a")) and "power" not in n,
+    "pv":     lambda n: "pv" in n and "curr" not in n and "amp" not in n and "volt" not in n and "กระแส" not in n
+                        and ("power" in n or n.endswith("w") or "กำลัง" in n or "พลัง" in n),
+    "load_pct": lambda n: "load" in n and ("%" in n or "pct" in n or "percent" in n) or ("โหลด" in n and "%" in n),
+    "load":   lambda n: ("load" in n or "โหลด" in n) and "pv" not in n and "%" not in n and "pct" not in n and "percent" not in n,
+    "grid":   lambda n: "grid" in n or "กริด" in n,
+    "temp":   lambda n: "temp" in n or "อุณหภูมิ" in n,
+}
+SOLAR_REQUIRED = ("ts", "soc", "vbat", "pv", "pvi", "load")
+SOLAR_LABELS = {  # ชื่อคอลัมน์ที่แสดงในตาราง (ตามรูปที่ใช้งาน)
+    "วัน-เวลา": "วัน-เวลา", "soc": "SOC (%)", "vbat": "แรงดันแบต (V)", "status": "สถานะแบต",
+    "pv": "กำลังแผง PV (W)", "pvi": "กระแส PV (A)", "load": "โหลด AC (W)", "load_pct": "โหลด (%)",
+    "grid": "ไฟ Grid (W)", "temp": "อุณหภูมิ (°C)",
+}
+
 def prep_solar_df(df, date_order="auto"):
-    """จัดคอลัมน์ Timestamp, Vbat, SOC, PV_Power, PV_Current, Load_Power ให้เป็นตัวเลข/เวลา; date_order: auto | dmy | mdy"""
-    d = df.copy()
-    d.columns = [str(c).strip().lower() for c in d.columns]
-    need = {"timestamp": "ts", "vbat": "vbat", "soc": "soc", "pv_power": "pv", "pv_current": "pvi", "load_power": "load"}
-    missing = [k for k in need if k not in d.columns]
+    """แมปคอลัมน์ของชีตโซลาร์ (จากชื่อหัวตาราง) เป็นค่ามาตรฐาน; date_order: auto | dmy | mdy"""
+    cols = list(df.columns)
+    found = {k: _solar_find_col(cols, rule) for k, rule in SOLAR_COL_RULES.items()}
+    missing = [k for k in SOLAR_REQUIRED if found.get(k) is None]
     if missing:
-        return None, "ไม่พบคอลัมน์: " + ", ".join(missing)
-    d = d[list(need.keys())].rename(columns=need)
-    for c in ("vbat", "soc", "pv", "pvi", "load"):
-        d[c] = pd.to_numeric(d[c], errors="coerce")
+        return None, "ไม่พบคอลัมน์: " + ", ".join(missing) + " (หัวตารางที่อ่านได้: " + ", ".join(map(str, cols)) + ")"
+    d = pd.DataFrame(index=df.index)
+    for k, src_col in found.items():
+        if src_col is not None:
+            d[k] = df[src_col]
+    for c in ("vbat", "soc", "pv", "pvi", "load", "load_pct", "grid", "temp"):
+        if c in d.columns:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+    if "status" in d.columns:
+        d["status"] = d["status"].astype(str).str.strip().str.upper().replace({"NAN": "-", "": "-"})
     ts = d["ts"].astype(str).str.strip()
     dayfirst = True  # ค่าเริ่มต้นแบบไทย วัน/เดือน/ปี
     if date_order == "mdy":
         dayfirst = False
     elif date_order == "auto":
         parts = ts.str.extract(r"^(\d{1,2})/(\d{1,2})/")
-        a = pd.to_numeric(parts[0], errors="coerce")
-        b = pd.to_numeric(parts[1], errors="coerce")
-        if (a > 12).any():
+        a_ = pd.to_numeric(parts[0], errors="coerce")
+        b_ = pd.to_numeric(parts[1], errors="coerce")
+        if (a_ > 12).any():
             dayfirst = True
-        elif (b > 12).any():
+        elif (b_ > 12).any():
             dayfirst = False
     d["dt"] = pd.to_datetime(ts, dayfirst=dayfirst, errors="coerce")
     d = d.dropna(subset=["dt", "pv", "load"]).sort_values("dt").reset_index(drop=True)
@@ -1302,21 +1336,25 @@ def render_solar_dashboard(d_all):
         components.html(chart_html, height=1170, scrolling=False)
 
     # ---- ตารางข้อมูล ----
-    st.markdown("##### 🗂️ ข้อมูลดิบจากชีต Solar_Data_Log")
+    st.markdown("##### 🗂️ ข้อมูลจาก Google Sheets (Solar_Data_Log)")
     t1, t2 = st.columns([3, 1.2])
-    q = t1.text_input("🔍 ค้นหา", key="solar_dash_search", placeholder="พิมพ์วันที่ เวลา หรือค่าที่ต้องการ...", label_visibility="collapsed")
-    csv_bytes = d_all[["dt", "vbat", "soc", "pv", "pvi", "load"]].rename(columns={
-        "dt": "Timestamp", "vbat": "Vbat", "soc": "SOC", "pv": "PV_Power", "pvi": "PV_Current", "load": "Load_Power"
-    }).to_csv(index=False).encode("utf-8-sig")
+    q = t1.text_input("🔍 ค้นหา", key="solar_dash_search", placeholder="พิมพ์วันที่ เวลา สถานะ หรือค่าที่ต้องการ...", label_visibility="collapsed")
+
+    def _table_view(frame):
+        """เลือกคอลัมน์ตามที่ตกลง จัดรูปแบบ และใส่ '-' ในช่องที่ชีตไม่มีคอลัมน์นั้น"""
+        out = pd.DataFrame(index=frame.index)
+        out["วัน-เวลา"] = frame["dt"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        for key in ("soc", "vbat", "status", "pv", "pvi", "load", "load_pct", "grid", "temp"):
+            out[SOLAR_LABELS[key]] = frame[key] if key in frame.columns else "-"
+        return out
+
+    csv_bytes = _table_view(d_all).to_csv(index=False).encode("utf-8-sig")
     t2.download_button("📥 โหลด Solar CSV", data=csv_bytes, file_name="solar_log.csv", mime="text/csv", key="solar_dash_dl", use_container_width=True)
-    tv = d.sort_values("dt", ascending=False).copy()
-    tv["วัน-เวลา"] = tv["dt"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    tv = _table_view(d.sort_values("dt", ascending=False))
     if q.strip():
         ql = q.strip().lower()
         tv = tv[tv.astype(str).apply(lambda r: ql in " ".join(r.values).lower(), axis=1)]
-    st.dataframe(tv[["วัน-เวลา", "vbat", "soc", "pv", "pvi", "load"]].head(100).rename(columns={
-        "vbat": "Vbat (V)", "soc": "SOC (%)", "pv": "PV Power (W)", "pvi": "PV Current (A)", "load": "Load (W)"}),
-        hide_index=True, use_container_width=True)
+    st.dataframe(tv.head(100), hide_index=True, use_container_width=True)
     st.caption(f"แสดง {min(len(tv), 100)} จาก {len(tv):,} รายการล่าสุดตามตัวกรอง")
 
 def show_html_frame(html_str, height):
