@@ -609,11 +609,114 @@ class CentralIoTManager:
                 return False
         return False
 
+# =====================================================================
+#  ตารางกะช่าง + แจ้งเตือนการส่งผลตรวจเข้า LINE กลุ่ม (ทำงานเบื้องหลัง)
+# =====================================================================
+SHIFT_WINDOWS = {  # กะ: (ชื่อกะ, เวลาเริ่มช่วงส่งผลตรวจ, เวลาสิ้นสุดช่วงส่งผลตรวจ)
+    "1": ("กะ 1 (เช้า)", "08:00", "10:00"),
+    "2": ("กะ 2 (บ่าย)", "14:00", "16:00"),
+    "3": ("กะ 3 (ดึก)", "23:00", "23:50"),
+}
+WEEKDAY_TH = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
+SHIFT_ALERT_LATE_LIMIT_SEC = 3 * 3600  # ถ้าแอปเพิ่งเปิดหลังเลยช่วงไปนานกว่านี้ จะไม่ย้อนส่งแจ้งเตือนเก่า
+
+def get_roster_on(date_str):
+    """ตารางกะที่ใช้ได้ ณ วันที่กำหนด: {username: {"shift": "1"|"2"|"3"|"", "off": 0-6|None}} ใช้รายการล่าสุดที่ effective_from <= วันนั้น"""
+    roster = {}
+    for d in db.tech_roster.find({"effective_from": {"$lte": date_str}}, {"_id": 0}).sort([("effective_from", -1), ("set_at", -1)]):
+        u = d.get("username")
+        if u and u not in roster:
+            roster[u] = {"shift": d.get("shift", ""), "off": d.get("off_weekday")}
+    return roster
+
+def _utf16_len(text):
+    return len(text.encode("utf-16-le")) // 2  # LINE นับตำแหน่ง mention เป็นหน่วย UTF-16
+
+def build_line_tag_message(prefix, tagged):
+    """สร้างข้อความ LINE พร้อมแท็ก: tagged = [(ชื่อแสดง, LINE userId หรือ '')]; ถ้ามี userId จะเป็นแท็กจริง ไม่มีจะเป็นแค่ข้อความ @ชื่อ"""
+    text, mentionees = prefix, []
+    for name, uid in tagged:
+        token = "@" + name
+        if text and not text[-1].isspace():
+            text += " "
+        idx = _utf16_len(text)
+        text += token
+        if uid:
+            mentionees.append({"index": idx, "length": _utf16_len(token), "userId": uid})
+        text += " "
+    msg = {"type": "text", "text": text.rstrip()}
+    if mentionees:
+        msg["mention"] = {"mentionees": mentionees}
+    return msg
+
+def send_line_message_obj(msg_obj, token, group_id):
+    if requests is None or not token or not group_id:
+        return False, "Missing LINE Token or Group ID"
+    try:
+        r = requests.post("https://api.line.me/v2/bot/message/push",
+                          headers={"Content-Type": "application/json; charset=UTF-8", "Authorization": f"Bearer {token}"},
+                          json={"to": group_id, "messages": [msg_obj]}, timeout=8)
+        return (200 <= r.status_code < 300), f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+def on_duty_techs(shift_key, date_str, weekday):
+    """ช่างที่อยู่กะนี้ในวันนั้น (ไม่รวมคนที่หยุดประจำสัปดาห์วันนั้น) พร้อมข้อมูลไลน์"""
+    roster = get_roster_on(date_str)
+    info = {d["username"]: d for d in db.tech_users.find({}, {"_id": 0, "username": 1, "line_name": 1, "line_user_id": 1})}
+    out = []
+    for u in sorted(roster):
+        r = roster[u]
+        if r["shift"] == shift_key and r["off"] != weekday and u in info:
+            out.append((info[u].get("line_name") or u, info[u].get("line_user_id") or ""))
+    return out
+
+def run_shift_checks(now, token, group_id):
+    """ตรวจทุกช่วงส่งผลตรวจของวันนี้: ถึงเวลาสิ้นสุดแล้วยังไม่มีผลตรวจ -> แท็กช่างกะนั้นเข้ากลุ่มไลน์ (ทำครั้งเดียวต่อช่วง)"""
+    today = now.strftime("%Y-%m-%d")
+    weekday = now.weekday()
+    done_now = []
+    for key, (label, s_hm, e_hm) in SHIFT_WINDOWS.items():
+        end_dt = datetime.strptime(f"{today} {e_hm}:59", "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_TH)
+        if now < end_dt + timedelta(seconds=30):
+            continue  # ยังไม่ถึงเวลาตรวจ
+        log_key = f"{today}|{key}"
+        if db.shift_alert_log.find_one({"key": log_key}, {"_id": 1}):
+            continue  # ตรวจช่วงนี้ไปแล้ว
+        if (now - end_dt).total_seconds() > SHIFT_ALERT_LATE_LIMIT_SEC:
+            status, detail = "skipped_late", "แอปเพิ่งเริ่มทำงานหลังช่วงนี้เกินกำหนด จึงไม่ย้อนส่ง"
+        elif db.inspections.count_documents({"inspection_date": {"$gte": f"{today} {s_hm}:00", "$lte": f"{today} {e_hm}:59"}}):
+            status, detail = "ok", "มีการส่งผลตรวจในช่วงเวลาแล้ว"
+        else:
+            tagged = on_duty_techs(key, today, weekday)
+            if not tagged:
+                status, detail = "no_duty", "ไม่มีช่างประจำกะนี้ในวันนี้ (หรือหยุดประจำสัปดาห์)"
+            else:
+                prefix = (f"⚠️ แจ้งเตือนการส่งผลตรวจ\n{label} ช่วง {s_hm}-{e_hm} น. ยังไม่มีการส่งผลตรวจ\n"
+                          f"วันที่ {today}\nผู้รับผิดชอบกะนี้: ")
+                ok, info = send_line_message_obj(build_line_tag_message(prefix, tagged), token, group_id)
+                status, detail = ("alerted" if ok else "send_failed"), info
+        db.shift_alert_log.insert_one({"key": log_key, "date": today, "shift": key, "status": status,
+                                       "detail": detail, "at": now.strftime("%Y-%m-%d %H:%M:%S")})
+        done_now.append((key, status))
+    return done_now
+
+def shift_alert_loop(token, group_id):
+    while True:
+        time.sleep(30)
+        try:
+            run_shift_checks(get_now_th(), token, group_id)
+        except Exception:
+            pass
+
 @st.cache_resource
 def get_iot_manager():
     mgr = CentralIoTManager()
     mgr.connect()
     threading.Thread(target=mgr._auto_lock_loop, name="servo-auto-lock", daemon=True).start()
+    _shift_cfg = get_iot_config()
+    threading.Thread(target=shift_alert_loop, args=(_shift_cfg["line_token"], _shift_cfg["line_group_id"]),
+                     name="shift-alert", daemon=True).start()
     return mgr
 
 iot_mgr = get_iot_manager()
@@ -4144,6 +4247,91 @@ if st.session_state.role == ROLE_ADMIN:
                                     success_count += 1
                             get_tech_users_df.clear()
                             done(f"นำเข้าสำเร็จ! เพิ่มใหม่ {success_count} บัญชี (ซ้ำ {dup_count} บัญชี)")
+
+        st.markdown("---")
+        st.markdown("#### 📅 ตารางกะช่าง & วันหยุดประจำสัปดาห์")
+        st.caption("ตั้งกะได้ทุกเมื่อ ค่าที่บันทึกจะมีผลตั้งแต่วันที่เลือก (ค่าเริ่มต้น = วันที่ 1 ของเดือนหน้า) ประวัติเดิมถูกเก็บไว้ให้ตรวจย้อนหลังได้")
+        _now_th = get_now_th()
+        _next_month_first = (_now_th.replace(day=28) + timedelta(days=4)).replace(day=1).date()
+        roster_eff = st.date_input("วันที่เริ่มใช้ตารางนี้", value=_next_month_first, key="roster_eff_date")
+        roster_eff_s = roster_eff.strftime("%Y-%m-%d")
+        if roster_eff_s < _now_th.strftime("%Y-%m-%d"):
+            st.error("วันที่เริ่มใช้ต้องเป็นวันนี้หรืออนาคต")
+        tech_roster_df = get_tech_users_df()
+        if tech_roster_df.empty:
+            st.info("ยังไม่มีบัญชีช่าง กรุณาเพิ่มบัญชีช่างก่อนตั้งกะ")
+        else:
+            cur_roster = get_roster_on(_now_th.strftime("%Y-%m-%d"))
+            shift_labels = {"": "ไม่กำหนดกะ"}
+            shift_labels.update({k: f"{v[0]} {v[1]}-{v[2]} น." for k, v in SHIFT_WINDOWS.items()})
+            off_labels = {"": "ไม่มีวันหยุดประจำ"}
+            off_labels.update({str(i): WEEKDAY_TH[i] for i in range(7)})
+            rows = []
+            for _, tr in tech_roster_df.sort_values("username").iterrows():
+                u = tr["username"]
+                cr = cur_roster.get(u, {"shift": "", "off": None})
+                rows.append({
+                    "Username": u,
+                    "กะ": shift_labels[cr["shift"]],
+                    "วันหยุดประจำสัปดาห์": off_labels["" if cr["off"] is None else str(cr["off"])],
+                    "ชื่อช่างในกลุ่มไลน์": str(tr.get("line_name", "") or ""),
+                    "LINE userId (ไม่บังคับ)": str(tr.get("line_user_id", "") or ""),
+                })
+            roster_edit = st.data_editor(
+                pd.DataFrame(rows), hide_index=True, use_container_width=True, key="roster_editor_v1",
+                disabled=["Username"],
+                column_config={
+                    "กะ": st.column_config.SelectboxColumn("กะ", options=list(shift_labels.values()), required=True),
+                    "วันหยุดประจำสัปดาห์": st.column_config.SelectboxColumn("วันหยุดประจำสัปดาห์", options=list(off_labels.values()), required=True),
+                    "ชื่อช่างในกลุ่มไลน์": st.column_config.TextColumn("ชื่อช่างในกลุ่มไลน์", help="ชื่อที่ใช้แท็กในข้อความแจ้งเตือน"),
+                    "LINE userId (ไม่บังคับ)": st.column_config.TextColumn("LINE userId (ไม่บังคับ)", help="ใส่เพื่อให้แท็กได้จริงในไลน์ (ได้จาก webhook เมื่อคนนั้นพิมพ์ในกลุ่ม)"),
+                },
+            )
+            if st.button("💾 บันทึกตารางกะและวันหยุด", type="primary", key="save_roster", disabled=roster_eff_s < _now_th.strftime("%Y-%m-%d")):
+                inv_shift = {v: k for k, v in shift_labels.items()}
+                inv_off = {v: k for k, v in off_labels.items()}
+                changed = 0
+                for _, er in roster_edit.iterrows():
+                    u = er["Username"]
+                    new_shift = inv_shift.get(er["กะ"], "")
+                    off_raw = inv_off.get(er["วันหยุดประจำสัปดาห์"], "")
+                    new_off = None if off_raw == "" else int(off_raw)
+                    cr = cur_roster.get(u, {"shift": "", "off": None})
+                    if new_shift != cr["shift"] or new_off != cr["off"]:
+                        db.tech_roster.insert_one({"username": u, "shift": new_shift, "off_weekday": new_off,
+                                                   "effective_from": roster_eff_s, "set_at": get_now_str()})
+                        changed += 1
+                    db.tech_users.update_one({"username": u}, {"$set": {
+                        "line_name": str(er["ชื่อช่างในกลุ่มไลน์"]).strip(),
+                        "line_user_id": str(er["LINE userId (ไม่บังคับ)"]).strip()}})
+                get_tech_users_df.clear()
+                log_audit("TECH_ROSTER_UPDATE", "tech_roster", detail=f"effective {roster_eff_s}, changed {changed} rows")
+                done(f"บันทึกแล้ว: เปลี่ยนกะ/วันหยุด {changed} รายการ มีผลตั้งแต่ {roster_eff_s}")
+
+            st.markdown("**🧪 ทดสอบการแท็กช่างเข้ากลุ่มไลน์**")
+            test_shift = st.selectbox("เลือกกะที่จะทดสอบ", list(SHIFT_WINDOWS.keys()), key="roster_test_shift",
+                                      format_func=lambda k: SHIFT_WINDOWS[k][0])
+            if st.button("📣 ส่งข้อความทดสอบเข้า LINE กลุ่ม", key="roster_test_btn"):
+                tg = on_duty_techs(test_shift, _now_th.strftime("%Y-%m-%d"), _now_th.weekday())
+                if not tg:
+                    st.warning("ไม่มีช่างในกะนี้วันนี้ (หรือหยุดประจำสัปดาห์)")
+                else:
+                    _c = get_iot_config()
+                    ok_t, info_t = send_line_message_obj(build_line_tag_message(
+                        f"🧪 ทดสอบระบบแจ้งเตือน {SHIFT_WINDOWS[test_shift][0]}\nผู้รับผิดชอบ: ", tg), _c["line_token"], _c["line_group_id"])
+                    done(f"ส่งข้อความทดสอบแล้ว ({info_t})") if ok_t else st.error(f"ส่งไม่สำเร็จ: {info_t}")
+
+            st.markdown("**📜 ประวัติการแจ้งเตือนการส่งผลตรวจ (ล่าสุด 15 รายการ)**")
+            _log_rows = list(db.shift_alert_log.find({}, {"_id": 0}).sort("at", -1).limit(15))
+            if _log_rows:
+                _status_th = {"alerted": "🔔 แจ้งเตือนแล้ว", "ok": "✅ ส่งผลตรวจแล้ว", "no_duty": "⏸️ ไม่มีช่างประจำ",
+                              "send_failed": "❌ ส่งไลน์ไม่สำเร็จ", "skipped_late": "⏭️ ข้าม (เกินเวลา)"}
+                st.dataframe(pd.DataFrame([{"วันที่": r.get("date"), "กะ": SHIFT_WINDOWS[r["shift"]][0],
+                                            "สถานะ": _status_th.get(r.get("status"), r.get("status")),
+                                            "รายละเอียด": r.get("detail", "")} for r in _log_rows]),
+                             hide_index=True, use_container_width=True)
+            else:
+                st.caption("ยังไม่มีประวัติการแจ้งเตือน")
 
         with set_tab3:
             st.markdown("#### 📡 ตั้งค่าการเชื่อมต่อ HiveMQ Cloud, LINE OA และ Growatt Solar")
