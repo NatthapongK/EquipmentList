@@ -629,25 +629,27 @@ def get_roster_on(date_str):
             roster[u] = {"shift": d.get("shift", ""), "off": d.get("off_weekday")}
     return roster
 
-def _utf16_len(text):
-    return len(text.encode("utf-16-le")) // 2  # LINE นับตำแหน่ง mention เป็นหน่วย UTF-16
-
-def build_line_tag_message(prefix, tagged):
-    """สร้างข้อความ LINE พร้อมแท็ก: tagged = [(ชื่อแสดง, LINE userId หรือ '')]; ถ้ามี userId จะเป็นแท็กจริง ไม่มีจะเป็นแค่ข้อความ @ชื่อ"""
-    text, mentionees = prefix, []
-    for name, uid in tagged:
-        token = "@" + name
-        if text and not text[-1].isspace():
-            text += " "
-        idx = _utf16_len(text)
-        text += token
-        if uid:
-            mentionees.append({"index": idx, "length": _utf16_len(token), "userId": uid})
-        text += " "
-    msg = {"type": "text", "text": text.rstrip()}
-    if mentionees:
-        msg["mention"] = {"mentionees": mentionees}
-    return msg
+def notify_shift_alert(label, s_hm, e_hm, today, techs, token, group_id, title="⚠️ แจ้งเตือนการส่งผลตรวจ"):
+    """ส่งแจ้งเตือน 2 ทาง: (1) ข้อความเข้ากลุ่มระบุชื่อช่างกะนั้น (2) ข้อความส่วนตัวถึงช่างแต่ละคนที่มี userId
+    techs = [(ชื่อแสดง, userId หรือ '')] คืน (สถานะ, สรุปผล)"""
+    head = f"{label} ช่วง {s_hm}-{e_hm} น. ยังไม่มีการส่งผลตรวจ (วันที่ {today})"
+    names = ", ".join(n for n, _ in techs)
+    ok_g, info_g = send_line_message_obj({"type": "text", "text": f"{title}\n{head}\nผู้รับผิดชอบกะนี้: {names}"}, token, group_id)
+    private_text = f"{title}\n{head}\nกรุณาตรวจสอบและส่งผลตรวจในระบบ"
+    sent, problems = 0, []
+    for name, uid in techs:
+        if not uid:
+            problems.append(f"{name} (ยังไม่มี userId)")
+            continue
+        ok_p, info_p = send_line_message_obj({"type": "text", "text": private_text}, token, uid)
+        if ok_p:
+            sent += 1
+        else:
+            problems.append(f"{name} (ส่งไม่สำเร็จ {info_p})")
+    summary = f"กลุ่ม: {info_g} · ส่งส่วนตัว {sent}/{len(techs)} คน"
+    if problems:
+        summary += " · ไม่ได้ส่ง: " + "; ".join(problems)
+    return ("alerted" if ok_g else "send_failed"), summary
 
 def send_line_message_obj(msg_obj, token, group_id):
     if requests is None or not token or not group_id:
@@ -692,10 +694,7 @@ def run_shift_checks(now, token, group_id):
             if not tagged:
                 status, detail = "no_duty", "ไม่มีช่างประจำกะนี้ในวันนี้ (หรือหยุดประจำสัปดาห์)"
             else:
-                prefix = (f"⚠️ แจ้งเตือนการส่งผลตรวจ\n{label} ช่วง {s_hm}-{e_hm} น. ยังไม่มีการส่งผลตรวจ\n"
-                          f"วันที่ {today}\nผู้รับผิดชอบกะนี้: ")
-                ok, info = send_line_message_obj(build_line_tag_message(prefix, tagged), token, group_id)
-                status, detail = ("alerted" if ok else "send_failed"), info
+                status, detail = notify_shift_alert(label, s_hm, e_hm, today, tagged, token, group_id)
         db.shift_alert_log.insert_one({"key": log_key, "date": today, "shift": key, "status": status,
                                        "detail": detail, "at": now.strftime("%Y-%m-%d %H:%M:%S")})
         done_now.append((key, status))
@@ -4284,7 +4283,7 @@ if st.session_state.role == ROLE_ADMIN:
                     "กะ": st.column_config.SelectboxColumn("กะ", options=list(shift_labels.values()), required=True),
                     "วันหยุดประจำสัปดาห์": st.column_config.SelectboxColumn("วันหยุดประจำสัปดาห์", options=list(off_labels.values()), required=True),
                     "ชื่อช่างในกลุ่มไลน์": st.column_config.TextColumn("ชื่อช่างในกลุ่มไลน์", help="ชื่อที่ใช้แท็กในข้อความแจ้งเตือน"),
-                    "LINE userId (ไม่บังคับ)": st.column_config.TextColumn("LINE userId (ไม่บังคับ)", help="ใส่เพื่อให้แท็กได้จริงในไลน์ (ดูได้จาก webhook.site หลังสมาชิกพิมพ์ในกลุ่ม)"),
+                    "LINE userId (ไม่บังคับ)": st.column_config.TextColumn("LINE userId (ไม่บังคับ)", help="userId ของช่าง ใช้ส่งข้อความส่วนตัวถึงช่าง (ช่างต้องเป็นเพื่อนกับ OA) ดูได้จาก webhook.site หลังพิมพ์ในกลุ่ม"),
                 },
             )
             if st.button("💾 บันทึกตารางกะและวันหยุด", type="primary", key="save_roster", disabled=roster_eff_s < _now_th.strftime("%Y-%m-%d")):
@@ -4308,18 +4307,22 @@ if st.session_state.role == ROLE_ADMIN:
                 log_audit("TECH_ROSTER_UPDATE", "tech_roster", detail=f"effective {roster_eff_s}, changed {changed} rows")
                 done(f"บันทึกแล้ว: เปลี่ยนกะ/วันหยุด {changed} รายการ มีผลตั้งแต่ {roster_eff_s}")
 
-            st.markdown("**🧪 ทดสอบการแท็กช่างเข้ากลุ่มไลน์**")
+            st.markdown("**🧪 ทดสอบการแจ้งเตือนช่าง**")
             test_shift = st.selectbox("เลือกกะที่จะทดสอบ", list(SHIFT_WINDOWS.keys()), key="roster_test_shift",
                                       format_func=lambda k: SHIFT_WINDOWS[k][0])
-            if st.button("📣 ส่งข้อความทดสอบเข้า LINE กลุ่ม", key="roster_test_btn"):
+            if st.button("📣 ส่งข้อความทดสอบถึงกลุ่มและช่างกะนี้", key="roster_test_btn"):
                 tg = on_duty_techs(test_shift, _now_th.strftime("%Y-%m-%d"), _now_th.weekday())
                 if not tg:
                     st.warning("ไม่มีช่างในกะนี้วันนี้ (หรือหยุดประจำสัปดาห์)")
                 else:
                     _c = get_iot_config()
-                    ok_t, info_t = send_line_message_obj(build_line_tag_message(
-                        f"🧪 ทดสอบระบบแจ้งเตือน {SHIFT_WINDOWS[test_shift][0]}\nผู้รับผิดชอบ: ", tg), _c["line_token"], _c["line_group_id"])
-                    done(f"ส่งข้อความทดสอบแล้ว ({info_t})") if ok_t else st.error(f"ส่งไม่สำเร็จ: {info_t}")
+                    _st, _sum = notify_shift_alert(SHIFT_WINDOWS[test_shift][0], SHIFT_WINDOWS[test_shift][1],
+                                                   SHIFT_WINDOWS[test_shift][2], _now_th.strftime("%Y-%m-%d"), tg,
+                                                   _c["line_token"], _c["line_group_id"], title="🧪 ทดสอบระบบแจ้งเตือน")
+                    if _st == "alerted":
+                        st.success(f"ส่งทดสอบแล้ว · {_sum}")
+                    else:
+                        st.error(f"ส่งไม่สำเร็จ · {_sum}")
 
             st.markdown("**📜 ประวัติการแจ้งเตือนการส่งผลตรวจ (ล่าสุด 15 รายการ)**")
             _log_rows = list(db.shift_alert_log.find({}, {"_id": 0}).sort("at", -1).limit(15))
