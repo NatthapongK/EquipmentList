@@ -709,6 +709,33 @@ def shift_alert_loop(token, group_id):
         except Exception:
             pass
 
+@st.cache_data(ttl=60, show_spinner=False)
+def load_line_userids_sheet(sheet_id, group_id):
+    """อ่าน userId ที่ Apps Script (webhook) บันทึกไว้ในชีต LINE_UserIds คืน (รายการ [{userId, lastSeen}], ข้อความผิดพลาด)"""
+    if requests is None:
+        return [], "ยังไม่ได้ติดตั้ง requests"
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=LINE_UserIds"
+    try:
+        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return [], f"Google ตอบกลับ HTTP {r.status_code} (ตรวจสอบว่าแชร์ชีตเป็น Anyone with the link: Viewer)"
+        if "text/html" in r.headers.get("Content-Type", ""):
+            return [], "ชีตไม่ได้เปิดสาธารณะ หรือ Sheet ID ไม่ถูกต้อง"
+        df = pd.read_csv(io.StringIO(r.content.decode("utf-8-sig")), dtype=str).fillna("")
+    except Exception as e:
+        return [], str(e)
+    if not {"groupId", "userId"}.issubset(df.columns):
+        return [], "ชีตไม่มีคอลัมน์ groupId / userId (ตรวจว่าสร้างหัวตารางจาก setupSheet_ แล้ว)"
+    if group_id:
+        df = df[df["groupId"].str.strip() == group_id.strip()]
+    out, seen = [], set()
+    for _, row in df.iterrows():
+        uid = row["userId"].strip()
+        if uid and uid not in seen:
+            seen.add(uid)
+            out.append({"userId": uid, "lastSeen": row.get("lastSeen", "")})
+    return out, ""
+
 def line_api_get(path, token, params=None):
     """เรียก LINE Messaging API (GET) คืน (ข้อมูล JSON | None, ข้อความผิดพลาด)"""
     if requests is None:
@@ -4353,23 +4380,37 @@ if st.session_state.role == ROLE_ADMIN:
                 log_audit("TECH_ROSTER_UPDATE", "tech_roster", detail=f"effective {roster_eff_s}, changed {changed} rows")
                 done(f"บันทึกแล้ว: เปลี่ยนกะ/วันหยุด {changed} รายการ มีผลตั้งแต่ {roster_eff_s}")
 
-            st.markdown("**🔗 ดึงรายชื่อสมาชิกกลุ่มไลน์และผูกกับช่าง**")
-            st.caption("ระบบจะดึง userId ของทุกคนในกลุ่มให้ ชื่อโปรไฟล์ดึงได้เฉพาะคนที่เพิ่มบอทเป็นเพื่อนแล้ว")
-            if st.button("🔄 ดึงรายชื่อสมาชิกจาก LINE", key="line_fetch_members"):
+            st.markdown("**🔗 ผูกบัญชีช่างกับ LINE userId (จาก webhook ที่บันทึกลงชีต)**")
+            st.caption("userId ของสมาชิกจะถูกบันทึกลงชีตอัตโนมัติทุกครั้งที่มีคนพิมพ์ในกลุ่ม ให้คนในกลุ่มพิมพ์อย่างน้อยหนึ่งข้อความก่อน")
+            _sc1, _sc2 = st.columns([3, 1])
+            _uid_sheet_default = ""
+            try:
+                _uid_sheet_default = str(st.secrets.get("iot", {}).get("line_uid_sheet_id", "") or "")
+            except Exception:
+                pass
+            line_uid_sheet_id = _sc1.text_input("Sheet ID ของชีต LINE_UserIds", value=_uid_sheet_default, key="line_uid_sheet_id")
+            _sc2.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
+            if _sc2.button("🔄 โหลดรายชื่อจากชีต", key="line_fetch_members", use_container_width=True):
+                load_line_userids_sheet.clear()
                 _lc = get_iot_config()
-                with st.spinner("กำลังดึงรายชื่อสมาชิกจาก LINE..."):
-                    _mem, _mem_err = fetch_line_members(_lc["line_token"], _lc["line_group_id"])
-                if not _mem and _mem_err:
+                _rows, _rows_err = load_line_userids_sheet(line_uid_sheet_id.strip(), _lc["line_group_id"])
+                if not _rows and _rows_err:
                     st.session_state["line_members"] = []
-                    st.error(f"ดึงรายชื่อไม่สำเร็จ: {_mem_err}")
+                    st.error(f"โหลดรายชื่อไม่สำเร็จ: {_rows_err}")
                 else:
+                    with st.spinner("กำลังดึงชื่อโปรไฟล์ (เฉพาะคนที่เป็นเพื่อนกับบอท)..."):
+                        _mem = []
+                        for _r in _rows:
+                            _prof = fetch_member_profile(_lc["line_token"], _lc["line_group_id"], _r["userId"])
+                            _mem.append({"userId": _r["userId"], "displayName": (_prof or {}).get("displayName", ""),
+                                         "hasProfile": _prof is not None})
                     st.session_state["line_members"] = _mem
-                    if _mem_err:
-                        st.warning(f"ดึงได้บางส่วน: {_mem_err}")
+                    if not _rows:
+                        st.warning("ยังไม่มี userId ในชีต ให้สมาชิกพิมพ์ในกลุ่มก่อน")
             _members = st.session_state.get("line_members", [])
             if _members:
                 _no_name = sum(1 for m in _members if not m["hasProfile"])
-                st.caption(f"พบสมาชิก {len(_members)} คน · ไม่มีชื่อโปรไฟล์ {_no_name} คน (ยังไม่ได้เป็นเพื่อนกับบอท)")
+                st.caption(f"พบ userId {len(_members)} รายการ · ไม่มีชื่อโปรไฟล์ {_no_name} รายการ (ยังไม่ได้เป็นเพื่อนกับบอท)")
                 _mem_by_id = {m["userId"]: m for m in _members}
                 with st.form("line_bind_form"):
                     _bind_choice = {}
