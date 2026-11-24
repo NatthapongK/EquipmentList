@@ -709,78 +709,6 @@ def shift_alert_loop(token, group_id):
         except Exception:
             pass
 
-@st.cache_data(ttl=60, show_spinner=False)
-def load_line_userids_sheet(sheet_id, group_id):
-    """อ่าน userId ที่ Apps Script (webhook) บันทึกไว้ในชีต LINE_UserIds คืน (รายการ [{userId, lastSeen}], ข้อความผิดพลาด)"""
-    if requests is None:
-        return [], "ยังไม่ได้ติดตั้ง requests"
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=LINE_UserIds"
-    try:
-        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code != 200:
-            return [], f"Google ตอบกลับ HTTP {r.status_code} (ตรวจสอบว่าแชร์ชีตเป็น Anyone with the link: Viewer)"
-        if "text/html" in r.headers.get("Content-Type", ""):
-            return [], "ชีตไม่ได้เปิดสาธารณะ หรือ Sheet ID ไม่ถูกต้อง"
-        df = pd.read_csv(io.StringIO(r.content.decode("utf-8-sig")), dtype=str).fillna("")
-    except Exception as e:
-        return [], str(e)
-    if not {"groupId", "userId"}.issubset(df.columns):
-        return [], "ชีตไม่มีคอลัมน์ groupId / userId (ตรวจว่าสร้างหัวตารางจาก setupSheet_ แล้ว)"
-    if group_id:
-        df = df[df["groupId"].str.strip() == group_id.strip()]
-    out, seen = [], set()
-    for _, row in df.iterrows():
-        uid = row["userId"].strip()
-        if uid and uid not in seen:
-            seen.add(uid)
-            out.append({"userId": uid, "lastSeen": row.get("lastSeen", "")})
-    return out, ""
-
-def line_api_get(path, token, params=None):
-    """เรียก LINE Messaging API (GET) คืน (ข้อมูล JSON | None, ข้อความผิดพลาด)"""
-    if requests is None:
-        return None, "ยังไม่ได้ติดตั้ง requests"
-    if not token:
-        return None, "ไม่พบ line_token ใน Secrets"
-    try:
-        r = requests.get("https://api.line.me/v2/bot" + path, headers={"Authorization": f"Bearer {token}"},
-                         params=params, timeout=8)
-        if r.status_code == 404:
-            return None, "404"
-        if not (200 <= r.status_code < 300):
-            return None, f"HTTP {r.status_code}: {r.text[:200]}"
-        return r.json(), ""
-    except Exception as e:
-        return None, str(e)
-
-def fetch_group_member_ids(token, group_id, max_pages=20):
-    """ดึง userId ของสมาชิกทั้งหมดในกลุ่ม (แบ่งหน้าอัตโนมัติ)"""
-    ids, start, pages = [], None, 0
-    while pages < max_pages:
-        data, err = line_api_get(f"/group/{group_id}/members/ids", token, {"start": start} if start else None)
-        if data is None:
-            return list(dict.fromkeys(ids)), err
-        ids.extend(data.get("memberIds", []))
-        start = data.get("next")
-        pages += 1
-        if not start:
-            break
-    return list(dict.fromkeys(ids)), ""
-
-def fetch_member_profile(token, group_id, user_id):
-    """ชื่อโปรไฟล์ของสมาชิก; LINE ให้ดึงได้เฉพาะคนที่เพิ่มบอทเป็นเพื่อนแล้ว (คืน None ถ้าไม่ได้)"""
-    data, _ = line_api_get(f"/group/{group_id}/member/{user_id}", token)
-    return data
-
-def fetch_line_members(token, group_id):
-    """คืน (รายชื่อสมาชิก [{userId, displayName, hasProfile}], ข้อความผิดพลาด)"""
-    ids, err = fetch_group_member_ids(token, group_id)
-    members = []
-    for uid in ids:
-        prof = fetch_member_profile(token, group_id, uid)
-        members.append({"userId": uid, "displayName": (prof or {}).get("displayName", ""), "hasProfile": prof is not None})
-    return members, err
-
 @st.cache_resource
 def get_iot_manager():
     mgr = CentralIoTManager()
@@ -4356,7 +4284,7 @@ if st.session_state.role == ROLE_ADMIN:
                     "กะ": st.column_config.SelectboxColumn("กะ", options=list(shift_labels.values()), required=True),
                     "วันหยุดประจำสัปดาห์": st.column_config.SelectboxColumn("วันหยุดประจำสัปดาห์", options=list(off_labels.values()), required=True),
                     "ชื่อช่างในกลุ่มไลน์": st.column_config.TextColumn("ชื่อช่างในกลุ่มไลน์", help="ชื่อที่ใช้แท็กในข้อความแจ้งเตือน"),
-                    "LINE userId (ไม่บังคับ)": st.column_config.TextColumn("LINE userId (ไม่บังคับ)", help="ใส่เพื่อให้แท็กได้จริงในไลน์ (ได้จาก webhook เมื่อคนนั้นพิมพ์ในกลุ่ม)"),
+                    "LINE userId (ไม่บังคับ)": st.column_config.TextColumn("LINE userId (ไม่บังคับ)", help="ใส่เพื่อให้แท็กได้จริงในไลน์ (ดูได้จาก webhook.site หลังสมาชิกพิมพ์ในกลุ่ม)"),
                 },
             )
             if st.button("💾 บันทึกตารางกะและวันหยุด", type="primary", key="save_roster", disabled=roster_eff_s < _now_th.strftime("%Y-%m-%d")):
@@ -4379,65 +4307,6 @@ if st.session_state.role == ROLE_ADMIN:
                 get_tech_users_df.clear()
                 log_audit("TECH_ROSTER_UPDATE", "tech_roster", detail=f"effective {roster_eff_s}, changed {changed} rows")
                 done(f"บันทึกแล้ว: เปลี่ยนกะ/วันหยุด {changed} รายการ มีผลตั้งแต่ {roster_eff_s}")
-
-            st.markdown("**🔗 ผูกบัญชีช่างกับ LINE userId (จาก webhook ที่บันทึกลงชีต)**")
-            st.caption("userId ของสมาชิกจะถูกบันทึกลงชีตอัตโนมัติทุกครั้งที่มีคนพิมพ์ในกลุ่ม ให้คนในกลุ่มพิมพ์อย่างน้อยหนึ่งข้อความก่อน")
-            _sc1, _sc2 = st.columns([3, 1])
-            _uid_sheet_default = ""
-            try:
-                _uid_sheet_default = str(st.secrets.get("iot", {}).get("line_uid_sheet_id", "") or "")
-            except Exception:
-                pass
-            line_uid_sheet_id = _sc1.text_input("Sheet ID ของชีต LINE_UserIds", value=_uid_sheet_default, key="line_uid_sheet_id")
-            _sc2.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
-            if _sc2.button("🔄 โหลดรายชื่อจากชีต", key="line_fetch_members", use_container_width=True):
-                load_line_userids_sheet.clear()
-                _lc = get_iot_config()
-                _rows, _rows_err = load_line_userids_sheet(line_uid_sheet_id.strip(), _lc["line_group_id"])
-                if not _rows and _rows_err:
-                    st.session_state["line_members"] = []
-                    st.error(f"โหลดรายชื่อไม่สำเร็จ: {_rows_err}")
-                else:
-                    with st.spinner("กำลังดึงชื่อโปรไฟล์ (เฉพาะคนที่เป็นเพื่อนกับบอท)..."):
-                        _mem = []
-                        for _r in _rows:
-                            _prof = fetch_member_profile(_lc["line_token"], _lc["line_group_id"], _r["userId"])
-                            _mem.append({"userId": _r["userId"], "displayName": (_prof or {}).get("displayName", ""),
-                                         "hasProfile": _prof is not None})
-                    st.session_state["line_members"] = _mem
-                    if not _rows:
-                        st.warning("ยังไม่มี userId ในชีต ให้สมาชิกพิมพ์ในกลุ่มก่อน")
-            _members = st.session_state.get("line_members", [])
-            if _members:
-                _no_name = sum(1 for m in _members if not m["hasProfile"])
-                st.caption(f"พบ userId {len(_members)} รายการ · ไม่มีชื่อโปรไฟล์ {_no_name} รายการ (ยังไม่ได้เป็นเพื่อนกับบอท)")
-                _mem_by_id = {m["userId"]: m for m in _members}
-                with st.form("line_bind_form"):
-                    _bind_choice = {}
-                    for _, tr in tech_roster_df.sort_values("username").iterrows():
-                        u = tr["username"]
-                        cur_uid = str(tr.get("line_user_id", "") or "").strip()
-                        labels = {"": "— ไม่ผูก —"}
-                        for m in _members:
-                            labels[m["userId"]] = (m["displayName"] or "(ไม่มีชื่อโปรไฟล์)") + f"  ·  {m['userId'][-6:]}"
-                        if cur_uid and cur_uid not in labels:
-                            labels[cur_uid] = f"(userId เดิม ไม่อยู่ในกลุ่มนี้)  ·  {cur_uid[-6:]}"
-                        opts = list(labels.keys())
-                        _bind_choice[u] = st.selectbox(f"ช่าง: {u}", opts, index=opts.index(cur_uid) if cur_uid in opts else 0,
-                                                       format_func=lambda k, _l=labels: _l[k], key=f"bind_{u}")
-                    if st.form_submit_button("💾 บันทึกการผูกบัญชีไลน์", type="primary"):
-                        bound = 0
-                        for u, uid in _bind_choice.items():
-                            mem = _mem_by_id.get(uid)
-                            cur_row = tech_roster_df[tech_roster_df["username"] == u].iloc[0]
-                            upd = {"line_user_id": uid}
-                            if uid and mem and mem["displayName"] and not str(cur_row.get("line_name", "") or "").strip():
-                                upd["line_name"] = mem["displayName"]  # ตั้งชื่อแท็กเริ่มต้นจากโปรไฟล์ ถ้ายังไม่มีชื่อ
-                            db.tech_users.update_one({"username": u}, {"$set": upd})
-                            bound += 1 if uid else 0
-                        get_tech_users_df.clear()
-                        log_audit("TECH_LINE_BIND", "tech_users", detail="bound LINE userIds from group members")
-                        done(f"บันทึกการผูกแล้ว ({bound} คนมี userId)")
 
             st.markdown("**🧪 ทดสอบการแท็กช่างเข้ากลุ่มไลน์**")
             test_shift = st.selectbox("เลือกกะที่จะทดสอบ", list(SHIFT_WINDOWS.keys()), key="roster_test_shift",
