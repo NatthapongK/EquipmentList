@@ -709,6 +709,51 @@ def shift_alert_loop(token, group_id):
         except Exception:
             pass
 
+def line_api_get(path, token, params=None):
+    """เรียก LINE Messaging API (GET) คืน (ข้อมูล JSON | None, ข้อความผิดพลาด)"""
+    if requests is None:
+        return None, "ยังไม่ได้ติดตั้ง requests"
+    if not token:
+        return None, "ไม่พบ line_token ใน Secrets"
+    try:
+        r = requests.get("https://api.line.me/v2/bot" + path, headers={"Authorization": f"Bearer {token}"},
+                         params=params, timeout=8)
+        if r.status_code == 404:
+            return None, "404"
+        if not (200 <= r.status_code < 300):
+            return None, f"HTTP {r.status_code}: {r.text[:200]}"
+        return r.json(), ""
+    except Exception as e:
+        return None, str(e)
+
+def fetch_group_member_ids(token, group_id, max_pages=20):
+    """ดึง userId ของสมาชิกทั้งหมดในกลุ่ม (แบ่งหน้าอัตโนมัติ)"""
+    ids, start, pages = [], None, 0
+    while pages < max_pages:
+        data, err = line_api_get(f"/group/{group_id}/members/ids", token, {"start": start} if start else None)
+        if data is None:
+            return list(dict.fromkeys(ids)), err
+        ids.extend(data.get("memberIds", []))
+        start = data.get("next")
+        pages += 1
+        if not start:
+            break
+    return list(dict.fromkeys(ids)), ""
+
+def fetch_member_profile(token, group_id, user_id):
+    """ชื่อโปรไฟล์ของสมาชิก; LINE ให้ดึงได้เฉพาะคนที่เพิ่มบอทเป็นเพื่อนแล้ว (คืน None ถ้าไม่ได้)"""
+    data, _ = line_api_get(f"/group/{group_id}/member/{user_id}", token)
+    return data
+
+def fetch_line_members(token, group_id):
+    """คืน (รายชื่อสมาชิก [{userId, displayName, hasProfile}], ข้อความผิดพลาด)"""
+    ids, err = fetch_group_member_ids(token, group_id)
+    members = []
+    for uid in ids:
+        prof = fetch_member_profile(token, group_id, uid)
+        members.append({"userId": uid, "displayName": (prof or {}).get("displayName", ""), "hasProfile": prof is not None})
+    return members, err
+
 @st.cache_resource
 def get_iot_manager():
     mgr = CentralIoTManager()
@@ -4307,6 +4352,51 @@ if st.session_state.role == ROLE_ADMIN:
                 get_tech_users_df.clear()
                 log_audit("TECH_ROSTER_UPDATE", "tech_roster", detail=f"effective {roster_eff_s}, changed {changed} rows")
                 done(f"บันทึกแล้ว: เปลี่ยนกะ/วันหยุด {changed} รายการ มีผลตั้งแต่ {roster_eff_s}")
+
+            st.markdown("**🔗 ดึงรายชื่อสมาชิกกลุ่มไลน์และผูกกับช่าง**")
+            st.caption("ระบบจะดึง userId ของทุกคนในกลุ่มให้ ชื่อโปรไฟล์ดึงได้เฉพาะคนที่เพิ่มบอทเป็นเพื่อนแล้ว")
+            if st.button("🔄 ดึงรายชื่อสมาชิกจาก LINE", key="line_fetch_members"):
+                _lc = get_iot_config()
+                with st.spinner("กำลังดึงรายชื่อสมาชิกจาก LINE..."):
+                    _mem, _mem_err = fetch_line_members(_lc["line_token"], _lc["line_group_id"])
+                if not _mem and _mem_err:
+                    st.session_state["line_members"] = []
+                    st.error(f"ดึงรายชื่อไม่สำเร็จ: {_mem_err}")
+                else:
+                    st.session_state["line_members"] = _mem
+                    if _mem_err:
+                        st.warning(f"ดึงได้บางส่วน: {_mem_err}")
+            _members = st.session_state.get("line_members", [])
+            if _members:
+                _no_name = sum(1 for m in _members if not m["hasProfile"])
+                st.caption(f"พบสมาชิก {len(_members)} คน · ไม่มีชื่อโปรไฟล์ {_no_name} คน (ยังไม่ได้เป็นเพื่อนกับบอท)")
+                _mem_by_id = {m["userId"]: m for m in _members}
+                with st.form("line_bind_form"):
+                    _bind_choice = {}
+                    for _, tr in tech_roster_df.sort_values("username").iterrows():
+                        u = tr["username"]
+                        cur_uid = str(tr.get("line_user_id", "") or "").strip()
+                        labels = {"": "— ไม่ผูก —"}
+                        for m in _members:
+                            labels[m["userId"]] = (m["displayName"] or "(ไม่มีชื่อโปรไฟล์)") + f"  ·  {m['userId'][-6:]}"
+                        if cur_uid and cur_uid not in labels:
+                            labels[cur_uid] = f"(userId เดิม ไม่อยู่ในกลุ่มนี้)  ·  {cur_uid[-6:]}"
+                        opts = list(labels.keys())
+                        _bind_choice[u] = st.selectbox(f"ช่าง: {u}", opts, index=opts.index(cur_uid) if cur_uid in opts else 0,
+                                                       format_func=lambda k, _l=labels: _l[k], key=f"bind_{u}")
+                    if st.form_submit_button("💾 บันทึกการผูกบัญชีไลน์", type="primary"):
+                        bound = 0
+                        for u, uid in _bind_choice.items():
+                            mem = _mem_by_id.get(uid)
+                            cur_row = tech_roster_df[tech_roster_df["username"] == u].iloc[0]
+                            upd = {"line_user_id": uid}
+                            if uid and mem and mem["displayName"] and not str(cur_row.get("line_name", "") or "").strip():
+                                upd["line_name"] = mem["displayName"]  # ตั้งชื่อแท็กเริ่มต้นจากโปรไฟล์ ถ้ายังไม่มีชื่อ
+                            db.tech_users.update_one({"username": u}, {"$set": upd})
+                            bound += 1 if uid else 0
+                        get_tech_users_df.clear()
+                        log_audit("TECH_LINE_BIND", "tech_users", detail="bound LINE userIds from group members")
+                        done(f"บันทึกการผูกแล้ว ({bound} คนมี userId)")
 
             st.markdown("**🧪 ทดสอบการแท็กช่างเข้ากลุ่มไลน์**")
             test_shift = st.selectbox("เลือกกะที่จะทดสอบ", list(SHIFT_WINDOWS.keys()), key="roster_test_shift",
