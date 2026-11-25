@@ -969,6 +969,23 @@ def get_image_store():
 def get_item_image(item_id):
     return get_image_store().get(int(item_id))
 
+@st.cache_data(ttl=600, max_entries=400, show_spinner=False)
+def get_item_thumb(item_id):
+    """รูปย่อ ~480px สำหรับหน้าตรวจของช่าง (รูปต้นฉบับใหญ่ทำให้ทุกรายการหน่วงเมื่อกางดู)"""
+    raw_b = get_item_image(item_id)
+    if not raw_b:
+        return None
+    try:
+        im = Image.open(io.BytesIO(raw_b))
+        im.draft("RGB", (960, 960))
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((480, 480), Image.Resampling.BILINEAR)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=80)
+        return buf.getvalue()
+    except Exception:
+        return raw_b
+
 @st.cache_data(ttl=30, show_spinner=False)
 def get_items_df():
     df = pd.DataFrame(list(db.items.find({}, {"_id": 0, "image": 0})))
@@ -1077,6 +1094,7 @@ def refresh_items(images=False):
     get_items_df.clear()
     if images:
         get_image_store.clear()
+        get_item_thumb.clear()
 
 def done(msg, icon="✅"):
     st.session_state["_flash"] = (msg, icon)
@@ -2927,7 +2945,7 @@ def render_tool_inspection_list(tools_all_df):
                             if int(row['orig_quantity']) > 1:
                                 st.number_input(f"จำนวนชิ้นที่{selected_status} *", min_value=1, max_value=int(row['orig_quantity']), value=1, key=f"issue_qty_{rid}")
 
-                img_bytes = get_item_image(rid)
+                img_bytes = get_item_thumb(rid)
                 if img_bytes:
                     with st.popover("📷 ดูรูปภาพอุปกรณ์"):
                         st.image(img_bytes, caption=row['name'], use_container_width=True)
@@ -2953,7 +2971,7 @@ def render_pool_list(pool_all_df):
                     step=1,
                     key=f"pool_q_{rid}"
                 )
-                img_bytes = get_item_image(rid)
+                img_bytes = get_item_thumb(rid)
                 if img_bytes:
                     with st.popover("📷 ดูรูปภาพอุปกรณ์"):
                         st.image(img_bytes, caption=row['name'], use_container_width=True)
